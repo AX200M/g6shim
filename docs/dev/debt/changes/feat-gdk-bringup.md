@@ -12,6 +12,8 @@
 - `CreateCommandQueueX` ignores the flags, engine and queue index; DMA queues become PC copy queues.
   Title IDs: 1738CA2A
 - Descriptor heap `GetDesc` (slot 8) is taken to return through a hidden pointer passed before the heap; no title has called it yet.
+- Device `GetCustomHeapProperties` (slot 26) and `GetAdapterLuid` (slot 31) are taken to return the console way; no title has called them yet. `GetResourceAllocationInfo` (slot 25) is observed.
+  Title IDs: 1738CA2A
 - Descriptor heap `GetGPUDescriptorHandleForHeapStart` returns 0 for heaps that are not shader-visible; what the console returns for them is not known.
   Title IDs: 1738CA2A
 - Device slot 69 takes a 32-bit id and a value and is not identified; it is a probe.

@@ -225,6 +225,30 @@ HRESULT STDMETHODCALLTYPE device_create_reserved_resource(ConsoleDevice* self, c
     return self->pc->CreateReservedResource(pc_resource_desc_or_null(desc, &pc_desc), state, clear, riid, out);
 }
 
+D3D12_RESOURCE_ALLOCATION_INFO* STDMETHODCALLTYPE device_resource_allocation_info(D3D12_RESOURCE_ALLOCATION_INFO* result,
+                                                                                ConsoleDevice* self, UINT visible_mask,
+                                                                                UINT count,
+                                                                                const D3D12_RESOURCE_DESC* descs) {
+    if (count > kMaxAllocationInfoDescs || (count && !descs)) {
+        G6SHIM_WARN("GetResourceAllocationInfo(%u descriptions): too many or null", count);
+        *result = {kInvalidAllocationSize, 0};
+        return result;
+    }
+    D3D12_RESOURCE_DESC pc[kMaxAllocationInfoDescs];
+    for (UINT i = 0; i < count; ++i) pc[i] = pc_resource_desc(descs[i]);
+    *result = self->pc->GetResourceAllocationInfo(visible_mask, count, pc);
+    return result;
+}
+
+D3D12_HEAP_PROPERTIES* STDMETHODCALLTYPE device_custom_heap_properties(D3D12_HEAP_PROPERTIES* result,
+                                                                       ConsoleDevice* self, UINT node_mask,
+                                                                       D3D12_HEAP_TYPE type) {
+    *result = self->pc->GetCustomHeapProperties(node_mask, type);
+    return result;
+}
+
+LUID STDMETHODCALLTYPE device_adapter_luid(ConsoleDevice* self) { return self->pc->GetAdapterLuid(); }
+
 const void* const* device_table() {
     static const void* const* table = build_table(
         {"ID3D12Device", offsetof(ConsoleDevice, pc), device_slot::kPcSlots, device_slot::kSlots},
@@ -239,6 +263,9 @@ const void* const* device_table() {
          {device_slot::kGetDescriptorHandleIncrementSize, reinterpret_cast<const void*>(&device_descriptor_increment)},
          {device_slot::kCopyDescriptors, reinterpret_cast<const void*>(&device_copy_descriptors)},
          {device_slot::kCopyDescriptorsSimple, reinterpret_cast<const void*>(&device_copy_descriptors_simple)},
+         {device_slot::kGetResourceAllocationInfo, reinterpret_cast<const void*>(&device_resource_allocation_info)},
+         {device_slot::kGetCustomHeapProperties, reinterpret_cast<const void*>(&device_custom_heap_properties)},
+         {device_slot::kGetAdapterLuid, reinterpret_cast<const void*>(&device_adapter_luid)},
          {device_slot::kCreateCommittedResource, reinterpret_cast<const void*>(&device_create_committed_resource)},
          {device_slot::kCreatePlacedResource, reinterpret_cast<const void*>(&device_create_placed_resource)},
          {device_slot::kCreateReservedResource, reinterpret_cast<const void*>(&device_create_reserved_resource)},
