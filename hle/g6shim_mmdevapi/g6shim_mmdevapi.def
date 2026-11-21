@@ -1,0 +1,4 @@
+LIBRARY "g6shim_mmdevapi.dll"
+EXPORTS
+    ActivateAudioInterfaceAsync=mmdevapi.ActivateAudioInterfaceAsync
+    SetWasapiThreadAffinityMask=g6shim_stub_0
