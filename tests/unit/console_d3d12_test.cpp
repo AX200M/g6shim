@@ -132,3 +132,23 @@ TEST(textures_created_for_copies_start_common) {
     CHECK(pc_initial_state(&desc, D3D12_RESOURCE_STATE_COPY_DEST) == D3D12_RESOURCE_STATE_COPY_DEST);
     CHECK(pc_initial_state(nullptr, D3D12_RESOURCE_STATE_COPY_DEST) == D3D12_RESOURCE_STATE_COPY_DEST);
 }
+
+TEST(frame_tokens_carry_the_event_type) {
+    CHECK(frame_token(kFrameEventOrigin, 0) == 1);
+    CHECK(frame_token(kFrameEventOrigin, 41) == 42);
+    CHECK(frame_token(kFrameEventFlip, 0) == ((std::uint64_t{kFrameEventFlip} << kFrameTokenTypeShift) | 1));
+}
+
+TEST(frame_event_waits_hand_out_growing_tokens) {
+    CHECK(device_set_frame_interval(nullptr, nullptr, 1000, 1, 0) == S_OK);
+    UINT64 first = 0;
+    UINT64 second = 0;
+    CHECK(device_wait_frame_event(nullptr, kFrameEventOrigin, INFINITE, nullptr, 0, &first) == S_OK);
+    CHECK(device_wait_frame_event(nullptr, kFrameEventOrigin, INFINITE, nullptr, 0, &second) == S_OK);
+    CHECK(first != 0 && second > first);
+    CHECK(device_wait_frame_event(nullptr, kFrameEventTypes, INFINITE, nullptr, 0, &second) == E_INVALIDARG);
+    CHECK(device_set_frame_interval(nullptr, nullptr, 1000000, 1, 0) == S_OK);
+    CHECK(device_wait_frame_event(nullptr, kFrameEventOrigin, 1, nullptr, 0, &second) ==
+          HRESULT_FROM_WIN32(ERROR_TIMEOUT));
+    CHECK(device_set_frame_interval(nullptr, nullptr, 16667, 1, 0) == S_OK);
+}

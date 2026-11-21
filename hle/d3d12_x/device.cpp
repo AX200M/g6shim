@@ -283,7 +283,8 @@ const void* const* device_table() {
          {device_slot::kCreateCommandQueueX, reinterpret_cast<const void*>(&device_create_command_queue_x)},
          {device_slot::kCreateCommandListX, reinterpret_cast<const void*>(&device_create_command_list_x)},
          {device_slot::kSetFrameIntervalX, reinterpret_cast<const void*>(&device_set_frame_interval)},
-         {device_slot::kScheduleFrameEventX, reinterpret_cast<const void*>(&device_schedule_frame_event)}});
+         {device_slot::kScheduleFrameEventX, reinterpret_cast<const void*>(&device_schedule_frame_event)},
+         {device_slot::kWaitFrameEventX, reinterpret_cast<const void*>(&device_wait_frame_event)}});
     return table;
 }
 

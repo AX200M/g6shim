@@ -1,5 +1,10 @@
 # d3d12_x
 
+## add Unknown function info
+
+- `WaitFrameEventX` (device slot 80) takes `(type, timeout, objects, flags, token*)`; the objects and flags are logged and ignored, and the token's format is chosen, not observed.
+  Title IDs: 1738CA2A
+
 ## add Functional
 
 - Textures created in a copy state start in the common state on the PC, so copies on any queue promote them. A title barrier that names the copy state as its before state then disagrees with the PC's tracking after a copy queue has let the texture decay.

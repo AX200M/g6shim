@@ -14,6 +14,7 @@ inline constexpr std::uint32_t kFrameEventFlip = 2;
 inline constexpr std::uint32_t kScheduleFlagDisableSignal = 1;
 inline constexpr std::uint32_t kDefaultFrameIntervalMicroseconds = 16667;
 inline constexpr std::uint32_t kMaxScheduledObjects = 16;
+inline constexpr std::uint32_t kFrameTokenTypeShift = 56;
 
 struct FrameClock {
     std::uint32_t interval_us = kDefaultFrameIntervalMicroseconds;
@@ -35,6 +36,11 @@ struct FrameClock {
         return (elapsed_us - offset + every - 1) / every;
     }
 };
+
+inline std::uint64_t frame_token(std::uint32_t type, std::uint64_t index) {
+    const std::uint64_t sequence = index + 1;
+    return type == kFrameEventOrigin ? sequence : (std::uint64_t{type} << kFrameTokenTypeShift) | sequence;
+}
 
 inline bool frame_interval_valid(std::uint32_t interval_us, std::uint32_t periods) {
     return interval_us != 0 && periods != 0;

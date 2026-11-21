@@ -33,6 +33,7 @@ inline constexpr std::size_t kCreateCommandQueueX = 48;
 inline constexpr std::size_t kCreateCommandListX = 73;
 inline constexpr std::size_t kSetFrameIntervalX = 78;
 inline constexpr std::size_t kScheduleFrameEventX = 79;
+inline constexpr std::size_t kWaitFrameEventX = 80;
 inline constexpr std::size_t kSlots = 160;
 }  // namespace device_slot
 
@@ -295,6 +296,8 @@ HRESULT STDMETHODCALLTYPE device_set_frame_interval(ConsoleDevice*, void* output
                                                     UINT flags);
 HRESULT STDMETHODCALLTYPE device_schedule_frame_event(ConsoleDevice*, UINT type, UINT offset_us,
                                                       const ConsoleObjectList* objects, UINT flags);
+HRESULT STDMETHODCALLTYPE device_wait_frame_event(ConsoleDevice*, UINT type, UINT timeout_ms, const void* objects,
+                                                  UINT flags, UINT64* token);
 
 ULONG add_ref(GraphicsHead& head);
 ULONG release_device(ConsoleDevice* device);

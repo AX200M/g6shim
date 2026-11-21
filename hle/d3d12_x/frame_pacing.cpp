@@ -6,6 +6,7 @@
 #include <g6shim/log.hpp>
 
 #include <array>
+#include <atomic>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -16,6 +17,9 @@ namespace {
 
 constexpr std::uint64_t kMicrosecondsPerSecond = 1'000'000;
 constexpr LONGLONG kHundredNanosecondsPerMicrosecond = 10;
+constexpr std::uint64_t kMicrosecondsPerMillisecond = 1000;
+constexpr HRESULT kFrameWaitTimedOut = HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+constexpr int kLoggedWaits = 4;
 
 class FramePacer {
 public:
@@ -41,7 +45,38 @@ public:
         return S_OK;
     }
 
+    HRESULT wait(std::uint32_t type, std::uint32_t timeout_ms, std::uint64_t* index) {
+        if (type >= kFrameEventTypes) return E_INVALIDARG;
+        std::uint64_t now = 0;
+        std::uint64_t due = 0;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!start()) return E_OUTOFMEMORY;
+            now = elapsed_us();
+            *index = clock_.first_index_at_or_after(type, now + 1);
+            due = clock_.event_time_us(type, *index);
+        }
+        const std::uint64_t wait_us = due - now;
+        if (timeout_ms != INFINITE && wait_us > std::uint64_t{timeout_ms} * kMicrosecondsPerMillisecond) {
+            Sleep(timeout_ms);
+            return kFrameWaitTimedOut;
+        }
+        sleep_us(wait_us);
+        return S_OK;
+    }
+
 private:
+    static void sleep_us(std::uint64_t microseconds) {
+        thread_local HANDLE timer =
+            CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        LARGE_INTEGER relative{};
+        relative.QuadPart = -static_cast<LONGLONG>(microseconds) * kHundredNanosecondsPerMicrosecond;
+        if (timer && SetWaitableTimer(timer, &relative, 0, nullptr, nullptr, FALSE))
+            WaitForSingleObject(timer, INFINITE);
+        else
+            Sleep(static_cast<DWORD>(microseconds / kMicrosecondsPerMillisecond));
+    }
+
     bool start() {
         if (started_) return true;
         QueryPerformanceFrequency(&frequency_);
@@ -145,6 +180,18 @@ HRESULT STDMETHODCALLTYPE device_schedule_frame_event(ConsoleDevice*, UINT type,
     const HRESULT hr = pacer().schedule(type, offset_us, objects ? objects->objects : nullptr, count, flags);
     G6SHIM_INFO("ScheduleFrameEventX(type %u, offset %u us, %u objects, flags 0x%X) -> 0x%08lX", type, offset_us, count,
                 flags, hr);
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE device_wait_frame_event(ConsoleDevice*, UINT type, UINT timeout_ms, const void* objects,
+                                                  UINT flags, UINT64* token) {
+    std::uint64_t index = 0;
+    const HRESULT hr = pacer().wait(type, timeout_ms, &index);
+    if (SUCCEEDED(hr) && token) *token = frame_token(type, index);
+    static std::atomic<int> logged{0};
+    if (FAILED(hr) || objects || flags || logged.fetch_add(1, std::memory_order_relaxed) < kLoggedWaits)
+        G6SHIM_INFO("WaitFrameEventX(type %u, timeout %u ms, objects %p, flags 0x%X) -> 0x%08lX, token 0x%llX", type,
+                    timeout_ms, objects, flags, hr, token ? static_cast<unsigned long long>(*token) : 0ull);
     return hr;
 }
 
