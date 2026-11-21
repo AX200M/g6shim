@@ -146,6 +146,7 @@ EXPORTS
     TraceMessage=advapi32.TraceMessage
     TryEnterCriticalSection=kernel32.TryEnterCriticalSection
     UnregisterTraceGuids=advapi32.UnregisterTraceGuids
+    VirtualAlloc=g6shim_VirtualAlloc
     VirtualFree=kernel32.VirtualFree
     VirtualProtect=kernel32.VirtualProtect
     VirtualQuery=kernel32.VirtualQuery
@@ -158,6 +159,8 @@ EXPORTS
     WakeConditionVariable=kernel32.WakeConditionVariable
     WideCharToMultiByte=kernel32.WideCharToMultiByte
     WriteFile=kernel32.WriteFile
+    XMemAlloc=g6shim_XMemAlloc
+    XMemFree=g6shim_XMemFree
     CreateDirectoryA=g6shim_CreateDirectoryA
     CreateFileA=g6shim_CreateFileA
     CreateMutexA=kernel32.CreateMutexA
