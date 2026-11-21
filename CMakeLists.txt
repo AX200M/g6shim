@@ -26,6 +26,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 include(cmake/g6shim.cmake)
 
 add_subdirectory(runtime)
+add_subdirectory(winrt EXCLUDE_FROM_ALL)
 
 if(G6SHIM_BUILD_TOOLS)
   add_subdirectory(src)
