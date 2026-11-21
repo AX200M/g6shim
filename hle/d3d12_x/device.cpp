@@ -195,6 +195,36 @@ HRESULT STDMETHODCALLTYPE device_check_feature_support(ConsoleDevice* self, D3D1
     return hr;
 }
 
+const D3D12_RESOURCE_DESC* pc_resource_desc_or_null(const D3D12_RESOURCE_DESC* console, D3D12_RESOURCE_DESC* storage) {
+    if (!console) return nullptr;
+    *storage = pc_resource_desc(*console);
+    return storage;
+}
+
+HRESULT STDMETHODCALLTYPE device_create_committed_resource(ConsoleDevice* self, const D3D12_HEAP_PROPERTIES* heap,
+                                                           D3D12_HEAP_FLAGS heap_flags, const D3D12_RESOURCE_DESC* desc,
+                                                           D3D12_RESOURCE_STATES state, const D3D12_CLEAR_VALUE* clear,
+                                                           REFIID riid, void** out) {
+    D3D12_RESOURCE_DESC pc_desc{};
+    return self->pc->CreateCommittedResource(heap, heap_flags, pc_resource_desc_or_null(desc, &pc_desc), state, clear,
+                                             riid, out);
+}
+
+HRESULT STDMETHODCALLTYPE device_create_placed_resource(ConsoleDevice* self, ID3D12Heap* heap, UINT64 offset,
+                                                        const D3D12_RESOURCE_DESC* desc, D3D12_RESOURCE_STATES state,
+                                                        const D3D12_CLEAR_VALUE* clear, REFIID riid, void** out) {
+    D3D12_RESOURCE_DESC pc_desc{};
+    return self->pc->CreatePlacedResource(heap, offset, pc_resource_desc_or_null(desc, &pc_desc), state, clear, riid,
+                                          out);
+}
+
+HRESULT STDMETHODCALLTYPE device_create_reserved_resource(ConsoleDevice* self, const D3D12_RESOURCE_DESC* desc,
+                                                          D3D12_RESOURCE_STATES state, const D3D12_CLEAR_VALUE* clear,
+                                                          REFIID riid, void** out) {
+    D3D12_RESOURCE_DESC pc_desc{};
+    return self->pc->CreateReservedResource(pc_resource_desc_or_null(desc, &pc_desc), state, clear, riid, out);
+}
+
 const void* const* device_table() {
     static const void* const* table = build_table(
         {"ID3D12Device", offsetof(ConsoleDevice, pc), device_slot::kPcSlots, device_slot::kSlots},
@@ -209,6 +239,9 @@ const void* const* device_table() {
          {device_slot::kGetDescriptorHandleIncrementSize, reinterpret_cast<const void*>(&device_descriptor_increment)},
          {device_slot::kCopyDescriptors, reinterpret_cast<const void*>(&device_copy_descriptors)},
          {device_slot::kCopyDescriptorsSimple, reinterpret_cast<const void*>(&device_copy_descriptors_simple)},
+         {device_slot::kCreateCommittedResource, reinterpret_cast<const void*>(&device_create_committed_resource)},
+         {device_slot::kCreatePlacedResource, reinterpret_cast<const void*>(&device_create_placed_resource)},
+         {device_slot::kCreateReservedResource, reinterpret_cast<const void*>(&device_create_reserved_resource)},
          {device_slot::kCreateCommandQueueX, reinterpret_cast<const void*>(&device_create_command_queue_x)},
          {device_slot::kCreateCommandListX, reinterpret_cast<const void*>(&device_create_command_list_x)},
          {device_slot::kSetFrameIntervalX, reinterpret_cast<const void*>(&device_set_frame_interval)},

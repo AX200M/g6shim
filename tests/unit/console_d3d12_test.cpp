@@ -106,3 +106,15 @@ TEST(dma_list_barriers_keep_only_copy_states) {
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
     CHECK(kept_on_copy_list(barrier));
 }
+
+TEST(buffers_drop_the_shader_resource_denial) {
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    desc.Flags = D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+    CHECK(pc_resource_desc(desc).Flags == D3D12_RESOURCE_FLAG_NONE);
+    desc.Flags = D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    CHECK(pc_resource_desc(desc).Flags == D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Flags = D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+    CHECK(pc_resource_desc(desc).Flags == desc.Flags);
+}

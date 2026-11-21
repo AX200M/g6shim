@@ -22,6 +22,9 @@ inline constexpr std::size_t kCreateDescriptorHeap = 14;
 inline constexpr std::size_t kGetDescriptorHandleIncrementSize = 15;
 inline constexpr std::size_t kCopyDescriptors = 23;
 inline constexpr std::size_t kCopyDescriptorsSimple = 24;
+inline constexpr std::size_t kCreateCommittedResource = 27;
+inline constexpr std::size_t kCreatePlacedResource = 29;
+inline constexpr std::size_t kCreateReservedResource = 30;
 inline constexpr std::size_t kPcSlots = 44;
 inline constexpr std::size_t kCreateCommandQueueX = 48;
 inline constexpr std::size_t kCreateCommandListX = 73;
@@ -157,6 +160,13 @@ inline D3D12_DESCRIPTOR_HEAP_DESC pc_heap_desc(const D3D12_DESCRIPTOR_HEAP_DESC&
         pc.Type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER && (pc.Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
     if (visible_samplers && pc.NumDescriptors > D3D12_MAX_SHADER_VISIBLE_SAMPLER_HEAP_SIZE)
         pc.NumDescriptors = D3D12_MAX_SHADER_VISIBLE_SAMPLER_HEAP_SIZE;
+    return pc;
+}
+
+inline D3D12_RESOURCE_DESC pc_resource_desc(const D3D12_RESOURCE_DESC& console) {
+    D3D12_RESOURCE_DESC pc = console;
+    const bool depth_stencil = pc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+    if (!depth_stencil) pc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
     return pc;
 }
 

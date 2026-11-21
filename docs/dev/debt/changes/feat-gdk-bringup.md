@@ -35,6 +35,8 @@
 - Shader-visible sampler heaps of the console's unbounded sampler type (4) become PC sampler heaps of at most 2048 descriptors; `GetDesc` reports the requested size.
   Closes when: a title is seen using more than 2048 samplers, or the heap is split.
   Title IDs: 1738CA2A
+- Resources created without `D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL` lose `D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE` on the PC, so shaders could read them where the console would refuse.
+  Title IDs: 1738CA2A
 - Console DMA command lists are PC copy lists; their console-only operations are probes.
   Title IDs: 1738CA2A
 - DMA command list transitions to or from states other than the common and copy states are dropped; the PC copy queue promotes resources from the common state and lets them decay back after each execution.
