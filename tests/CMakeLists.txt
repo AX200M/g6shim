@@ -18,6 +18,7 @@ add_executable(g6shim_tests
   unit/console_d3d12_test.cpp
   unit/console_device_test.cpp
   unit/xg_layout_test.cpp
+  unit/capture_test.cpp
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/graphics_object.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/device.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/objects.cpp"
