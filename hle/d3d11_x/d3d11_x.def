@@ -1,3 +1,5 @@
 LIBRARY "d3d11_x.dll"
 EXPORTS
+    D3D11CreateDevice=g6shim_D3D11CreateDevice
+    D3D11XCreateDeviceX=g6shim_D3D11XCreateDeviceX
     DXGIXPresentArray=g6shim_DXGIXPresentArray
