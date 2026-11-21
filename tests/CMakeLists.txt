@@ -15,6 +15,7 @@ add_executable(g6shim_tests
   unit/manifest_test.cpp
   unit/input_mapping_test.cpp
   unit/graphics_object_test.cpp
+  unit/console_d3d12_test.cpp
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/graphics_object.cpp")
 target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim::winrt)
 target_include_directories(g6shim_tests PRIVATE

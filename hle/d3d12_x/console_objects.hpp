@@ -19,6 +19,8 @@ inline constexpr std::size_t kCheckFeatureSupport = 13;
 inline constexpr std::size_t kCreateDescriptorHeap = 14;
 inline constexpr std::size_t kPcSlots = 44;
 inline constexpr std::size_t kCreateCommandQueueX = 48;
+inline constexpr std::size_t kSetFrameIntervalX = 78;
+inline constexpr std::size_t kScheduleFrameEventX = 79;
 inline constexpr std::size_t kSlots = 160;
 }  // namespace device_slot
 
@@ -70,6 +72,13 @@ struct ConsoleQueueDesc {
     std::uint32_t queue_index;
 };
 static_assert(sizeof(ConsoleQueueDesc) == 16);
+
+struct ConsoleObjectList {
+    std::uint32_t count;
+    std::uint32_t reserved;
+    HANDLE* objects;
+};
+static_assert(offsetof(ConsoleObjectList, objects) == 8);
 
 inline bool pc_queue_type(std::uint32_t console_type, D3D12_COMMAND_LIST_TYPE* pc) {
     switch (console_type) {
@@ -145,6 +154,11 @@ ConsoleList* wrap_list(ConsoleDevice* device, ID3D12GraphicsCommandList* pc);
 ConsoleHeap* wrap_heap(ConsoleDevice* device, ID3D12DescriptorHeap* pc);
 ConsoleAdapter* wrap_adapter(IDXGIAdapter1* pc);
 ConsoleDxgiDevice* wrap_dxgi_device(ConsoleDevice* device);
+
+HRESULT STDMETHODCALLTYPE device_set_frame_interval(ConsoleDevice*, void* output, UINT interval_us, UINT periods,
+                                                    UINT flags);
+HRESULT STDMETHODCALLTYPE device_schedule_frame_event(ConsoleDevice*, UINT type, UINT offset_us,
+                                                      const ConsoleObjectList* objects, UINT flags);
 
 ULONG add_ref(GraphicsHead& head);
 ULONG release_device(ConsoleDevice* device);

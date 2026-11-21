@@ -14,9 +14,13 @@
 - Descriptor heap `GetDesc` (slot 8) is taken to return through a hidden pointer passed before the heap; no title has called it yet.
 - Device slot 69 takes a 32-bit id and a value and is not identified; it is a probe.
   Title IDs: 1738CA2A
+- `SetFrameIntervalX` ignores its output and flags; `ScheduleFrameEventX` honours flag 1 (no signal) and ignores the others.
+  Title IDs: 1738CA2A
 
 ## add Functional
 
 - Console-only slots that are not implemented are probes: they log their first four calls and return `E_NOTIMPL`.
 - `CheckFeatureSupport` fills the PC part of the 0x40-byte console `D3D12_OPTIONS` structure and zeroes the last 4 bytes.
+  Title IDs: 1738CA2A
+- Frame events come from a timer that starts at `SetFrameIntervalX`, not from the display's vertical blank.
   Title IDs: 1738CA2A

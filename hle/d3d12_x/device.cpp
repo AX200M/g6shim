@@ -150,7 +150,9 @@ const void* const* device_table() {
          {device_slot::kCreateCommandList, reinterpret_cast<const void*>(&device_create_command_list)},
          {device_slot::kCheckFeatureSupport, reinterpret_cast<const void*>(&device_check_feature_support)},
          {device_slot::kCreateDescriptorHeap, reinterpret_cast<const void*>(&device_create_descriptor_heap)},
-         {device_slot::kCreateCommandQueueX, reinterpret_cast<const void*>(&device_create_command_queue_x)}});
+         {device_slot::kCreateCommandQueueX, reinterpret_cast<const void*>(&device_create_command_queue_x)},
+         {device_slot::kSetFrameIntervalX, reinterpret_cast<const void*>(&device_set_frame_interval)},
+         {device_slot::kScheduleFrameEventX, reinterpret_cast<const void*>(&device_schedule_frame_event)}});
     return table;
 }
 
