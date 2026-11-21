@@ -2,3 +2,4 @@
 # SPDX-License-Identifier: LGPL-3.0-or-later
 add_subdirectory(core)
 add_subdirectory(tools/scan)
+add_subdirectory(tools/stubgen)
