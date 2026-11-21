@@ -76,45 +76,83 @@ HRESULT STDMETHODCALLTYPE device_create_command_queue(ConsoleDevice* self, const
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE device_create_command_list(ConsoleDevice* self, UINT node_mask, D3D12_COMMAND_LIST_TYPE type,
-                                                     ID3D12CommandAllocator* allocator, ID3D12PipelineState* state,
-                                                     REFIID riid, void** out) {
+HRESULT create_list(ConsoleDevice* self, UINT node_mask, D3D12_COMMAND_LIST_TYPE type, ID3D12CommandAllocator* allocator,
+                    ID3D12PipelineState* state, REFIID riid, void** out, bool dma) {
     if (out) *out = nullptr;
     ID3D12GraphicsCommandList* pc = nullptr;
     HRESULT hr = self->pc->CreateCommandList(node_mask, type, allocator, state, IID_PPV_ARGS(&pc));
-    G6SHIM_INFO("CreateCommandList(type %d) -> 0x%08lX", type, hr);
+    static std::atomic<int> logged{0};
+    if (FAILED(hr) || logged.fetch_add(1, std::memory_order_relaxed) < kLoggedCreations)
+        G6SHIM_INFO("CreateCommandList(type %d%s) -> 0x%08lX", type, dma ? ", console DMA list" : "", hr);
     if (FAILED(hr) || !out) {
         if (pc) pc->Release();
         return FAILED(hr) ? hr : S_FALSE;
     }
     if (riid != __uuidof(ID3D12GraphicsCommandList) && riid != __uuidof(ID3D12CommandList))
         log_iid("CreateCommandList", riid);
-    ConsoleList* list = wrap_list(self, pc);
+    ConsoleList* list = dma ? wrap_dma_list(self, pc) : wrap_list(self, pc);
     pc->Release();
     if (!list) return E_OUTOFMEMORY;
     *out = list;
     return S_OK;
 }
 
+HRESULT STDMETHODCALLTYPE device_create_command_list(ConsoleDevice* self, UINT node_mask, D3D12_COMMAND_LIST_TYPE type,
+                                                     ID3D12CommandAllocator* allocator, ID3D12PipelineState* state,
+                                                     REFIID riid, void** out) {
+    D3D12_COMMAND_LIST_TYPE pc_type{};
+    const bool console_type = pc_queue_type(static_cast<std::uint32_t>(type), &pc_type);
+    return create_list(self, node_mask, console_type ? pc_type : type, allocator, state, riid, out,
+                       static_cast<std::uint32_t>(type) == kConsoleQueueTypeDma);
+}
+
+HRESULT STDMETHODCALLTYPE device_create_command_allocator(ConsoleDevice* self, UINT type, REFIID riid, void** out) {
+    D3D12_COMMAND_LIST_TYPE pc_type{};
+    if (!pc_queue_type(type, &pc_type)) pc_type = static_cast<D3D12_COMMAND_LIST_TYPE>(type);
+    const HRESULT hr = self->pc->CreateCommandAllocator(pc_type, riid, out);
+    if (FAILED(hr)) G6SHIM_WARN("CreateCommandAllocator(type %u) -> 0x%08lX", type, hr);
+    return hr;
+}
+
 HRESULT STDMETHODCALLTYPE device_create_descriptor_heap(ConsoleDevice* self, const D3D12_DESCRIPTOR_HEAP_DESC* desc,
                                                         REFIID riid, void** out) {
     if (out) *out = nullptr;
+    if (!desc) return E_INVALIDARG;
+    const D3D12_DESCRIPTOR_HEAP_DESC pc_desc = pc_heap_desc(*desc);
     ID3D12DescriptorHeap* pc = nullptr;
-    HRESULT hr = self->pc->CreateDescriptorHeap(desc, IID_PPV_ARGS(&pc));
+    HRESULT hr = self->pc->CreateDescriptorHeap(&pc_desc, IID_PPV_ARGS(&pc));
     static std::atomic<int> logged{0};
-    if (FAILED(hr) || logged.fetch_add(1, std::memory_order_relaxed) < kLoggedCreations)
-        G6SHIM_INFO("CreateDescriptorHeap(type %d, %u descriptors, flags 0x%X) -> 0x%08lX", desc ? desc->Type : -1,
-                    desc ? desc->NumDescriptors : 0, desc ? desc->Flags : 0, hr);
+    if (FAILED(hr) || pc_desc.NumDescriptors != desc->NumDescriptors ||
+        logged.fetch_add(1, std::memory_order_relaxed) < kLoggedCreations)
+        G6SHIM_INFO("CreateDescriptorHeap(type %d, %u descriptors, flags 0x%X) as PC type %d with %u -> 0x%08lX",
+                    desc->Type, desc->NumDescriptors, desc->Flags, pc_desc.Type, pc_desc.NumDescriptors, hr);
     if (FAILED(hr) || !out) {
         if (pc) pc->Release();
         return FAILED(hr) ? hr : S_FALSE;
     }
     if (riid != __uuidof(ID3D12DescriptorHeap)) log_iid("CreateDescriptorHeap", riid);
-    ConsoleHeap* heap = wrap_heap(self, pc);
+    ConsoleHeap* heap = wrap_heap(self, pc, *desc);
     pc->Release();
     if (!heap) return E_OUTOFMEMORY;
     *out = heap;
     return S_OK;
+}
+
+UINT STDMETHODCALLTYPE device_descriptor_increment(ConsoleDevice* self, UINT type) {
+    return self->pc->GetDescriptorHandleIncrementSize(pc_heap_type(type));
+}
+
+void STDMETHODCALLTYPE device_copy_descriptors(ConsoleDevice* self, UINT dest_ranges,
+                                               const D3D12_CPU_DESCRIPTOR_HANDLE* dest_starts, const UINT* dest_sizes,
+                                               UINT src_ranges, const D3D12_CPU_DESCRIPTOR_HANDLE* src_starts,
+                                               const UINT* src_sizes, UINT type) {
+    self->pc->CopyDescriptors(dest_ranges, dest_starts, dest_sizes, src_ranges, src_starts, src_sizes,
+                              pc_heap_type(type));
+}
+
+void STDMETHODCALLTYPE device_copy_descriptors_simple(ConsoleDevice* self, UINT count, D3D12_CPU_DESCRIPTOR_HANDLE dest,
+                                                      D3D12_CPU_DESCRIPTOR_HANDLE src, UINT type) {
+    self->pc->CopyDescriptorsSimple(count, dest, src, pc_heap_type(type));
 }
 
 HRESULT STDMETHODCALLTYPE device_create_command_queue_x(ConsoleDevice* self, const ConsoleQueueDesc* desc, REFIID riid,
@@ -129,6 +167,23 @@ HRESULT STDMETHODCALLTYPE device_create_command_queue_x(ConsoleDevice* self, con
     G6SHIM_INFO("CreateCommandQueueX(type %u, flags 0x%X, engine or pipe %u, queue %u) as PC type %d", desc->type,
                 desc->flags, desc->engine_or_pipe, desc->queue_index, pc_desc.Type);
     return device_create_command_queue(self, &pc_desc, riid, out);
+}
+
+HRESULT STDMETHODCALLTYPE device_create_command_list_x(ConsoleDevice* self, const ConsoleListDesc* desc,
+                                                       ID3D12CommandAllocator* allocator, ID3D12PipelineState* state,
+                                                       REFIID riid, void** out) {
+    if (out) *out = nullptr;
+    if (!desc) return E_INVALIDARG;
+    D3D12_COMMAND_LIST_TYPE type{};
+    if (!pc_queue_type(desc->type, &type)) {
+        G6SHIM_WARN("CreateCommandListX: console list type %u not known -> E_INVALIDARG", desc->type);
+        return E_INVALIDARG;
+    }
+    static std::atomic<int> logged{0};
+    if (logged.fetch_add(1, std::memory_order_relaxed) < kLoggedCreations)
+        G6SHIM_INFO("CreateCommandListX(type %u, flags 0x%X, node mask 0x%X, barrier batch %u)", desc->type, desc->flags,
+                    desc->node_mask, desc->barrier_batch_size);
+    return create_list(self, 0, type, allocator, state, riid, out, desc->type == kConsoleQueueTypeDma);
 }
 
 HRESULT STDMETHODCALLTYPE device_check_feature_support(ConsoleDevice* self, D3D12_FEATURE feature, void* data,
@@ -147,10 +202,15 @@ const void* const* device_table() {
          {kAddRefSlot, reinterpret_cast<const void*>(&device_add_ref)},
          {kReleaseSlot, reinterpret_cast<const void*>(&device_release)},
          {device_slot::kCreateCommandQueue, reinterpret_cast<const void*>(&device_create_command_queue)},
+         {device_slot::kCreateCommandAllocator, reinterpret_cast<const void*>(&device_create_command_allocator)},
          {device_slot::kCreateCommandList, reinterpret_cast<const void*>(&device_create_command_list)},
          {device_slot::kCheckFeatureSupport, reinterpret_cast<const void*>(&device_check_feature_support)},
          {device_slot::kCreateDescriptorHeap, reinterpret_cast<const void*>(&device_create_descriptor_heap)},
+         {device_slot::kGetDescriptorHandleIncrementSize, reinterpret_cast<const void*>(&device_descriptor_increment)},
+         {device_slot::kCopyDescriptors, reinterpret_cast<const void*>(&device_copy_descriptors)},
+         {device_slot::kCopyDescriptorsSimple, reinterpret_cast<const void*>(&device_copy_descriptors_simple)},
          {device_slot::kCreateCommandQueueX, reinterpret_cast<const void*>(&device_create_command_queue_x)},
+         {device_slot::kCreateCommandListX, reinterpret_cast<const void*>(&device_create_command_list_x)},
          {device_slot::kSetFrameIntervalX, reinterpret_cast<const void*>(&device_set_frame_interval)},
          {device_slot::kScheduleFrameEventX, reinterpret_cast<const void*>(&device_schedule_frame_event)}});
     return table;

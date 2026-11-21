@@ -14,17 +14,23 @@ namespace g6shim::d3d12 {
 
 namespace device_slot {
 inline constexpr std::size_t kCreateCommandQueue = 8;
+inline constexpr std::size_t kCreateCommandAllocator = 9;
 inline constexpr std::size_t kCreateCommandList = 12;
 inline constexpr std::size_t kCheckFeatureSupport = 13;
 inline constexpr std::size_t kCreateDescriptorHeap = 14;
+inline constexpr std::size_t kGetDescriptorHandleIncrementSize = 15;
+inline constexpr std::size_t kCopyDescriptors = 23;
+inline constexpr std::size_t kCopyDescriptorsSimple = 24;
 inline constexpr std::size_t kPcSlots = 44;
 inline constexpr std::size_t kCreateCommandQueueX = 48;
+inline constexpr std::size_t kCreateCommandListX = 73;
 inline constexpr std::size_t kSetFrameIntervalX = 78;
 inline constexpr std::size_t kScheduleFrameEventX = 79;
 inline constexpr std::size_t kSlots = 160;
 }  // namespace device_slot
 
 namespace queue_slot {
+inline constexpr std::size_t kExecuteCommandLists = 10;
 inline constexpr std::size_t kPcSlots = 18;
 inline constexpr std::size_t kSlots = 64;
 }  // namespace queue_slot
@@ -33,6 +39,11 @@ namespace list_slot {
 inline constexpr std::size_t kPcSlots = 9;
 inline constexpr std::size_t kSlots = 160;
 }  // namespace list_slot
+
+namespace dma_list_slot {
+inline constexpr std::size_t kPcSlots = 7;
+inline constexpr std::size_t kSlots = 48;
+}  // namespace dma_list_slot
 
 inline constexpr std::size_t kGetDeviceSlot = 7;
 
@@ -60,6 +71,7 @@ inline constexpr std::size_t kAdapterConsoleBytes = 0x18;
 inline constexpr std::size_t kDxgiDeviceConsoleBytes = 0x20;
 inline constexpr std::size_t kCreateDeviceParametersBytes = 0x28;
 inline constexpr std::size_t kConsoleOptionsBytes = 0x40;
+inline constexpr std::uint32_t kMaxExecutedLists = 256;
 
 inline constexpr std::uint32_t kConsoleQueueTypeDirect = 0;
 inline constexpr std::uint32_t kConsoleQueueTypeCompute = 2;
@@ -72,6 +84,31 @@ struct ConsoleQueueDesc {
     std::uint32_t queue_index;
 };
 static_assert(sizeof(ConsoleQueueDesc) == 16);
+
+inline constexpr std::uint32_t kConsoleHeapTypeSamplerUnbounded = 4;
+
+inline D3D12_DESCRIPTOR_HEAP_TYPE pc_heap_type(std::uint32_t console_type) {
+    return console_type == kConsoleHeapTypeSamplerUnbounded ? D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER
+                                                            : static_cast<D3D12_DESCRIPTOR_HEAP_TYPE>(console_type);
+}
+
+inline D3D12_DESCRIPTOR_HEAP_DESC pc_heap_desc(const D3D12_DESCRIPTOR_HEAP_DESC& console) {
+    D3D12_DESCRIPTOR_HEAP_DESC pc = console;
+    pc.Type = pc_heap_type(static_cast<std::uint32_t>(console.Type));
+    const bool visible_samplers =
+        pc.Type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER && (pc.Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
+    if (visible_samplers && pc.NumDescriptors > D3D12_MAX_SHADER_VISIBLE_SAMPLER_HEAP_SIZE)
+        pc.NumDescriptors = D3D12_MAX_SHADER_VISIBLE_SAMPLER_HEAP_SIZE;
+    return pc;
+}
+
+struct ConsoleListDesc {
+    std::uint32_t type;
+    std::uint32_t flags;
+    std::uint32_t node_mask;
+    std::uint32_t barrier_batch_size;
+};
+static_assert(sizeof(ConsoleListDesc) == 16);
 
 struct ConsoleObjectList {
     std::uint32_t count;
@@ -130,6 +167,7 @@ struct ConsoleHeap {
     GraphicsHead head;
     ID3D12DescriptorHeap* pc;
     ConsoleDevice* device;
+    D3D12_DESCRIPTOR_HEAP_DESC console_desc;
 };
 static_assert(offsetof(ConsoleHeap, pc) == kHeapConsoleBytes);
 
@@ -151,7 +189,9 @@ static_assert(offsetof(ConsoleDxgiDevice, device) == kDxgiDeviceConsoleBytes);
 HRESULT create_console_device(ID3D12Device* pc, IDXGIAdapter1* adapter, ConsoleDevice** out);
 ConsoleQueue* wrap_queue(ConsoleDevice* device, ID3D12CommandQueue* pc);
 ConsoleList* wrap_list(ConsoleDevice* device, ID3D12GraphicsCommandList* pc);
-ConsoleHeap* wrap_heap(ConsoleDevice* device, ID3D12DescriptorHeap* pc);
+ConsoleList* wrap_dma_list(ConsoleDevice* device, ID3D12GraphicsCommandList* pc);
+ID3D12CommandList* pc_list(void* list);
+ConsoleHeap* wrap_heap(ConsoleDevice* device, ID3D12DescriptorHeap* pc, const D3D12_DESCRIPTOR_HEAP_DESC& console_desc);
 ConsoleAdapter* wrap_adapter(IDXGIAdapter1* pc);
 ConsoleDxgiDevice* wrap_dxgi_device(ConsoleDevice* device);
 

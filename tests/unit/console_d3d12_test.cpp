@@ -16,6 +16,21 @@ TEST(console_queue_types_map_to_pc_types) {
     CHECK(!pc_queue_type(17, &type));
 }
 
+TEST(console_sampler_heaps_fit_the_pc_limit) {
+    D3D12_DESCRIPTOR_HEAP_DESC console{static_cast<D3D12_DESCRIPTOR_HEAP_TYPE>(kConsoleHeapTypeSamplerUnbounded), 16384,
+                                       D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
+    D3D12_DESCRIPTOR_HEAP_DESC pc = pc_heap_desc(console);
+    CHECK(pc.Type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+    CHECK(pc.NumDescriptors == D3D12_MAX_SHADER_VISIBLE_SAMPLER_HEAP_SIZE);
+    console.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    CHECK(pc_heap_desc(console).NumDescriptors == 16384);
+    console = {D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 100000, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0};
+    pc = pc_heap_desc(console);
+    CHECK(pc.Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    CHECK(pc.NumDescriptors == 100000);
+    CHECK(pc_heap_type(D3D12_DESCRIPTOR_HEAP_TYPE_RTV) == D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+}
+
 TEST(console_options_structure_is_larger) {
     CHECK(pc_feature_data_bytes(D3D12_FEATURE_D3D12_OPTIONS, kConsoleOptionsBytes) ==
           sizeof(D3D12_FEATURE_DATA_D3D12_OPTIONS));
