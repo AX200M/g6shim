@@ -33,6 +33,7 @@ EXPORTS
     IsDebuggerPresent=kernel32.IsDebuggerPresent
     IsProcessorFeaturePresent=kernel32.IsProcessorFeaturePresent
     LeaveCriticalSection=kernel32.LeaveCriticalSection
+    LoadLibraryExW=g6shim_LoadLibraryExW
     OutputDebugStringA=kernel32.OutputDebugStringA
     OutputDebugStringW=kernel32.OutputDebugStringW
     QueryPerformanceCounter=kernel32.QueryPerformanceCounter
