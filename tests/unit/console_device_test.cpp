@@ -3,6 +3,7 @@
 #include "check.hpp"
 
 #include "console_objects.hpp"
+#include "removal.hpp"
 #include "texture_shadow.hpp"
 
 #include <dxgi1_4.h>
@@ -300,6 +301,12 @@ TEST(texture_shadows_copy_every_subresource) {
     desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     desc.SampleDesc.Count = 4;
     CHECK(!shadow_copies(desc, &copies, &bytes));
+}
+
+TEST(healthy_devices_report_no_removal) {
+    WarpDevice device;
+    if (!device.ready()) return;
+    CHECK(!report_device_removal(device.pc));
 }
 
 TEST(patched_tables_copy_only_readable_slots) {

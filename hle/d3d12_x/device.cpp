@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "console_objects.hpp"
+#include "removal.hpp"
 #include "texture_shadow.hpp"
 
 #include <g6shim/log.hpp>
@@ -111,7 +112,10 @@ HRESULT STDMETHODCALLTYPE device_create_command_allocator(ConsoleDevice* self, U
     D3D12_COMMAND_LIST_TYPE pc_type{};
     if (!pc_queue_type(type, &pc_type)) pc_type = static_cast<D3D12_COMMAND_LIST_TYPE>(type);
     const HRESULT hr = self->pc->CreateCommandAllocator(pc_type, riid, out);
-    if (FAILED(hr)) G6SHIM_WARN("CreateCommandAllocator(type %u) -> 0x%08lX", type, hr);
+    if (FAILED(hr)) {
+        G6SHIM_WARN("CreateCommandAllocator(type %u) -> 0x%08lX", type, hr);
+        report_device_removal(self->pc);
+    }
     return hr;
 }
 
@@ -373,6 +377,7 @@ extern "C" HRESULT WINAPI g6shim_D3D12XboxCreateDevice(void* console_adapter, co
     if (out) *out = nullptr;
     log_parameters(params);
     if (console_adapter) G6SHIM_WARN("D3D12XboxCreateDevice: adapter %p ignored", console_adapter);
+    enable_removal_diagnostics();
     if (debug_layer_requested()) {
         ID3D12Debug* debug = nullptr;
         if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {

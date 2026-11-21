@@ -142,6 +142,14 @@ void STDMETHODCALLTYPE list_flush_pipeline_x(ConsoleList*, UINT flags, UINT64 ad
                     flags, address, bytes);
 }
 
+HRESULT STDMETHODCALLTYPE list_close(ConsoleList* self) {
+    const HRESULT hr = self->pc->Close();
+    static std::atomic<int> logged{0};
+    if (FAILED(hr) && logged.fetch_add(1, std::memory_order_relaxed) < kLoggedFlagWarnings)
+        G6SHIM_WARN("Close(list type %u) -> 0x%08lX: the list recorded an invalid command", self->type, hr);
+    return hr;
+}
+
 D3D12_COMMAND_LIST_TYPE STDMETHODCALLTYPE list_get_console_type(ConsoleList* self) {
     return static_cast<D3D12_COMMAND_LIST_TYPE>(self->type);
 }
@@ -155,7 +163,8 @@ const void* const* list_table() {
                       {list_slot::kExecuteBundle, reinterpret_cast<const void*>(&list_execute_bundle)},
                       {list_slot::kSetDescriptorHeaps, reinterpret_cast<const void*>(&list_set_descriptor_heaps)},
                       {list_slot::kCopyTextureRegionX, reinterpret_cast<const void*>(&list_copy_texture_region_x)},
-                      {list_slot::kFlushPipelineX, reinterpret_cast<const void*>(&list_flush_pipeline_x)}});
+                      {list_slot::kFlushPipelineX, reinterpret_cast<const void*>(&list_flush_pipeline_x)},
+                      {pc_list_slot::kClose, reinterpret_cast<const void*>(&list_close)}});
         return child_table<ConsoleList>("ID3D12GraphicsCommandList", list_slot::kMappedEnd, list_slot::kSlots, slots);
     }();
     return table;
@@ -167,7 +176,8 @@ const void* const* dma_list_table() {
             forwarded_slots<ConsoleList>(dma_list_slot::kSlots, &pc_slot_of_dma_list_slot);
         slots.insert(slots.end(),
                      {{dma_list_slot::kGetType, reinterpret_cast<const void*>(&list_get_console_type)},
-                      {dma_list_slot::kResourceBarrier, reinterpret_cast<const void*>(&dma_list_resource_barrier)}});
+                      {dma_list_slot::kResourceBarrier, reinterpret_cast<const void*>(&dma_list_resource_barrier)},
+                      {pc_list_slot::kClose, reinterpret_cast<const void*>(&list_close)}});
         return child_table<ConsoleList>("DMA command list", dma_list_slot::kPcSlots, dma_list_slot::kSlots, slots);
     }();
     return table;
