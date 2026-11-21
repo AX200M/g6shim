@@ -20,6 +20,11 @@ void register_standins() {
         register_application_context();
         register_connected_storage();
         register_sensor();
+        register_live_configuration();
+        register_achievements();
+        register_chat();
+        register_networking();
+        register_content_packages();
     });
 }
 
