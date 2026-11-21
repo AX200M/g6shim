@@ -110,6 +110,19 @@ void STDMETHODCALLTYPE list_set_descriptor_heaps(ConsoleList* self, UINT count, 
     self->pc->SetDescriptorHeaps(count, pc);
 }
 
+UINT STDMETHODCALLTYPE dma_list_resource_barrier(ConsoleList* self, UINT count, const D3D12_RESOURCE_BARRIER* barriers) {
+    if (count > kMaxBarriersPerCall || (count && !barriers)) {
+        G6SHIM_WARN("DMA ResourceBarrier(%u barriers): too many or null, ignored", count);
+        return kNoBarrierActions;
+    }
+    D3D12_RESOURCE_BARRIER kept[kMaxBarriersPerCall];
+    UINT kept_count = 0;
+    for (UINT i = 0; i < count; ++i)
+        if (kept_on_copy_list(barriers[i])) kept[kept_count++] = barriers[i];
+    if (kept_count) self->pc->ResourceBarrier(kept_count, kept);
+    return kNoBarrierActions;
+}
+
 D3D12_COMMAND_LIST_TYPE STDMETHODCALLTYPE list_get_console_type(ConsoleList* self) {
     return static_cast<D3D12_COMMAND_LIST_TYPE>(self->type);
 }
@@ -133,7 +146,7 @@ const void* const* dma_list_table() {
             forwarded_slots<ConsoleList>(dma_list_slot::kSlots, &pc_slot_of_dma_list_slot);
         slots.insert(slots.end(),
                      {{dma_list_slot::kGetType, reinterpret_cast<const void*>(&list_get_console_type)},
-                      {dma_list_slot::kResourceBarrier, reinterpret_cast<const void*>(&list_resource_barrier)}});
+                      {dma_list_slot::kResourceBarrier, reinterpret_cast<const void*>(&dma_list_resource_barrier)}});
         return child_table<ConsoleList>("DMA command list", dma_list_slot::kPcSlots, dma_list_slot::kSlots, slots);
     }();
     return table;

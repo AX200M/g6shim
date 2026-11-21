@@ -37,3 +37,6 @@
   Title IDs: 1738CA2A
 - Console DMA command lists are PC copy lists; their console-only operations are probes.
   Title IDs: 1738CA2A
+- DMA command list transitions to or from states other than the common and copy states are dropped; the PC copy queue promotes resources from the common state and lets them decay back after each execution.
+  Closes when: a title shows a dropped transition that the PC queue does not cover.
+  Title IDs: 1738CA2A

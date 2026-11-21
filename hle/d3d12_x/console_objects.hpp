@@ -128,6 +128,7 @@ inline constexpr std::size_t kCreateDeviceParametersBytes = 0x28;
 inline constexpr std::size_t kConsoleOptionsBytes = 0x40;
 inline constexpr std::uint32_t kMaxExecutedLists = 256;
 inline constexpr std::uint32_t kMaxBoundDescriptorHeaps = 2;
+inline constexpr std::uint32_t kMaxBarriersPerCall = 256;
 inline constexpr UINT kNoBarrierActions = 0;
 
 inline constexpr std::uint32_t kConsoleQueueTypeDirect = 0;
@@ -157,6 +158,15 @@ inline D3D12_DESCRIPTOR_HEAP_DESC pc_heap_desc(const D3D12_DESCRIPTOR_HEAP_DESC&
     if (visible_samplers && pc.NumDescriptors > D3D12_MAX_SHADER_VISIBLE_SAMPLER_HEAP_SIZE)
         pc.NumDescriptors = D3D12_MAX_SHADER_VISIBLE_SAMPLER_HEAP_SIZE;
     return pc;
+}
+
+inline constexpr D3D12_RESOURCE_STATES kCopyListStates = D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_COPY_SOURCE;
+
+inline bool copy_list_state(D3D12_RESOURCE_STATES state) { return (state & ~kCopyListStates) == 0; }
+
+inline bool kept_on_copy_list(const D3D12_RESOURCE_BARRIER& barrier) {
+    if (barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION) return true;
+    return copy_list_state(barrier.Transition.StateBefore) && copy_list_state(barrier.Transition.StateAfter);
 }
 
 struct ConsoleListDesc {

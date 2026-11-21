@@ -88,3 +88,21 @@ TEST(console_dma_list_slots_map_to_pc_copy_list_slots) {
     CHECK(pc_slot_of_dma_list_slot(21) == pc_list_slot::kEndEvent);
     CHECK(pc_slot_of_dma_list_slot(22) == kNoPcSlot);
 }
+
+TEST(dma_list_barriers_keep_only_copy_states) {
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    CHECK(kept_on_copy_list(barrier));
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    CHECK(kept_on_copy_list(barrier));
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_INDEX_BUFFER;
+    CHECK(!kept_on_copy_list(barrier));
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_GENERIC_READ;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    CHECK(!kept_on_copy_list(barrier));
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    CHECK(kept_on_copy_list(barrier));
+}
