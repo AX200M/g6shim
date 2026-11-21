@@ -135,6 +135,13 @@ void STDMETHODCALLTYPE list_copy_texture_region_x(ConsoleList* self, const D3D12
     self->pc->CopyTextureRegion(destination, x, y, z, source, box);
 }
 
+void STDMETHODCALLTYPE list_flush_pipeline_x(ConsoleList*, UINT flags, UINT64 address, UINT64 bytes) {
+    static std::atomic<int> logged{0};
+    if (logged.fetch_add(1, std::memory_order_relaxed) < kLoggedFlagWarnings)
+        G6SHIM_INFO("FlushPipelineX(flags 0x%X, address 0x%llX, %llu bytes): ordered by barriers on the PC, nothing to do",
+                    flags, address, bytes);
+}
+
 D3D12_COMMAND_LIST_TYPE STDMETHODCALLTYPE list_get_console_type(ConsoleList* self) {
     return static_cast<D3D12_COMMAND_LIST_TYPE>(self->type);
 }
@@ -147,7 +154,8 @@ const void* const* list_table() {
                       {list_slot::kResourceBarrier, reinterpret_cast<const void*>(&list_resource_barrier)},
                       {list_slot::kExecuteBundle, reinterpret_cast<const void*>(&list_execute_bundle)},
                       {list_slot::kSetDescriptorHeaps, reinterpret_cast<const void*>(&list_set_descriptor_heaps)},
-                      {list_slot::kCopyTextureRegionX, reinterpret_cast<const void*>(&list_copy_texture_region_x)}});
+                      {list_slot::kCopyTextureRegionX, reinterpret_cast<const void*>(&list_copy_texture_region_x)},
+                      {list_slot::kFlushPipelineX, reinterpret_cast<const void*>(&list_flush_pipeline_x)}});
         return child_table<ConsoleList>("ID3D12GraphicsCommandList", list_slot::kMappedEnd, list_slot::kSlots, slots);
     }();
     return table;

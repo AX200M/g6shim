@@ -60,6 +60,7 @@ using CreateList = HRESULT(STDMETHODCALLTYPE*)(ConsoleDevice*, UINT, UINT, ID3D1
 using ListHresult = HRESULT(STDMETHODCALLTYPE*)(void*);
 using ListType = UINT(STDMETHODCALLTYPE*)(void*);
 using ListRelease = ULONG(STDMETHODCALLTYPE*)(void*);
+using FlushPipeline = void(STDMETHODCALLTYPE*)(void*, UINT, UINT64, UINT64);
 using CreateQueue = HRESULT(STDMETHODCALLTYPE*)(ConsoleDevice*, const D3D12_COMMAND_QUEUE_DESC*, REFIID, void**);
 using CreateCommitted = HRESULT(STDMETHODCALLTYPE*)(ConsoleDevice*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS,
                                                     const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES,
@@ -91,6 +92,8 @@ UINT closed_list_type(const WarpDevice& device, UINT console_type, UINT* type) {
     if (SUCCEEDED(device.slot<CreateList>(device_slot::kCreateCommandList)(
             device.console, 0, console_type, allocator, nullptr, __uuidof(ID3D12GraphicsCommandList), &list))) {
         *type = list_slot_fn<ListType>(list, list_slot::kGetType)(list);
+        if (console_type == kConsoleQueueTypeDirect)
+            list_slot_fn<FlushPipeline>(list, list_slot::kFlushPipelineX)(list, 0x20000, 0x13820000, 0x40000);
         if (list_slot_fn<ListHresult>(list, pc_list_slot::kClose)(list) == S_OK) ++closes;
         if (FAILED(list_slot_fn<ListHresult>(list, pc_list_slot::kClose)(list))) ++closes;
         list_slot_fn<ListRelease>(list, kReleaseSlot)(list);

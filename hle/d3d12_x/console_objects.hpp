@@ -73,6 +73,7 @@ inline constexpr std::size_t kFirstQuery = 28;
 inline constexpr std::size_t kSetDescriptorHeaps = kFirstQuery + pc_list_slot::kQueryAndPredicationSlots;
 inline constexpr std::size_t kAfterMovedBlock = pc_list_slot::kBeginQuery + pc_list_slot::kQueryAndPredicationSlots;
 inline constexpr std::size_t kMappedEnd = pc_list_slot::kExecuteIndirect + 1;
+inline constexpr std::size_t kFlushPipelineX = 67;
 inline constexpr std::size_t kCopyTextureRegionX = 83;
 inline constexpr std::size_t kSlots = 160;
 }  // namespace list_slot

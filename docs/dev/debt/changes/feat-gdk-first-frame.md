@@ -4,6 +4,8 @@
 
 - `WaitFrameEventX` (device slot 80) takes `(type, timeout, objects, flags, token*)`; the objects and flags are logged and ignored, and the token's format is chosen, not observed.
   Title IDs: 1738CA2A
+- `FlushPipelineX` (graphics list slot 67) is taken to be a cache flush over a memory range and does nothing; its flags are not decoded.
+  Title IDs: 1738CA2A
 
 ## add Functional
 
