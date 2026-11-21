@@ -191,6 +191,12 @@ inline bool kept_on_copy_list(const D3D12_RESOURCE_BARRIER& barrier) {
     return copy_list_state(barrier.Transition.StateBefore) && copy_list_state(barrier.Transition.StateAfter);
 }
 
+inline D3D12_RESOURCE_STATES pc_initial_state(const D3D12_RESOURCE_DESC* desc, D3D12_RESOURCE_STATES state) {
+    const bool texture = desc && desc->Dimension != D3D12_RESOURCE_DIMENSION_BUFFER;
+    const bool copy_state = state != D3D12_RESOURCE_STATE_COMMON && copy_list_state(state);
+    return texture && copy_state ? D3D12_RESOURCE_STATE_COMMON : state;
+}
+
 struct ConsoleListDesc {
     std::uint32_t type;
     std::uint32_t flags;

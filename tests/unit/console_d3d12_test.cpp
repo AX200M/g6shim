@@ -121,3 +121,14 @@ TEST(buffers_drop_the_shader_resource_denial) {
     desc.Flags = D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
     CHECK(pc_resource_desc(desc).Flags == desc.Flags);
 }
+
+TEST(textures_created_for_copies_start_common) {
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    CHECK(pc_initial_state(&desc, D3D12_RESOURCE_STATE_COPY_DEST) == D3D12_RESOURCE_STATE_COMMON);
+    CHECK(pc_initial_state(&desc, D3D12_RESOURCE_STATE_COPY_SOURCE) == D3D12_RESOURCE_STATE_COMMON);
+    CHECK(pc_initial_state(&desc, D3D12_RESOURCE_STATE_RENDER_TARGET) == D3D12_RESOURCE_STATE_RENDER_TARGET);
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    CHECK(pc_initial_state(&desc, D3D12_RESOURCE_STATE_COPY_DEST) == D3D12_RESOURCE_STATE_COPY_DEST);
+    CHECK(pc_initial_state(nullptr, D3D12_RESOURCE_STATE_COPY_DEST) == D3D12_RESOURCE_STATE_COPY_DEST);
+}

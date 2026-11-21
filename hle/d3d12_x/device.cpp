@@ -206,7 +206,8 @@ HRESULT STDMETHODCALLTYPE device_create_committed_resource(ConsoleDevice* self, 
                                                            D3D12_RESOURCE_STATES state, const D3D12_CLEAR_VALUE* clear,
                                                            REFIID riid, void** out) {
     D3D12_RESOURCE_DESC pc_desc{};
-    return self->pc->CreateCommittedResource(heap, heap_flags, pc_resource_desc_or_null(desc, &pc_desc), state, clear,
+    return self->pc->CreateCommittedResource(heap, heap_flags, pc_resource_desc_or_null(desc, &pc_desc),
+                                             pc_initial_state(desc, state), clear,
                                              riid, out);
 }
 
@@ -214,15 +215,16 @@ HRESULT STDMETHODCALLTYPE device_create_placed_resource(ConsoleDevice* self, ID3
                                                         const D3D12_RESOURCE_DESC* desc, D3D12_RESOURCE_STATES state,
                                                         const D3D12_CLEAR_VALUE* clear, REFIID riid, void** out) {
     D3D12_RESOURCE_DESC pc_desc{};
-    return self->pc->CreatePlacedResource(heap, offset, pc_resource_desc_or_null(desc, &pc_desc), state, clear, riid,
-                                          out);
+    return self->pc->CreatePlacedResource(heap, offset, pc_resource_desc_or_null(desc, &pc_desc),
+                                          pc_initial_state(desc, state), clear, riid, out);
 }
 
 HRESULT STDMETHODCALLTYPE device_create_reserved_resource(ConsoleDevice* self, const D3D12_RESOURCE_DESC* desc,
                                                           D3D12_RESOURCE_STATES state, const D3D12_CLEAR_VALUE* clear,
                                                           REFIID riid, void** out) {
     D3D12_RESOURCE_DESC pc_desc{};
-    return self->pc->CreateReservedResource(pc_resource_desc_or_null(desc, &pc_desc), state, clear, riid, out);
+    return self->pc->CreateReservedResource(pc_resource_desc_or_null(desc, &pc_desc), pc_initial_state(desc, state),
+                                            clear, riid, out);
 }
 
 D3D12_RESOURCE_ALLOCATION_INFO* STDMETHODCALLTYPE device_resource_allocation_info(D3D12_RESOURCE_ALLOCATION_INFO* result,
