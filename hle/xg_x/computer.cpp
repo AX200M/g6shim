@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "computer.hpp"
+#include "console_xg.hpp"
 
 #include <g6shim/log.hpp>
 
@@ -81,14 +82,21 @@ HRESULT create_texture_2d_computer(const Texture2DDesc* desc, TextureComputer** 
 
 using namespace g6shim::xg;
 
-extern "C" std::uint32_t g6shim_XGComputeOptimalTileMode(std::uint32_t dimension, std::uint32_t, std::uint32_t,
-                                                         std::uint32_t, std::uint32_t, std::uint32_t samples,
-                                                         std::uint32_t, std::uint32_t) {
+extern "C" std::uint32_t g6shim_XGComputeOptimalTileMode(std::uint32_t dimension, std::uint32_t format,
+                                                         std::uint32_t width, std::uint32_t height,
+                                                         std::uint32_t array_size, std::uint32_t samples,
+                                                         std::uint32_t bind_flags, std::uint32_t misc_flags) {
+    using Console = std::uint32_t (*)(std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t,
+                                      std::uint32_t, std::uint32_t, std::uint32_t);
+    if (const auto console = reinterpret_cast<Console>(console_export("XGComputeOptimalTileMode")))
+        return console(dimension, format, width, height, array_size, samples, bind_flags, misc_flags);
     return optimal_tile_mode(dimension, samples);
 }
 
 extern "C" HRESULT g6shim_XGCreateTexture2DComputer(const Texture2DDesc* desc, TextureComputer** out) {
-    const HRESULT hr = create_texture_2d_computer(desc, out);
+    using Console = HRESULT (*)(const Texture2DDesc*, TextureComputer**);
+    const auto console = reinterpret_cast<Console>(console_export("XGCreateTexture2DComputer"));
+    const HRESULT hr = console ? console(desc, out) : create_texture_2d_computer(desc, out);
     static std::atomic<int> logged{0};
     if (desc && (FAILED(hr) || logged.fetch_add(1, std::memory_order_relaxed) < kLoggedCalls))
         G6SHIM_INFO("XGCreateTexture2DComputer(%ux%u, %u mips, %u slices, format %u, tile mode %u) -> 0x%08lX",

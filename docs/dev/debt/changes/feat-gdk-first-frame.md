@@ -50,3 +50,10 @@
 
 - `XMemAlloc` and `XMemFree` ignore their attribute argument; blocks are aligned to 64 bytes, or to 4 KiB from 4 KiB on.
   Closes when: the attribute bits are decoded.
+
+# xg_x
+
+## add Functional
+
+- Without a `console_xg_x.dll` next to it, `XGComputeOptimalDepthStencilTileModes`, `XGComputeTexture2DLayout` and `XGCreateTextureComputer` log and return `E_NOTIMPL`. Forwarded to the console library, they pass at most eight integer arguments.
+  Closes when: g6shim implements them, or a title is seen passing more arguments.

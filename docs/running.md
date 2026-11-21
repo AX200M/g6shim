@@ -55,6 +55,7 @@ g6shim-run D:\work\Game\Game.exe
 | `g6shim_input.ini` | Keyboard and controller mapping, written with defaults on first start. XInput controllers need no mapping. |
 | `g6shim_saves\<container>\<blob>` | Saves. Files larger than 64 MiB are treated as damaged. |
 | `g6shim_frame_<n>.bmp` | Captured frames. |
+| `console_xg_x.dll` | Optional: a copy of the console's own `xg_x.dll` from your dump. When present, texture layouts come from it instead of g6shim's own code. |
 
 ## Notes
 

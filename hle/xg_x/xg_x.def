@@ -1,7 +1,7 @@
 LIBRARY "xg_x.dll"
 EXPORTS
-    XGComputeOptimalDepthStencilTileModes=g6shim_stub_0
+    XGComputeOptimalDepthStencilTileModes=g6shim_XGComputeOptimalDepthStencilTileModes
     XGComputeOptimalTileMode=g6shim_XGComputeOptimalTileMode
-    XGComputeTexture2DLayout=g6shim_stub_2
+    XGComputeTexture2DLayout=g6shim_XGComputeTexture2DLayout
     XGCreateTexture2DComputer=g6shim_XGCreateTexture2DComputer
-    XGCreateTextureComputer=g6shim_stub_4
+    XGCreateTextureComputer=g6shim_XGCreateTextureComputer

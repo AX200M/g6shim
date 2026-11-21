@@ -3,6 +3,7 @@
 #include "check.hpp"
 
 #include "computer.hpp"
+#include "console_xg.hpp"
 #include "layout.hpp"
 
 #include <d3d12.h>
@@ -220,4 +221,19 @@ TEST(xg_detiling_restores_rows) {
         for (std::uint32_t x = 0; x < kWidth; ++x)
             ok = ok && rows[y * 64 + x * 2] == x && rows[y * 64 + x * 2 + 1] == y;
     CHECK(ok);
+}
+
+extern "C" std::uint32_t g6shim_XGComputeOptimalTileMode(std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t,
+                                                         std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t);
+
+TEST(xg_finds_the_console_library_next_to_itself) {
+    CHECK(console_library_path(L"C:/game/xg_x.dll") == L"C:/game/console_xg_x.dll");
+    CHECK(console_library_path(L"C:\\game\\sub\\d3d12_x.dll") == L"C:\\game\\sub\\console_xg_x.dll");
+    CHECK(console_library_path(L"xg_x.dll").empty());
+}
+
+TEST(xg_uses_its_own_layouts_without_the_console_library) {
+    CHECK(console_library() == nullptr);
+    CHECK(console_export("XGCreateTexture2DComputer") == nullptr);
+    CHECK(g6shim_XGComputeOptimalTileMode(kResourceDimensionTexture2D, 28, 64, 64, 1, 1, 8, 0) == kTileModeThin1D);
 }

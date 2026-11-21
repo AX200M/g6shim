@@ -2,6 +2,12 @@
 
 The console's texture layout library. Titles ask it how a texture is laid out in memory before they write texel data themselves. Observed with 1738CA2A (GDK build), and compared with the console library's results. g6shim reproduces the console's layout for tile mode 13 and describes other textures as linear, with the row pitches and placements the PC copy functions need.
 
+## Console library
+
+When a file `console_xg_x.dll` sits next to g6shim's `xg_x.dll`, every export is forwarded to it, and titles get its texture computers. g6shim's own layouts answer otherwise. That file is a copy of the console's `xg_x.dll`, which runs on the PC once `xmem.dll` provides `XMemAlloc` and `XMemFree`.
+
+The console computer's table goes on past slot 2: slot 3 returns the size in bytes, slot 5 the offset of a mip, slot 6 the offset of an element at `(plane, mip, x, y, slice, sample)`, and slot 9 copies a subresource out as rows, `HRESULT (dst, plane, subresource, src, row pitch, depth pitch)`.
+
 ## Exports
 
 | Export | Signature and use |
