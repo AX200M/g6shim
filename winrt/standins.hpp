@@ -11,6 +11,7 @@ void register_mouse();
 void register_user();
 void register_account_picker();
 void register_application_context();
+void register_connected_storage();
 
 void* local_user();
 const void* gamepad_get_current_reading();
