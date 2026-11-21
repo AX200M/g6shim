@@ -57,3 +57,10 @@ TEST(input_hat_directions) {
     CHECK(pov_buttons(27000) == kDPadLeft);
     CHECK(pov_buttons(31500) == (kDPadUp | kDPadLeft));
 }
+
+TEST(input_without_controllers_reads_only_keys_and_presses) {
+    const g6shim::input::Reading reading = g6shim::input::read_without_controllers();
+    CHECK(reading.timestamp != 0);
+    CHECK(reading.buttons == 0);
+    CHECK(reading.left_x == 0.0f && reading.left_y == 0.0f && reading.right_x == 0.0f && reading.right_y == 0.0f);
+}

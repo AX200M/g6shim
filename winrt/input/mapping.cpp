@@ -390,13 +390,15 @@ std::uint32_t pov_buttons(std::uint32_t pov) {
     return buttons;
 }
 
-Reading read() {
+namespace {
+
+Reading read_sources(bool controllers) {
     std::lock_guard<std::mutex> lock(g_mutex);
     Reading r{};
     LARGE_INTEGER now{};
     QueryPerformanceCounter(&now);
     r.timestamp = static_cast<std::uint64_t>(now.QuadPart);
-    if (!read_xinput(r)) read_directinput(r);
+    if (controllers && !read_xinput(r)) read_directinput(r);
     read_keyboard(r);
     static const std::uint64_t first = r.timestamp;
     LARGE_INTEGER frequency{};
@@ -405,5 +407,11 @@ Reading read() {
     r.buttons |= autopress_buttons(autopresses(), seconds);
     return r;
 }
+
+}  // namespace
+
+Reading read() { return read_sources(true); }
+
+Reading read_without_controllers() { return read_sources(false); }
 
 }  // namespace g6shim::input

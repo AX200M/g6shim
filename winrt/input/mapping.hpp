@@ -54,5 +54,6 @@ std::uint32_t autopress_buttons(const std::vector<Press>& presses, double second
 std::uint32_t pov_buttons(std::uint32_t pov);
 
 Reading read();
+Reading read_without_controllers();
 
 }  // namespace g6shim::input
