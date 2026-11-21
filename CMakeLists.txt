@@ -10,6 +10,7 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 option(G6SHIM_BUILD_TOOLS "Build the command-line tools" ON)
 option(G6SHIM_BUILD_HLE "Build the replacement DLLs" ON)
