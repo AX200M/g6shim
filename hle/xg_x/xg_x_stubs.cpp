@@ -3,7 +3,5 @@
 #include <g6shim/stub.hpp>
 
 G6SHIM_STUB(0, "xg_x.dll", "XGComputeOptimalDepthStencilTileModes")
-G6SHIM_STUB(1, "xg_x.dll", "XGComputeOptimalTileMode")
 G6SHIM_STUB(2, "xg_x.dll", "XGComputeTexture2DLayout")
-G6SHIM_STUB(3, "xg_x.dll", "XGCreateTexture2DComputer")
 G6SHIM_STUB(4, "xg_x.dll", "XGCreateTextureComputer")

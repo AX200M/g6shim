@@ -48,3 +48,20 @@
 - DMA command list transitions to or from states other than the common and copy states are dropped; the PC copy queue promotes resources from the common state and lets them decay back after each execution.
   Closes when: a title shows a dropped transition that the PC queue does not cover.
   Title IDs: 1738CA2A
+
+# xg_x
+
+## add Unknown function info
+
+- `XGComputeOptimalTileMode` ignores its arguments and returns the linear general tile mode (8).
+  Title IDs: 1738CA2A
+- Texture computer slots after `GetResourceLayout` (2) are not identified; they are probes that log and return `E_NOTIMPL`.
+  Title IDs: 1738CA2A
+
+## add Functional
+
+- Texture layouts are linear, with the row pitch (256 bytes) and placement (512 bytes) of PC copy footprints, not the console's tiled layouts.
+  Closes when: a title is seen reading tiled data it wrote itself, or the GPU's tiled layout is needed.
+  Title IDs: 1738CA2A
+- Only single-plane textures of DXGI formats are described; planar, console-only and 1-bit formats get `E_INVALIDARG`.
+  Title IDs: 1738CA2A
