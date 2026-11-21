@@ -15,6 +15,9 @@ void register_standins() {
         register_app_model();
         register_controller();
         register_mouse();
+        register_user();
+        register_account_picker();
+        register_application_context();
     });
 }
 
