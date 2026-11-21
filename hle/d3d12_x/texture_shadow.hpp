@@ -13,7 +13,8 @@ namespace g6shim::d3d12 {
 namespace resource_slot {
 inline constexpr std::size_t kRelease = 2;
 inline constexpr std::size_t kGetGpuVirtualAddress = 11;
-inline constexpr std::size_t kSlots = 17;
+inline constexpr std::size_t kInterfaceSlots = 17;
+inline constexpr std::size_t kCopiedSlots = 512;
 }  // namespace resource_slot
 
 inline constexpr UINT64 kNoShadowAddress = 0;
@@ -22,6 +23,8 @@ struct ShadowCopy {
     UINT subresource;
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
 };
+
+std::size_t readable_slots(const void* const* table, std::size_t wanted);
 
 bool shadow_copies(const D3D12_RESOURCE_DESC& desc, std::vector<ShadowCopy>* copies, UINT64* shadow_bytes);
 

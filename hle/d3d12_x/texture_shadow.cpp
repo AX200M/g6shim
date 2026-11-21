@@ -22,7 +22,7 @@ namespace {
 constexpr int kLoggedRefusals = 4;
 
 struct PatchedTable {
-    std::array<const void*, resource_slot::kSlots> slots;
+    std::array<const void*, resource_slot::kCopiedSlots> slots;
     const void* const* original;
 };
 
@@ -110,7 +110,8 @@ const void* const* patch_table(const void* const* original) {
     auto& table = r.tables[original];
     if (!table) {
         table = std::make_unique<PatchedTable>();
-        std::memcpy(table->slots.data(), original, sizeof table->slots);
+        std::memcpy(table->slots.data(), original,
+                    readable_slots(original, resource_slot::kCopiedSlots) * sizeof(const void*));
         table->slots[resource_slot::kRelease] = reinterpret_cast<const void*>(&texture_release);
         table->slots[resource_slot::kGetGpuVirtualAddress] = reinterpret_cast<const void*>(&texture_gpu_address);
         table->original = original;
@@ -174,6 +175,14 @@ void record_upload(ID3D12GraphicsCommandList* list, ID3D12Resource* texture, Sha
 }
 
 }  // namespace
+
+std::size_t readable_slots(const void* const* table, std::size_t wanted) {
+    MEMORY_BASIC_INFORMATION region{};
+    if (!VirtualQuery(table, &region, sizeof region) || region.State != MEM_COMMIT) return 0;
+    const auto end = reinterpret_cast<std::uintptr_t>(region.BaseAddress) + region.RegionSize;
+    const std::size_t available = (end - reinterpret_cast<std::uintptr_t>(table)) / sizeof(const void*);
+    return available < wanted ? available : wanted;
+}
 
 bool shadow_copies(const D3D12_RESOURCE_DESC& desc, std::vector<ShadowCopy>* copies, UINT64* shadow_bytes) {
     if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width > UINT32_MAX) return false;

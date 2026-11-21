@@ -301,3 +301,14 @@ TEST(texture_shadows_copy_every_subresource) {
     desc.SampleDesc.Count = 4;
     CHECK(!shadow_copies(desc, &copies, &bytes));
 }
+
+TEST(patched_tables_copy_only_readable_slots) {
+    void* page = VirtualAlloc(nullptr, 4096, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    CHECK(page != nullptr);
+    if (!page) return;
+    const auto* table = static_cast<const void* const*>(page);
+    CHECK(readable_slots(table, resource_slot::kCopiedSlots) == resource_slot::kCopiedSlots);
+    CHECK(readable_slots(table + 500, resource_slot::kCopiedSlots) == 12);
+    VirtualFree(page, 0, MEM_RELEASE);
+    CHECK(readable_slots(table, resource_slot::kCopiedSlots) == 0);
+}
