@@ -5,6 +5,7 @@ EXPORTS
     CreateThread=kernel32.CreateThread
     DecodePointer=kernel32.DecodePointer
     DeleteCriticalSection=kernel32.DeleteCriticalSection
+    DeleteFileW=g6shim_DeleteFileW
     EnterCriticalSection=kernel32.EnterCriticalSection
     EventRegister=advapi32.EventRegister
     EventUnregister=advapi32.EventUnregister
@@ -52,9 +53,12 @@ EXPORTS
     AcquireSRWLockShared=kernel32.AcquireSRWLockShared
     AllocateTitlePhysicalPages=g6shim_stub_0
     CloseThreadpoolWork=kernel32.CloseThreadpoolWork
+    CreateDirectoryW=g6shim_CreateDirectoryW
     CreateEventA=kernel32.CreateEventA
     CreateEventExW=kernel32.CreateEventExW
     CreateEventW=kernel32.CreateEventW
+    CreateFile2=g6shim_CreateFile2
+    CreateFileW=g6shim_CreateFileW
     CreateMutexExW=kernel32.CreateMutexExW
     CreateSemaphoreExW=kernel32.CreateSemaphoreExW
     CreateThreadpoolWork=kernel32.CreateThreadpoolWork
@@ -65,6 +69,8 @@ EXPORTS
     EventSetInformation=advapi32.EventSetInformation
     EventWriteTransfer=advapi32.EventWriteTransfer
     FindClose=kernel32.FindClose
+    FindFirstFileExW=g6shim_FindFirstFileExW
+    FindFirstFileW=g6shim_FindFirstFileW
     FindNextFileW=kernel32.FindNextFileW
     FlushFileBuffers=kernel32.FlushFileBuffers
     FreeEnvironmentStringsW=kernel32.FreeEnvironmentStringsW
@@ -75,6 +81,8 @@ EXPORTS
     GetEnvironmentStringsW=kernel32.GetEnvironmentStringsW
     GetEnvironmentVariableW=kernel32.GetEnvironmentVariableW
     GetExitCodeThread=kernel32.GetExitCodeThread
+    GetFileAttributesExW=g6shim_GetFileAttributesExW
+    GetFileAttributesW=g6shim_GetFileAttributesW
     GetFileInformationByHandleEx=kernel32.GetFileInformationByHandleEx
     GetFileSizeEx=kernel32.GetFileSizeEx
     GetFileType=kernel32.GetFileType
@@ -113,10 +121,12 @@ EXPORTS
     ReleaseMutex=kernel32.ReleaseMutex
     ReleaseSRWLockShared=kernel32.ReleaseSRWLockShared
     ReleaseSemaphore=kernel32.ReleaseSemaphore
+    RemoveDirectoryW=g6shim_RemoveDirectoryW
     ResumeThread=kernel32.ResumeThread
     RtlCaptureStackBackTrace=kernel32.RtlCaptureStackBackTrace
     SetEndOfFile=kernel32.SetEndOfFile
     SetEnvironmentVariableW=kernel32.SetEnvironmentVariableW
+    SetFileAttributesW=g6shim_SetFileAttributesW
     SetFilePointer=kernel32.SetFilePointer
     SetFilePointerEx=kernel32.SetFilePointerEx
     SetLastError=kernel32.SetLastError
@@ -148,10 +158,16 @@ EXPORTS
     WakeConditionVariable=kernel32.WakeConditionVariable
     WideCharToMultiByte=kernel32.WideCharToMultiByte
     WriteFile=kernel32.WriteFile
+    CreateDirectoryA=g6shim_CreateDirectoryA
+    CreateFileA=g6shim_CreateFileA
     CreateMutexA=kernel32.CreateMutexA
+    DeleteFileA=g6shim_DeleteFileA
     ExitProcess=kernel32.ExitProcess
+    FindFirstFileA=g6shim_FindFirstFileA
     FindNextFileA=kernel32.FindNextFileA
     GetCurrentDirectoryA=kernel32.GetCurrentDirectoryA
+    GetFileAttributesA=g6shim_GetFileAttributesA
+    GetFileAttributesExA=g6shim_GetFileAttributesExA
     GetGeoInfoW=kernel32.GetGeoInfoW
     GetLocaleInfoEx=kernel32.GetLocaleInfoEx
     GetModuleFileNameA=kernel32.GetModuleFileNameA
@@ -159,5 +175,6 @@ EXPORTS
     GetProcessAffinityMask=kernel32.GetProcessAffinityMask
     GetUserGeoID=kernel32.GetUserGeoID
     LoadLibraryExA=kernel32.LoadLibraryExA
+    RemoveDirectoryA=g6shim_RemoveDirectoryA
     SetThreadIdealProcessorEx=kernel32.SetThreadIdealProcessorEx
     SetThreadPriorityBoost=kernel32.SetThreadPriorityBoost

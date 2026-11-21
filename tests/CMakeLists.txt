@@ -7,6 +7,7 @@ add_executable(g6shim_tests
   unit/def_test.cpp
   unit/inventory_test.cpp
   unit/relink_test.cpp
+  unit/game_drive_test.cpp
   unit/auto_event_test.cpp
   unit/manifest_test.cpp)
 target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim::winrt)
