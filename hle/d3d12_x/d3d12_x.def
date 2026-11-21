@@ -1,6 +1,6 @@
 LIBRARY "d3d12_x.dll"
 EXPORTS
-    D3D12SerializeRootSignature=g6shim_stub_0
-    D3D12XboxCreateDevice=g6shim_stub_1
-    D3D12XboxSetProcessDebugFlags=g6shim_stub_2
+    D3D12SerializeRootSignature=g6shim_D3D12SerializeRootSignature
+    D3D12XboxCreateDevice=g6shim_D3D12XboxCreateDevice
+    D3D12XboxSetProcessDebugFlags=g6shim_D3D12XboxSetProcessDebugFlags
     D3DMapEsramMemory=g6shim_stub_3

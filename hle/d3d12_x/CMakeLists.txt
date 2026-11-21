@@ -5,3 +5,4 @@ g6shim_add_hle_module(hle_d3d12_x
     DLL "d3d12_x.dll"
     DEF "${CMAKE_CURRENT_SOURCE_DIR}/d3d12_x.def"
     SOURCES ${sources})
+target_link_libraries(hle_d3d12_x PRIVATE d3d12 dxgi)
