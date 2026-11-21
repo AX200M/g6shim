@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "console_objects.hpp"
 
+#include <g6shim/capture.hpp>
 #include <g6shim/log.hpp>
 #include <g6shim/window.hpp>
 
@@ -136,6 +137,54 @@ HRESULT prepare(ConsoleQueue* queue, const D3D12_RESOURCE_DESC& source, Presente
     return hr;
 }
 
+struct Capture {
+    ID3D12Resource* readback = nullptr;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+};
+
+bool begin_capture(ID3D12Device* device, ID3D12GraphicsCommandList* list, ID3D12Resource* source,
+                   const D3D12_RESOURCE_DESC& desc, Capture* capture) {
+    const bool rgba = desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM || desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    const bool bgra = desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    if (!rgba && !bgra) {
+        G6SHIM_WARN("capture: back buffer format %d not supported", desc.Format);
+        return false;
+    }
+    UINT64 bytes = 0;
+    device->GetCopyableFootprints(&desc, 0, 1, 0, &capture->footprint, nullptr, nullptr, &bytes);
+    const D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_READBACK};
+    D3D12_RESOURCE_DESC buffer{};
+    buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    buffer.Width = bytes;
+    buffer.Height = 1;
+    buffer.DepthOrArraySize = 1;
+    buffer.MipLevels = 1;
+    buffer.SampleDesc.Count = 1;
+    buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_COPY_DEST,
+                                               nullptr, IID_PPV_ARGS(&capture->readback))))
+        return false;
+    D3D12_TEXTURE_COPY_LOCATION destination{capture->readback, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+    destination.PlacedFootprint = capture->footprint;
+    D3D12_TEXTURE_COPY_LOCATION from{source, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+    from.SubresourceIndex = 0;
+    list->CopyTextureRegion(&destination, 0, 0, 0, &from, nullptr);
+    return true;
+}
+
+void finish_capture(ID3D12Fence* fence, UINT64 value, unsigned frame, const D3D12_RESOURCE_DESC& desc,
+                    Capture& capture) {
+    fence->SetEventOnCompletion(value, nullptr);
+    void* data = nullptr;
+    if (SUCCEEDED(capture.readback->Map(0, nullptr, &data))) {
+        const bool rgba = desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM || desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+        save_captured_frame(frame, data, static_cast<unsigned>(desc.Width), desc.Height,
+                            capture.footprint.Footprint.RowPitch, rgba ? PixelOrder::Rgba : PixelOrder::Bgra);
+        capture.readback->Unmap(0, nullptr);
+    }
+    capture.readback->Release();
+}
+
 D3D12_RESOURCE_BARRIER transition(ID3D12Resource* resource, D3D12_RESOURCE_STATES before,
                                   D3D12_RESOURCE_STATES after) {
     D3D12_RESOURCE_BARRIER barrier{D3D12_RESOURCE_BARRIER_TYPE_TRANSITION};
@@ -161,6 +210,10 @@ HRESULT present(ConsoleQueue* queue, ID3D12Resource* source, Presenter& presente
     presenter.list->CopyResource(target, source);
     const D3D12_RESOURCE_BARRIER after = transition(target, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
     presenter.list->ResourceBarrier(1, &after);
+    const auto frame = static_cast<unsigned>(presenter.presented + 1);
+    Capture capture;
+    const bool capturing =
+        capture_requested(frame) && begin_capture(queue->device->pc, presenter.list, source, desc, &capture);
     presenter.list->Close();
     ID3D12CommandList* lists[] = {presenter.list};
     queue->pc->ExecuteCommandLists(1, lists);
@@ -168,6 +221,7 @@ HRESULT present(ConsoleQueue* queue, ID3D12Resource* source, Presenter& presente
     hr = presenter.swap_chain->Present(kPresentSyncInterval, 0);
     queue->pc->Signal(presenter.fence, ++presenter.presented);
     presenter.done_at[index] = presenter.presented;
+    if (capturing) finish_capture(presenter.fence, presenter.presented, frame, desc, capture);
     return hr;
 }
 
