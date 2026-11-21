@@ -15,6 +15,7 @@ add_executable(g6shim_tests
   unit/manifest_test.cpp
   unit/input_mapping_test.cpp
   unit/apu_memory_test.cpp
+  unit/shape_contexts_test.cpp
   unit/graphics_object_test.cpp
   unit/console_d3d12_test.cpp
   unit/console_device_test.cpp

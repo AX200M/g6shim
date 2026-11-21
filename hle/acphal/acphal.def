@@ -1,8 +1,8 @@
 LIBRARY "AcpHal.dll"
 EXPORTS
     AcpHalAllocateShapeContexts=g6shim_AcpHalAllocateShapeContexts
-    AcpHalCreate=g6shim_stub_1
-    AcpHalReleaseShapeContexts=g6shim_stub_2
+    AcpHalCreate=g6shim_AcpHalCreate
+    AcpHalReleaseShapeContexts=g6shim_AcpHalReleaseShapeContexts
     ApuAlloc=g6shim_ApuAlloc
     ApuCreateHeap=g6shim_ApuCreateHeap
     ApuFree=g6shim_ApuFree
