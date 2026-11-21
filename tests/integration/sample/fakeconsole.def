@@ -1,0 +1,7 @@
+LIBRARY fakeconsole.dll
+EXPORTS
+    ConsoleInit
+    ConsoleGetValue
+    ConsoleSecret @7 NONAME
+    GetCurrentProcessId
+    timeGetTime
