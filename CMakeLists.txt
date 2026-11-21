@@ -22,3 +22,12 @@ add_compile_definitions(_CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+if(G6SHIM_BUILD_TOOLS)
+  add_subdirectory(src)
+endif()
+
+if(G6SHIM_BUILD_TOOLS AND G6SHIM_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
