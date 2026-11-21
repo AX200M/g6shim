@@ -81,3 +81,37 @@ TEST(graphics_tables_reject_bad_specs) {
     CHECK(forward_thunk(0x18, 3) == forward_thunk(0x18, 3));
     CHECK(forward_thunk(0x18, 3) != forward_thunk(0x360, 3));
 }
+
+namespace {
+
+struct RecordedArguments {
+    std::uintptr_t a, b, c;
+    float d;
+    std::uintptr_t e;
+};
+
+RecordedArguments g_recorded{};
+
+std::uintptr_t STDMETHODCALLTYPE recorded_target(void*, std::uintptr_t a, std::uintptr_t b, std::uintptr_t c, float d,
+                                                 std::uintptr_t e) {
+    g_recorded = {a, b, c, d, e};
+    return a + b + c + e;
+}
+
+}  // namespace
+
+TEST(recording_thunks_keep_arguments_and_note_the_slot) {
+    int object = 0;
+    using Target = std::uintptr_t(STDMETHODCALLTYPE*)(void*, std::uintptr_t, std::uintptr_t, std::uintptr_t, float,
+                                                      std::uintptr_t);
+    const auto thunk = reinterpret_cast<Target>(recording_thunk(52, reinterpret_cast<const void*>(&recorded_target)));
+    CHECK(thunk(&object, 1, 2, 3, 0.5f, 40) == 46);
+    CHECK(g_recorded.a == 1 && g_recorded.b == 2 && g_recorded.c == 3 && g_recorded.d == 0.5f && g_recorded.e == 40);
+    record_call(&object, 9);
+    const std::vector<std::uint32_t> calls = recent_calls(&object);
+    CHECK(calls.size() == 2 && calls[0] == 52 && calls[1] == 9);
+    for (std::uint32_t i = 0; i < kRecordedCalls + 3; ++i) record_call(&object, i);
+    const std::vector<std::uint32_t> wrapped = recent_calls(&object);
+    CHECK(wrapped.size() == kRecordedCalls && wrapped.front() == 3 && wrapped.back() == kRecordedCalls + 2);
+    CHECK(recent_calls(&g_recorded).empty());
+}

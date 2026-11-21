@@ -23,6 +23,52 @@ constexpr std::uint8_t kLoadPcObject[] = {0x48, 0x8B, 0x89};
 constexpr std::uint8_t kLoadPcTable[] = {0x48, 0x8B, 0x01};
 constexpr std::uint8_t kJumpThroughPcTable[] = {0xFF, 0xA0};
 constexpr int kLoggedProbeCalls = 4;
+constexpr std::size_t kRecordingThunkBytes = 128;
+
+constexpr std::uint8_t kSaveArguments[] = {
+    0x48, 0x81, 0xEC, 0x88, 0x00, 0x00, 0x00,
+    0x48, 0x89, 0x4C, 0x24, 0x20,
+    0x48, 0x89, 0x54, 0x24, 0x28,
+    0x4C, 0x89, 0x44, 0x24, 0x30,
+    0x4C, 0x89, 0x4C, 0x24, 0x38,
+    0x0F, 0x29, 0x44, 0x24, 0x40,
+    0x0F, 0x29, 0x4C, 0x24, 0x50,
+    0x0F, 0x29, 0x54, 0x24, 0x60,
+    0x0F, 0x29, 0x5C, 0x24, 0x70};
+constexpr std::uint8_t kLoadSlot = 0xBA;
+constexpr std::uint8_t kLoadRax[] = {0x48, 0xB8};
+constexpr std::uint8_t kCallRax[] = {0xFF, 0xD0};
+constexpr std::uint8_t kRestoreArguments[] = {
+    0x48, 0x8B, 0x4C, 0x24, 0x20,
+    0x48, 0x8B, 0x54, 0x24, 0x28,
+    0x4C, 0x8B, 0x44, 0x24, 0x30,
+    0x4C, 0x8B, 0x4C, 0x24, 0x38,
+    0x0F, 0x28, 0x44, 0x24, 0x40,
+    0x0F, 0x28, 0x4C, 0x24, 0x50,
+    0x0F, 0x28, 0x54, 0x24, 0x60,
+    0x0F, 0x28, 0x5C, 0x24, 0x70,
+    0x48, 0x81, 0xC4, 0x88, 0x00, 0x00, 0x00};
+constexpr std::uint8_t kJumpRax[] = {0xFF, 0xE0};
+
+struct CallRing {
+    std::array<std::uint32_t, kRecordedCalls> slots{};
+    std::size_t next = 0;
+};
+
+struct Recorder {
+    std::mutex mutex;
+    std::map<const void*, CallRing> rings;
+};
+
+Recorder& recorder() {
+    static Recorder* r = new Recorder;
+    return *r;
+}
+
+std::uint8_t* put(std::uint8_t* p, const void* bytes, std::size_t count) {
+    std::memcpy(p, bytes, count);
+    return p + count;
+}
 
 struct Registry {
     std::mutex mutex;
@@ -83,6 +129,48 @@ const void* forward_thunk(std::size_t pc_object_offset, std::size_t slot) {
     return code ? code + slot * kThunkBytes : nullptr;
 }
 
+void record_call(const void* object, std::uint32_t slot) {
+    Recorder& r = recorder();
+    std::lock_guard<std::mutex> lock(r.mutex);
+    CallRing& ring = r.rings[object];
+    ring.slots[ring.next % kRecordedCalls] = slot;
+    ++ring.next;
+}
+
+std::vector<std::uint32_t> recent_calls(const void* object) {
+    Recorder& r = recorder();
+    std::lock_guard<std::mutex> lock(r.mutex);
+    const auto it = r.rings.find(object);
+    if (it == r.rings.end()) return {};
+    const CallRing& ring = it->second;
+    const std::size_t count = ring.next < kRecordedCalls ? ring.next : kRecordedCalls;
+    std::vector<std::uint32_t> calls;
+    for (std::size_t i = ring.next - count; i < ring.next; ++i) calls.push_back(ring.slots[i % kRecordedCalls]);
+    return calls;
+}
+
+const void* recording_thunk(std::uint32_t slot, const void* target) {
+    auto* code = static_cast<std::uint8_t*>(
+        VirtualAlloc(nullptr, kRecordingThunkBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    if (!code) return target;
+    const auto recorder_address = reinterpret_cast<std::uintptr_t>(&record_call);
+    const auto target_address = reinterpret_cast<std::uintptr_t>(target);
+    std::uint8_t* p = put(code, kSaveArguments, sizeof kSaveArguments);
+    *p++ = kLoadSlot;
+    p = put(p, &slot, sizeof slot);
+    p = put(p, kLoadRax, sizeof kLoadRax);
+    p = put(p, &recorder_address, sizeof recorder_address);
+    p = put(p, kCallRax, sizeof kCallRax);
+    p = put(p, kRestoreArguments, sizeof kRestoreArguments);
+    p = put(p, kLoadRax, sizeof kLoadRax);
+    p = put(p, &target_address, sizeof target_address);
+    put(p, kJumpRax, sizeof kJumpRax);
+    DWORD old = 0;
+    VirtualProtect(code, kRecordingThunkBytes, PAGE_EXECUTE_READ, &old);
+    FlushInstructionCache(GetCurrentProcess(), code, kRecordingThunkBytes);
+    return code;
+}
+
 const void* const* build_table(const TableSpec& spec, std::initializer_list<SlotOverride> overrides) {
     return build_table(spec, std::vector<SlotOverride>(overrides));
 }
@@ -97,6 +185,9 @@ const void* const* build_table(const TableSpec& spec, const std::vector<SlotOver
     }
     for (const auto& [slot, fn] : overrides)
         if (slot < spec.slots) (*table)[slot] = fn;
+    if (trace_enabled())
+        for (std::size_t slot = 0; slot < spec.slots; ++slot)
+            (*table)[slot] = recording_thunk(static_cast<std::uint32_t>(slot), (*table)[slot]);
     Registry& r = registry();
     std::lock_guard<std::mutex> lock(r.mutex);
     const void* const* data = table->data();

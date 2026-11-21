@@ -8,6 +8,7 @@
 #include <atomic>
 #include <initializer_list>
 #include <new>
+#include <string>
 #include <vector>
 
 namespace g6shim::d3d12 {
@@ -154,11 +155,21 @@ void STDMETHODCALLTYPE list_flush_pipeline_x(ConsoleList*, UINT flags, UINT64 ad
                     flags, address, bytes);
 }
 
+void log_recent_calls(const void* object) {
+    const std::vector<std::uint32_t> calls = recent_calls(object);
+    if (calls.empty()) return;
+    std::string text;
+    for (std::uint32_t slot : calls) text += " " + std::to_string(slot);
+    G6SHIM_WARN("  recent console slots, oldest first:%s", text.c_str());
+}
+
 HRESULT STDMETHODCALLTYPE list_close(ConsoleList* self) {
     const HRESULT hr = self->pc->Close();
     static std::atomic<int> logged{0};
-    if (FAILED(hr) && logged.fetch_add(1, std::memory_order_relaxed) < kLoggedFlagWarnings)
+    if (FAILED(hr) && logged.fetch_add(1, std::memory_order_relaxed) < kLoggedFlagWarnings) {
         G6SHIM_WARN("Close(list type %u) -> 0x%08lX: the list recorded an invalid command", self->type, hr);
+        log_recent_calls(self);
+    }
     return hr;
 }
 

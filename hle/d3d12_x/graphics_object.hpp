@@ -43,6 +43,12 @@ const void* forward_thunk(std::size_t pc_object_offset, std::size_t slot);
 
 const char* table_kind(const void* object);
 
+inline constexpr std::size_t kRecordedCalls = 32;
+
+void record_call(const void* object, std::uint32_t slot);
+std::vector<std::uint32_t> recent_calls(const void* object);
+const void* recording_thunk(std::uint32_t slot, const void* target);
+
 inline void init_head(GraphicsHead& head, const void* const* table) {
     head.table = table;
     head.device_bits = 0;
