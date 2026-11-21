@@ -4,6 +4,7 @@
 
 #include "console_objects.hpp"
 #include "constant_views.hpp"
+#include "layout.hpp"
 #include "removal.hpp"
 #include "texture_shadow.hpp"
 
@@ -187,7 +188,7 @@ TEST(console_lists_copy_texture_regions_with_flags) {
 namespace {
 
 constexpr UINT kShadowTestSize = 8;
-constexpr UINT kShadowTestPitch = 256;
+constexpr UINT kShadowTestPitchElements = 8;
 
 std::uint8_t shadow_test_byte(UINT x, UINT y, UINT channel) {
     return static_cast<std::uint8_t>(x * 16 + y * 4 + channel);
@@ -272,7 +273,9 @@ TEST(console_textures_take_cpu_writes_through_their_address) {
     if (texels) {
         for (UINT y = 0; y < kShadowTestSize; ++y)
             for (UINT x = 0; x < kShadowTestSize; ++x)
-                for (UINT c = 0; c < 4; ++c) texels[y * kShadowTestPitch + x * 4 + c] = shadow_test_byte(x, y, c);
+                for (UINT c = 0; c < 4; ++c)
+                    texels[g6shim::xg::tiled_element_offset(x, y, kShadowTestPitchElements, 4) + c] =
+                        shadow_test_byte(x, y, c);
         list_slot_fn<ExecuteLists>(queue, queue_slot::kExecuteCommandLists)(queue, 0, nullptr);
         CHECK(texture_matches_pattern(device.pc, static_cast<ConsoleQueue*>(queue)->pc, texture));
     }
@@ -289,20 +292,23 @@ TEST(texture_shadows_copy_every_subresource) {
     desc.MipLevels = 0;
     desc.Format = DXGI_FORMAT_BC1_UNORM;
     desc.SampleDesc.Count = 1;
-    std::vector<ShadowCopy> copies;
-    UINT64 bytes = 0;
-    CHECK(shadow_copies(desc, &copies, &bytes));
+    ShadowLayout layout{};
+    CHECK(shadow_layout(desc, &layout));
+    const std::vector<ShadowCopy>& copies = layout.copies;
     CHECK(copies.size() == 14);
     if (copies.size() != 14) return;
     CHECK(copies[0].subresource == 0 && copies[0].footprint.Offset == 0 && copies[0].footprint.Footprint.RowPitch == 256);
     CHECK(copies[7].subresource == 7 && copies[7].footprint.Offset == copies[0].footprint.Offset + 2048);
     CHECK(copies[6].footprint.Footprint.Width == 4 && copies[6].footprint.Footprint.Height == 4);
-    CHECK(bytes >= copies[13].footprint.Offset + 256);
+    CHECK(layout.upload_bytes >= copies[13].footprint.Offset + 256);
+    CHECK(copies[0].tiled_offset == 0 && copies[0].tiled_pitch_elements == 16 && copies[0].bytes_per_element == 8);
+    CHECK(copies[7].tiled_offset == 1024);
+    CHECK(layout.shadow_bytes >= copies[13].tiled_offset + 512);
     desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
-    CHECK(!shadow_copies(desc, &copies, &bytes));
+    CHECK(!shadow_layout(desc, &layout));
     desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     desc.SampleDesc.Count = 4;
-    CHECK(!shadow_copies(desc, &copies, &bytes));
+    CHECK(!shadow_layout(desc, &layout));
 }
 
 TEST(healthy_devices_report_no_removal) {

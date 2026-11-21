@@ -29,6 +29,7 @@ struct PatchedTable {
 struct Shadow {
     void* memory = nullptr;
     UINT64 bytes = 0;
+    UINT64 upload_bytes = 0;
     std::vector<ShadowCopy> copies;
     ID3D12Resource* upload = nullptr;
     void* upload_memory = nullptr;
@@ -85,22 +86,23 @@ D3D12_GPU_VIRTUAL_ADDRESS STDMETHODCALLTYPE texture_gpu_address(ID3D12Resource* 
     Shadow& shadow = r.textures[self];
     if (shadow.memory) return reinterpret_cast<D3D12_GPU_VIRTUAL_ADDRESS>(shadow.memory);
     const D3D12_RESOURCE_DESC desc = self->GetDesc();
-    std::vector<ShadowCopy> copies;
-    UINT64 bytes = 0;
+    ShadowLayout layout{};
     static std::atomic<int> refused{0};
-    if (!shadow_copies(desc, &copies, &bytes)) {
+    if (!shadow_layout(desc, &layout)) {
         if (refused.fetch_add(1, std::memory_order_relaxed) < kLoggedRefusals)
-            G6SHIM_WARN("texture CPU address: dimension %d, format %d, %llux%u has no linear layout -> 0",
+            G6SHIM_WARN("texture CPU address: dimension %d, format %d, %llux%u has no console layout -> 0",
                         desc.Dimension, desc.Format, desc.Width, desc.Height);
         return kNoShadowAddress;
     }
-    shadow.memory = VirtualAlloc(nullptr, bytes, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE);
+    shadow.memory =
+        VirtualAlloc(nullptr, layout.shadow_bytes, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE);
     if (!shadow.memory) {
-        G6SHIM_WARN("texture CPU address: %llu bytes of shadow memory not available -> 0", bytes);
+        G6SHIM_WARN("texture CPU address: %llu bytes of shadow memory not available -> 0", layout.shadow_bytes);
         return kNoShadowAddress;
     }
-    shadow.bytes = bytes;
-    shadow.copies = std::move(copies);
+    shadow.bytes = layout.shadow_bytes;
+    shadow.upload_bytes = layout.upload_bytes;
+    shadow.copies = std::move(layout.copies);
     return reinterpret_cast<D3D12_GPU_VIRTUAL_ADDRESS>(shadow.memory);
 }
 
@@ -131,7 +133,7 @@ bool ensure_upload(ID3D12Device* device, Shadow& shadow) {
     const D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_UPLOAD};
     D3D12_RESOURCE_DESC desc{};
     desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    desc.Width = shadow.bytes;
+    desc.Width = shadow.upload_bytes;
     desc.Height = 1;
     desc.DepthOrArraySize = 1;
     desc.MipLevels = 1;
@@ -164,8 +166,11 @@ bool open_uploader(ID3D12Device* device, ID3D12CommandQueue* queue, Uploader& up
 
 void record_upload(ID3D12GraphicsCommandList* list, ID3D12Resource* texture, Shadow& shadow) {
     ResetWriteWatch(shadow.memory, shadow.bytes);
-    std::memcpy(shadow.upload_memory, shadow.memory, shadow.bytes);
+    const auto* tiled = static_cast<const unsigned char*>(shadow.memory);
+    auto* linear = static_cast<unsigned char*>(shadow.upload_memory);
     for (const ShadowCopy& copy : shadow.copies) {
+        xg::detile(tiled + copy.tiled_offset, copy.tiled_pitch_elements, copy.width_elements, copy.height_elements,
+                   copy.bytes_per_element, linear + copy.footprint.Offset, copy.footprint.Footprint.RowPitch);
         D3D12_TEXTURE_COPY_LOCATION destination{texture, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
         destination.SubresourceIndex = copy.subresource;
         D3D12_TEXTURE_COPY_LOCATION source{shadow.upload, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
@@ -184,7 +189,7 @@ std::size_t readable_slots(const void* const* table, std::size_t wanted) {
     return available < wanted ? available : wanted;
 }
 
-bool shadow_copies(const D3D12_RESOURCE_DESC& desc, std::vector<ShadowCopy>* copies, UINT64* shadow_bytes) {
+bool shadow_layout(const D3D12_RESOURCE_DESC& desc, ShadowLayout* layout) {
     if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width > UINT32_MAX) return false;
     xg::Texture2DDesc texture{};
     texture.width = static_cast<std::uint32_t>(desc.Width);
@@ -194,27 +199,36 @@ bool shadow_copies(const D3D12_RESOURCE_DESC& desc, std::vector<ShadowCopy>* cop
     texture.format = static_cast<std::uint32_t>(desc.Format);
     texture.sample_count = desc.SampleDesc.Count;
     xg::FormatInfo format{};
-    auto layout = std::make_unique<xg::ResourceLayout>();
+    auto linear = std::make_unique<xg::ResourceLayout>();
+    auto tiled = std::make_unique<xg::ResourceLayout>();
     if (texture.sample_count > 1 || !xg::format_info(texture.format, &format) ||
-        FAILED(xg::compute_linear_layout(texture, layout.get())))
+        FAILED(xg::compute_linear_layout(texture, linear.get())) ||
+        FAILED(xg::compute_tiled_layout(texture, tiled.get())))
         return false;
     const UINT slices = desc.DepthOrArraySize;
-    copies->clear();
-    copies->reserve(std::size_t{layout->mip_levels} * slices);
+    layout->copies.clear();
+    layout->copies.reserve(std::size_t{linear->mip_levels} * slices);
     for (UINT slice = 0; slice < slices; ++slice) {
-        for (UINT level = 0; level < layout->mip_levels; ++level) {
-            const xg::MipLayout& mip = layout->plane[0].mips[level];
-            ShadowCopy& copy = copies->emplace_back();
-            copy.subresource = level + slice * layout->mip_levels;
+        for (UINT level = 0; level < linear->mip_levels; ++level) {
+            const xg::MipLayout& mip = linear->plane[0].mips[level];
+            const xg::MipLayout& source = tiled->plane[0].mips[level];
+            ShadowCopy& copy = layout->copies.emplace_back();
+            copy.subresource = level + slice * linear->mip_levels;
             copy.footprint.Offset = mip.offset_bytes + UINT64{slice} * mip.slice_2d_size_bytes;
             copy.footprint.Footprint.Format = desc.Format;
             copy.footprint.Footprint.Width = mip.width_elements * format.block_width;
             copy.footprint.Footprint.Height = mip.height_elements * format.block_height;
             copy.footprint.Footprint.Depth = 1;
             copy.footprint.Footprint.RowPitch = mip.pitch_bytes;
+            copy.tiled_offset = source.offset_bytes + UINT64{slice} * source.slice_2d_size_bytes;
+            copy.tiled_pitch_elements = source.padded_width_elements;
+            copy.width_elements = mip.width_elements;
+            copy.height_elements = mip.height_elements;
+            copy.bytes_per_element = format.bytes_per_element;
         }
     }
-    *shadow_bytes = layout->size_bytes;
+    layout->shadow_bytes = tiled->size_bytes;
+    layout->upload_bytes = linear->size_bytes;
     return true;
 }
 
