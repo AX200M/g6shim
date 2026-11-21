@@ -1,0 +1,14 @@
+LIBRARY "g6shim_mfplat.dll"
+EXPORTS
+    MFCreateAsyncResult=mfplat.MFCreateAsyncResult
+    MFCreateAttributes=mfplat.MFCreateAttributes
+    MFCreateDXGIDeviceManager=mfplat.MFCreateDXGIDeviceManager
+    MFCreateDxvaSampleRendererX=g6shim_stub_0
+    MFCreateFile=mfplat.MFCreateFile
+    MFCreateMediaType=mfplat.MFCreateMediaType
+    MFCreateSourceResolver=mfplat.MFCreateSourceResolver
+    MFCreateVideoSampleAllocatorEx=mfplat.MFCreateVideoSampleAllocatorEx
+    MFInvokeCallback=mfplat.MFInvokeCallback
+    MFResetDXGIDeviceManagerX=g6shim_stub_1
+    MFShutdown=mfplat.MFShutdown
+    MFStartup=mfplat.MFStartup
