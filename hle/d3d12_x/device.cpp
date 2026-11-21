@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "console_objects.hpp"
+#include "constant_views.hpp"
 #include "removal.hpp"
 #include "texture_shadow.hpp"
 
@@ -206,6 +207,24 @@ HRESULT tracked(HRESULT hr, const D3D12_RESOURCE_DESC* desc, void** out) {
     return hr;
 }
 
+void STDMETHODCALLTYPE device_create_constant_buffer_view(ConsoleDevice* self, const D3D12_CONSTANT_BUFFER_VIEW_DESC* desc,
+                                                          D3D12_CPU_DESCRIPTOR_HANDLE descriptor) {
+    if (!desc || constant_view_fits_pc(desc->BufferLocation, desc->SizeInBytes)) {
+        self->pc->CreateConstantBufferView(desc, descriptor);
+        return;
+    }
+    D3D12_CONSTANT_BUFFER_VIEW_DESC pc = *desc;
+    pc.SizeInBytes = pc_constant_view_size(desc->SizeInBytes);
+    if (!relocate_constants(self->pc, desc->BufferLocation, desc->SizeInBytes, &pc.BufferLocation)) {
+        pc.BufferLocation = desc->BufferLocation & ~UINT64{kConstantViewAlignment - 1};
+        static std::atomic<int> logged{0};
+        if (logged.fetch_add(1, std::memory_order_relaxed) < kLoggedCreations)
+            G6SHIM_WARN("CreateConstantBufferView(0x%llX, %u bytes): not in an upload buffer, view moved to 0x%llX",
+                        desc->BufferLocation, desc->SizeInBytes, pc.BufferLocation);
+    }
+    self->pc->CreateConstantBufferView(&pc, descriptor);
+}
+
 const D3D12_RESOURCE_DESC* pc_resource_desc_or_null(const D3D12_RESOURCE_DESC* console, D3D12_RESOURCE_DESC* storage) {
     if (!console) return nullptr;
     *storage = pc_resource_desc(*console);
@@ -217,9 +236,14 @@ HRESULT STDMETHODCALLTYPE device_create_committed_resource(ConsoleDevice* self, 
                                                            D3D12_RESOURCE_STATES state, const D3D12_CLEAR_VALUE* clear,
                                                            REFIID riid, void** out) {
     D3D12_RESOURCE_DESC pc_desc{};
-    return tracked(self->pc->CreateCommittedResource(heap, heap_flags, pc_resource_desc_or_null(desc, &pc_desc),
-                                                     pc_initial_state(desc, state), clear, riid, out),
-                   desc, out);
+    const HRESULT hr =
+        tracked(self->pc->CreateCommittedResource(heap, heap_flags, pc_resource_desc_or_null(desc, &pc_desc),
+                                                  pc_initial_state(desc, state), clear, riid, out),
+                desc, out);
+    if (SUCCEEDED(hr) && out && *out && heap && heap->Type == D3D12_HEAP_TYPE_UPLOAD && desc &&
+        desc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+        track_upload_buffer(static_cast<ID3D12Resource*>(*out), desc->Width);
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE device_create_placed_resource(ConsoleDevice* self, ID3D12Heap* heap, UINT64 offset,
@@ -281,6 +305,7 @@ const void* const* device_table() {
          {device_slot::kGetResourceAllocationInfo, reinterpret_cast<const void*>(&device_resource_allocation_info)},
          {device_slot::kGetCustomHeapProperties, reinterpret_cast<const void*>(&device_custom_heap_properties)},
          {device_slot::kGetAdapterLuid, reinterpret_cast<const void*>(&device_adapter_luid)},
+         {device_slot::kCreateConstantBufferView, reinterpret_cast<const void*>(&device_create_constant_buffer_view)},
          {device_slot::kCreateCommittedResource, reinterpret_cast<const void*>(&device_create_committed_resource)},
          {device_slot::kCreatePlacedResource, reinterpret_cast<const void*>(&device_create_placed_resource)},
          {device_slot::kCreateReservedResource, reinterpret_cast<const void*>(&device_create_reserved_resource)},

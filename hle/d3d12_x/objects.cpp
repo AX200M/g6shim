@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "console_objects.hpp"
+#include "constant_views.hpp"
 #include "texture_shadow.hpp"
 
 #include <g6shim/log.hpp>
@@ -223,6 +224,7 @@ void STDMETHODCALLTYPE queue_execute_command_lists(ConsoleQueue* self, UINT coun
     ID3D12CommandList* pc[kMaxExecutedLists];
     for (UINT i = 0; i < count; ++i) pc[i] = pc_list(lists[i]);
     flush_texture_shadows(self->device->pc, self->pc);
+    refresh_relocated_constants();
     self->pc->ExecuteCommandLists(count, pc);
 }
 

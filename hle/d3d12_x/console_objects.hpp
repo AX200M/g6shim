@@ -19,6 +19,7 @@ inline constexpr std::size_t kCreateCommandAllocator = 9;
 inline constexpr std::size_t kCreateCommandList = 12;
 inline constexpr std::size_t kCheckFeatureSupport = 13;
 inline constexpr std::size_t kCreateDescriptorHeap = 14;
+inline constexpr std::size_t kCreateConstantBufferView = 17;
 inline constexpr std::size_t kGetDescriptorHandleIncrementSize = 15;
 inline constexpr std::size_t kCopyDescriptors = 23;
 inline constexpr std::size_t kCopyDescriptorsSimple = 24;

@@ -24,3 +24,6 @@
   Title IDs: 1738CA2A
 - `PresentX` copies the first resource of the first plane into a flip-model swap chain on the title's largest top-level window and presents without waiting for the display; other planes are ignored.
   Title IDs: 1738CA2A
+- Constant buffer views that break the PC's 256-byte alignment read a copy of their data, refreshed from the title's upload buffer before every `ExecuteCommandLists`, so frames still on the GPU may see constants written for a later frame. Views outside upload buffers move down to the alignment and read the wrong bytes.
+  Closes when: the copies are tied to the submissions that use them.
+  Title IDs: 1738CA2A

@@ -3,6 +3,7 @@
 #include "check.hpp"
 
 #include "console_objects.hpp"
+#include "constant_views.hpp"
 #include "removal.hpp"
 #include "texture_shadow.hpp"
 
@@ -357,4 +358,39 @@ TEST(console_queues_present_a_render_target) {
     if (queue) list_slot_fn<ListRelease>(queue, kReleaseSlot)(queue);
     g6shim::set_main_window(nullptr);
     DestroyWindow(window);
+}
+
+TEST(constant_views_fit_pc_alignment) {
+    CHECK(constant_view_fits_pc(0x10000, 256));
+    CHECK(!constant_view_fits_pc(0x10010, 256));
+    CHECK(!constant_view_fits_pc(0x10000, 96));
+    CHECK(pc_constant_view_size(96) == 256 && pc_constant_view_size(368) == 512 && pc_constant_view_size(256) == 256);
+}
+
+TEST(unaligned_constant_views_follow_their_source) {
+    WarpDevice device;
+    if (!device.ready()) return;
+    const D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_UPLOAD};
+    const D3D12_RESOURCE_DESC desc = buffer_desc(65536, D3D12_RESOURCE_FLAG_NONE);
+    ID3D12Resource* ring = nullptr;
+    CHECK(device.slot<CreateCommitted>(device_slot::kCreateCommittedResource)(
+              device.console, &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+              __uuidof(ID3D12Resource), reinterpret_cast<void**>(&ring)) == S_OK);
+    if (!ring) return;
+    void* mapped = nullptr;
+    CHECK(SUCCEEDED(ring->Map(0, nullptr, &mapped)));
+    auto* constants = static_cast<float*>(mapped) + 4;
+    constants[0] = 1.5f;
+    UINT64 relocated = 0;
+    CHECK(relocate_constants(device.pc, ring->GetGPUVirtualAddress() + 16, 96, &relocated));
+    CHECK(relocated % kConstantViewAlignment == 0);
+    const auto* copy = static_cast<const float*>(relocated_constants(relocated));
+    CHECK(copy && copy[0] == 1.5f);
+    constants[0] = 2.5f;
+    refresh_relocated_constants();
+    CHECK(copy && copy[0] == 2.5f);
+    UINT64 again = 0;
+    CHECK(relocate_constants(device.pc, ring->GetGPUVirtualAddress() + 16, 96, &again) && again == relocated);
+    CHECK(!relocate_constants(device.pc, 0x10, 96, &again));
+    ring->Release();
 }
