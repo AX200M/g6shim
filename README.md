@@ -1,0 +1,52 @@
+# g6shim
+
+g6shim runs games made for the Xbox One and Xbox Series X|S consoles on Windows PCs, without emulation. A console game's executable is an x64 PE file whose code already runs on a PC; what a PC lacks are the console's system DLLs. g6shim builds replacements with the same file names, placed next to the game, and implements them one function at a time.
+
+## How it works
+
+1. `g6shim-scan` reads every executable and DLL in a game folder and lists the imported functions that neither Windows nor the game itself provides.
+2. `g6shim-stubgen` turns each missing DLL into a project in `hle/`: a `.def` file with one export per function, each a logging stub or a forwarder to the PC's own DLL.
+3. Stubs are replaced by real implementations one by one. The `.def` files record what is done.
+4. `g6shim-relink` patches a copy of the executable when an import must be routed through g6shim, for DLLs Windows always loads itself.
+5. The replacement DLLs are built and copied into the game folder, and `g6shim-run` starts the game under a minimal debugger that shows the next missing function.
+
+## Components
+
+| Path | What it is |
+|---|---|
+| `src/core/` | Library shared by the tools: PE reader, game-folder inventory, `.def` handling, relinking |
+| `src/tools/` | `g6shim-scan`, `g6shim-stubgen`, `g6shim-relink`, `g6shim-run` |
+| `runtime/` | `g6shim_runtime.dll`, loaded by every replacement DLL: logging, stub macro, the shared game window |
+| `hle/<dll>/` | One replacement DLL per folder: kernel services, graphics (`d3d11_x`), audio, WinRT activation and forwarders |
+| `winrt/` | Library behind WinRT activation: the object kit (probes, events, collections, async objects, package activation) and stand-ins for console classes, grouped by namespace |
+| `tests/` | Unit tests and an end-to-end test that runs the whole pipeline on a fake game |
+| `tools/` | Convention, ledger and coverage scripts, git hooks |
+| `docs/` | [Running games](docs/running.md), observed binary layouts per DLL ([abi](docs/abi/)), [developer notes](docs/dev/hle.md) and the [technical-debt ledger](docs/dev/debt/README.md) |
+
+## Build
+
+Windows with Visual Studio 2022 or newer (C++ desktop workload) and CMake 3.25 or newer:
+
+```bat
+cmake --preset release
+cmake --build --preset release
+ctest --preset release
+```
+
+Tools and DLLs land in `build\bin\Release\`. The `debug` presets build the Debug configuration.
+
+## Usage
+
+See [docs/running.md](docs/running.md) for the workflow, every tool option and every environment variable. Contributors start with [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Legal
+
+- g6shim is not affiliated with or endorsed by any platform holder or game publisher.
+- All trademarks belong to their owners.
+- This repository contains no game files, keys or decryption code.
+- It does not explain or help with obtaining, dumping or decrypting games.
+- Use it only with games you own.
+
+## Licence
+
+[LGPL-3.0-or-later](LICENSE).
