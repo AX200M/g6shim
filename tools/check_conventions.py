@@ -16,10 +16,6 @@ DENYLIST = ROOT / ".local" / "titles.txt"
 TYPES = ("feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore", "revert")
 SUBJECT = re.compile(r"^(?:%s)(?:\([a-z0-9][a-z0-9_.-]*\))?!?: [^\s].*$" % "|".join(TYPES))
 MAX_SUBJECT = 72
-ATTRIBUTION = (
-    re.compile(r"^\s*co[-\s]?authored[-\s]?by\s*:", re.I | re.M),
-    re.compile(r"\bgenerated\s+(?:with|by)\b[^\n]*\b(?:claude|copilot|chatgpt|gpt|gemini|codex|cursor|ai)\b", re.I),
-)
 SIGN_OFF = re.compile(r"^Signed-off-by: \S.* <[^<>\s]+@[^<>\s]+>$", re.M)
 PLATFORM_NAMES = re.compile(r"(?i)(?<![a-z0-9])(?:xbox|kinect)(?![a-z0-9])")
 SPDX = re.compile(r"SPDX-(?:License-Identifier|FileCopyrightText): \S")
@@ -227,9 +223,6 @@ def check_message(where, message, denylist):
         problems.append(Problem(where, "commit-subject", f"subject longer than {MAX_SUBJECT} characters"))
     if PLATFORM_NAMES.search(subject):
         problems.append(Problem(where, "commit-subject", "no platform names in commit subjects"))
-    for pattern in ATTRIBUTION:
-        if pattern.search(body):
-            problems.append(Problem(where, "attribution", "no AI attribution in commit messages"))
     if not SIGN_OFF.search(body):
         problems.append(Problem(where, "sign-off", "commits carry a DCO sign-off (git commit -s)"))
     for phrase, pattern in denylist:

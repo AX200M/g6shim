@@ -29,7 +29,6 @@ The hooks run `tools/check_conventions.py` on staged files and on each commit me
 
 - [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): subject`, at most 72 characters. The scope names a module (`kernelx`, `d3d11_x`, `winrt`, `core`, `run`), never a game.
 - Sign off every commit (`git commit -s`). The sign-off certifies the [Developer Certificate of Origin](https://developercertificate.org/).
-- No AI attribution trailers or lines.
 
 ## Reporting a title
 

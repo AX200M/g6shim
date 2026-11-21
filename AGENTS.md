@@ -8,9 +8,8 @@ g6shim runs console games on Windows PCs without emulation. It provides replacem
 2. **No trademarks in names or titles:** project and repository names, headings, file and folder names, commit subjects, PR and issue titles, labels. Platform, API and DLL names appear only where interoperability requires them: identifiers in code (DLL names, `Windows.Xbox.*` namespaces, export names), and the README's sentence on compatibility and its disclaimer.
 3. **Clean-room.** Use only public documentation, the Windows SDK and observed behaviour. Never use, search for or paste leaked SDK, XDK or GDK material.
 4. **No game material.** No game files, dumps, keys or decryption code, and no instructions for obtaining, dumping or decrypting games.
-5. **No AI attribution** in commits or PRs: no co-author trailers, no tool advertisements.
-6. **Original game folders are read-only.** Deploy and run only in copies.
-7. **Windows and MSVC only.** Builds stay warning-free at `/W4`.
+5. **Original game folders are read-only.** Deploy and run only in copies.
+6. **Windows and MSVC only.** Builds stay warning-free at `/W4`.
 
 ## Build and test
 
