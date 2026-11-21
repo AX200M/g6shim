@@ -1,0 +1,32 @@
+name: Function request
+description: A replacement DLL export that games need.
+title: "Function request: <dll>!<export>"
+labels: ["function request"]
+body:
+  - type: input
+    id: dll
+    attributes:
+      label: DLL
+      placeholder: kernelx.dll
+    validations:
+      required: true
+  - type: input
+    id: export
+    attributes:
+      label: Export
+      description: The export name, or `#<ordinal>`.
+    validations:
+      required: true
+  - type: input
+    id: title_ids
+    attributes:
+      label: Title IDs that need it
+      description: 8-digit hex title IDs, comma-separated.
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed use
+      description: The `unimplemented:` line, arguments seen, what the game does with the result.
+      render: text

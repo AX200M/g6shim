@@ -1,0 +1,42 @@
+name: Bug
+description: A tool, a test or a replacement DLL does something wrong.
+title: "Bug: "
+labels: ["bug"]
+body:
+  - type: input
+    id: summary
+    attributes:
+      label: What happens
+      description: One sentence, with the exact error text if there is one.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Commands and environment variables. Refer to games only by title ID.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      render: text
+  - type: input
+    id: commit
+    attributes:
+      label: g6shim commit
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Windows build, GPU and driver, compiler
+    validations:
+      required: true

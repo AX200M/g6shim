@@ -1,0 +1,78 @@
+name: Title report
+description: How far a game gets under g6shim. Name it only by its title ID.
+title: "Title report: <title ID>"
+labels: ["title report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use the 8-digit hex title ID from the game's manifest. Do not write the game's name anywhere in this issue, and do not attach game files.
+  - type: input
+    id: title_id
+    attributes:
+      label: Title ID
+      description: From `MicrosoftGame.config` or `AppxManifest.xml`.
+      placeholder: 0A1B2C3D
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The version attribute of the manifest's identity element.
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options:
+        - GDK (MicrosoftGame.config)
+        - XDK (AppxManifest.xml)
+    validations:
+      required: true
+  - type: dropdown
+    id: graphics
+    attributes:
+      label: Graphics API
+      options:
+        - D3D11.X
+        - D3D12.X
+        - Unknown
+    validations:
+      required: true
+  - type: input
+    id: state
+    attributes:
+      label: State reached
+      description: For example "window opens", "loading screen", "menus", "playable".
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log excerpt
+      description: The `g6shim-run` output or `g6shim.log` lines around where it stops, including the `unimplemented:` lines.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver
+      placeholder: vendor, model, driver version
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows build
+      placeholder: 10.0.26100
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: g6shim commit
+    validations:
+      required: true
