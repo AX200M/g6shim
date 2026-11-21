@@ -21,6 +21,7 @@ EXPORTS
     GetLastError=kernel32.GetLastError
     GetLocalTime=kernel32.GetLocalTime
     GetModuleHandleW=kernel32.GetModuleHandleW
+    GetProcAddress=g6shim_GetProcAddress
     GetStartupInfoW=kernel32.GetStartupInfoW
     GetSystemTime=kernel32.GetSystemTime
     GetSystemTimeAsFileTime=kernel32.GetSystemTimeAsFileTime
