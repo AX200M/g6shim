@@ -3,3 +3,4 @@
 add_subdirectory(core)
 add_subdirectory(tools/scan)
 add_subdirectory(tools/stubgen)
+add_subdirectory(tools/relink)
