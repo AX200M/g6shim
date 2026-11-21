@@ -10,7 +10,10 @@ namespace g6shim::winrt {
 
 void register_standins() {
     static std::once_flag once;
-    std::call_once(once, [] {});
+    std::call_once(once, [] {
+        register_core_application();
+        register_app_model();
+    });
 }
 
 }  // namespace g6shim::winrt

@@ -4,4 +4,7 @@
 
 namespace g6shim::winrt {
 
+void register_core_application();
+void register_app_model();
+
 }  // namespace g6shim::winrt
