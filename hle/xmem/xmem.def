@@ -1,5 +1,7 @@
 LIBRARY "xmem.dll"
 EXPORTS
+    XMemAlloc=g6shim_XMemAlloc
+    XMemFree=g6shim_XMemFree
     XMemAllocatePhysicalPages=g6shim_stub_0
     XMemFreePhysicalPages=g6shim_stub_1
     XMemGetWorkingSetStatistics=g6shim_stub_2

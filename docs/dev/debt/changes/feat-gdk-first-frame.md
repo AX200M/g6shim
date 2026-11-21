@@ -43,3 +43,10 @@
 - Only tile modes 13 and 8 are described; computers for other tile modes get `E_INVALIDARG`. Mode 13 matches the console's layouts, mode 8 uses the row pitch (256 bytes) and placement (512 bytes) of PC copy footprints.
   Closes when: a title asks for another tile mode.
   Title IDs: 1738CA2A
+
+# xmem
+
+## add Unknown function info
+
+- `XMemAlloc` and `XMemFree` ignore their attribute argument; blocks are aligned to 64 bytes, or to 4 KiB from 4 KiB on.
+  Closes when: the attribute bits are decoded.
