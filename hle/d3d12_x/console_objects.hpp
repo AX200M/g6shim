@@ -192,9 +192,9 @@ inline constexpr D3D12_RESOURCE_STATES kCopyListStates = D3D12_RESOURCE_STATE_CO
 
 inline bool copy_list_state(D3D12_RESOURCE_STATES state) { return (state & ~kCopyListStates) == 0; }
 
-inline bool kept_on_copy_list(const D3D12_RESOURCE_BARRIER& barrier) {
+inline bool kept_on_copy_list(const D3D12_RESOURCE_BARRIER& barrier, bool texture) {
     if (barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION) return true;
-    return copy_list_state(barrier.Transition.StateBefore) && copy_list_state(barrier.Transition.StateAfter);
+    return !texture && copy_list_state(barrier.Transition.StateBefore) && copy_list_state(barrier.Transition.StateAfter);
 }
 
 inline D3D12_RESOURCE_STATES pc_initial_state(const D3D12_RESOURCE_DESC* desc, D3D12_RESOURCE_STATES state) {

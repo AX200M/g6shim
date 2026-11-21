@@ -30,6 +30,12 @@
   Closes when: the copies are tied to the submissions that use them.
   Title IDs: 1738CA2A
 
+## change DMA command list transitions
+
+- DMA command list transitions of textures, and transitions of buffers to or from states other than the common and copy states, are dropped; the PC copy queue copies into textures in the common layout, promotes resources from the common state and lets them decay back after each execution.
+  Closes when: a title shows a dropped transition that the PC queue does not cover.
+  Title IDs: 1738CA2A
+
 # xg_x
 
 ## change returns the linear general tile mode

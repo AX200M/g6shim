@@ -111,7 +111,7 @@ void record_barriers(ConsoleList* self, UINT count, const D3D12_RESOURCE_BARRIER
         const bool texture =
             barriers[i].Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION && is_texture(barriers[i].Transition.pResource);
         D3D12_RESOURCE_BARRIER& pc = kept[kept_count];
-        if (pc_transition(barriers[i], texture, &pc) && (!copy_list || kept_on_copy_list(pc))) ++kept_count;
+        if (pc_transition(barriers[i], texture, &pc) && (!copy_list || kept_on_copy_list(pc, texture))) ++kept_count;
     }
     if (kept_count) self->pc->ResourceBarrier(kept_count, kept);
 }

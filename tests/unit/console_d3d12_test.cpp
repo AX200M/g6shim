@@ -97,17 +97,19 @@ TEST(dma_list_barriers_keep_only_copy_states) {
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-    CHECK(kept_on_copy_list(barrier));
+    CHECK(kept_on_copy_list(barrier, false));
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-    CHECK(kept_on_copy_list(barrier));
+    CHECK(kept_on_copy_list(barrier, false));
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_INDEX_BUFFER;
-    CHECK(!kept_on_copy_list(barrier));
+    CHECK(!kept_on_copy_list(barrier, false));
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_GENERIC_READ;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-    CHECK(!kept_on_copy_list(barrier));
+    CHECK(!kept_on_copy_list(barrier, false));
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    CHECK(!kept_on_copy_list(barrier, true));
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-    CHECK(kept_on_copy_list(barrier));
+    CHECK(kept_on_copy_list(barrier, false));
 }
 
 TEST(buffers_drop_the_shader_resource_denial) {
