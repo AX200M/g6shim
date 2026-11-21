@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "texture_shadow.hpp"
 
+#include "console_xg.hpp"
 #include "layout.hpp"
 
 #include <g6shim/log.hpp>
@@ -20,6 +21,7 @@ namespace g6shim::d3d12 {
 namespace {
 
 constexpr int kLoggedRefusals = 4;
+constexpr std::uint32_t kShaderResourceBindFlag = 8;
 
 struct PatchedTable {
     std::array<const void*, resource_slot::kCopiedSlots> slots;
@@ -33,6 +35,7 @@ struct Shadow {
     std::vector<ShadowCopy> copies;
     ID3D12Resource* upload = nullptr;
     void* upload_memory = nullptr;
+    void* console_computer = nullptr;
 };
 
 struct Uploader {
@@ -58,7 +61,39 @@ const PatchedTable* patched_table(ID3D12Resource* resource) {
     return *reinterpret_cast<const PatchedTable* const*>(resource);
 }
 
+using ConsoleRelease = ULONG (*)(void*);
+using ConsoleLayout = HRESULT (*)(void*, xg::ResourceLayout*);
+using ConsoleCopyOut = HRESULT (*)(void*, void*, UINT, UINT, const void*, UINT, UINT);
+
+template <class Fn>
+Fn console_slot(void* computer, std::size_t slot) {
+    return reinterpret_cast<Fn>((*static_cast<void***>(computer))[slot]);
+}
+
+void* console_computer(const D3D12_RESOURCE_DESC& desc) {
+    using OptimalTileMode = UINT (*)(UINT, UINT, UINT, UINT, UINT, UINT, UINT, UINT);
+    using CreateComputer = HRESULT (*)(const xg::Texture2DDesc*, void**);
+    const auto tile_mode = reinterpret_cast<OptimalTileMode>(xg::console_export("XGComputeOptimalTileMode"));
+    const auto create = reinterpret_cast<CreateComputer>(xg::console_export("XGCreateTexture2DComputer"));
+    if (!tile_mode || !create) return nullptr;
+    xg::Texture2DDesc texture{};
+    texture.width = static_cast<std::uint32_t>(desc.Width);
+    texture.height = desc.Height;
+    texture.mip_levels = desc.MipLevels;
+    texture.array_size = desc.DepthOrArraySize;
+    texture.format = static_cast<std::uint32_t>(desc.Format);
+    texture.sample_count = desc.SampleDesc.Count;
+    texture.bind_flags = kShaderResourceBindFlag;
+    texture.tile_mode = tile_mode(xg::kResourceDimensionTexture2D, texture.format, texture.width, texture.height,
+                                  texture.array_size, texture.sample_count, texture.bind_flags, 0);
+    if (texture.tile_mode == xg::kTileModeThin1D) return nullptr;
+    void* computer = nullptr;
+    return SUCCEEDED(create(&texture, &computer)) ? computer : nullptr;
+}
+
 void release_shadow(Shadow& shadow) {
+    if (shadow.console_computer)
+        console_slot<ConsoleRelease>(shadow.console_computer, xg::console_computer_slot::kRelease)(shadow.console_computer);
     if (shadow.upload) shadow.upload->Release();
     if (shadow.memory) VirtualFree(shadow.memory, 0, MEM_RELEASE);
     shadow = {};
@@ -93,6 +128,16 @@ D3D12_GPU_VIRTUAL_ADDRESS STDMETHODCALLTYPE texture_gpu_address(ID3D12Resource* 
             G6SHIM_WARN("texture CPU address: dimension %d, format %d, %llux%u has no console layout -> 0",
                         desc.Dimension, desc.Format, desc.Width, desc.Height);
         return kNoShadowAddress;
+    }
+    if (void* computer = console_computer(desc)) {
+        auto console_layout = std::make_unique<xg::ResourceLayout>();
+        if (SUCCEEDED(console_slot<ConsoleLayout>(computer, xg::console_computer_slot::kGetResourceLayout)(
+                computer, console_layout.get()))) {
+            shadow.console_computer = computer;
+            layout.shadow_bytes = console_layout->size_bytes;
+        } else {
+            console_slot<ConsoleRelease>(computer, xg::console_computer_slot::kRelease)(computer);
+        }
     }
     shadow.memory =
         VirtualAlloc(nullptr, layout.shadow_bytes, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE);
@@ -169,8 +214,14 @@ void record_upload(ID3D12GraphicsCommandList* list, ID3D12Resource* texture, Sha
     const auto* tiled = static_cast<const unsigned char*>(shadow.memory);
     auto* linear = static_cast<unsigned char*>(shadow.upload_memory);
     for (const ShadowCopy& copy : shadow.copies) {
-        xg::detile(tiled + copy.tiled_offset, copy.tiled_pitch_elements, copy.width_elements, copy.height_elements,
-                   copy.bytes_per_element, linear + copy.footprint.Offset, copy.footprint.Footprint.RowPitch);
+        const UINT row_pitch = copy.footprint.Footprint.RowPitch;
+        if (shadow.console_computer)
+            console_slot<ConsoleCopyOut>(shadow.console_computer, xg::console_computer_slot::kCopyFromSubresource)(
+                shadow.console_computer, linear + copy.footprint.Offset, 0, copy.subresource, tiled, row_pitch,
+                row_pitch * copy.height_elements);
+        else
+            xg::detile(tiled + copy.tiled_offset, copy.tiled_pitch_elements, copy.width_elements, copy.height_elements,
+                       copy.bytes_per_element, linear + copy.footprint.Offset, row_pitch);
         D3D12_TEXTURE_COPY_LOCATION destination{texture, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
         destination.SubresourceIndex = copy.subresource;
         D3D12_TEXTURE_COPY_LOCATION source{shadow.upload, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};

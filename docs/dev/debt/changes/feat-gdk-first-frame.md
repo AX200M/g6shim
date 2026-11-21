@@ -18,7 +18,7 @@
 - Textures answer `GetGPUVirtualAddress` with CPU memory of their own; written pages send the whole texture to the GPU before the next `ExecuteCommandLists`, on the queue that submits. The copy relies on implicit state promotion, is not ordered against other queues, and GPU writes to the texture never reach the CPU memory.
   Closes when: titles are seen reading GPU-written textures through the CPU, or the copy order across queues matters.
   Title IDs: 1738CA2A
-- Only single-sample 2D textures of the formats `xg_x` describes get CPU memory, laid out in tile mode 13; other textures still answer `GetGPUVirtualAddress` with 0, and data a title writes in another layout comes out scrambled.
+- Only single-sample 2D textures of the formats `xg_x` describes get CPU memory. Without the console's XG library they are laid out in tile mode 13, so data a title writes in another layout comes out scrambled; other textures still answer `GetGPUVirtualAddress` with 0.
   Title IDs: 1738CA2A
 - Textures are handed to the title as PC objects whose function table is replaced by a copy with its own `Release` and `GetGPUVirtualAddress`.
   Closes when: resources are wrapped in console objects.
