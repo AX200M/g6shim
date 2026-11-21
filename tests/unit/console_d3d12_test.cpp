@@ -57,3 +57,34 @@ TEST(frame_clock_spaces_events_by_type) {
     CHECK(!frame_interval_valid(0, 1));
     CHECK(!frame_interval_valid(16667, 0));
 }
+
+TEST(console_graphics_list_slots_map_to_pc_slots) {
+    CHECK(pc_slot_of_list_slot(0) == 0);
+    CHECK(pc_slot_of_list_slot(9) == pc_list_slot::kClose);
+    CHECK(pc_slot_of_list_slot(list_slot::kResourceBarrier) == pc_list_slot::kResourceBarrier);
+    CHECK(pc_slot_of_list_slot(list_slot::kFirstQuery) == pc_list_slot::kBeginQuery);
+    CHECK(pc_slot_of_list_slot(list_slot::kSetDescriptorHeaps) == pc_list_slot::kSetDescriptorHeaps);
+    CHECK(pc_slot_of_list_slot(51) == 47);
+    CHECK(pc_slot_of_list_slot(52) == 48);
+    CHECK(pc_slot_of_list_slot(55) == 51);
+    CHECK(pc_slot_of_list_slot(56) == pc_list_slot::kSetMarker);
+    CHECK(pc_slot_of_list_slot(pc_list_slot::kExecuteIndirect) == pc_list_slot::kExecuteIndirect);
+    CHECK(pc_slot_of_list_slot(list_slot::kMappedEnd) == kNoPcSlot);
+    bool seen[list_slot::kMappedEnd] = {};
+    for (std::size_t slot = 0; slot < list_slot::kMappedEnd; ++slot) {
+        const std::size_t pc = pc_slot_of_list_slot(slot);
+        CHECK(pc < list_slot::kMappedEnd && !seen[pc]);
+        if (pc < list_slot::kMappedEnd) seen[pc] = true;
+    }
+}
+
+TEST(console_dma_list_slots_map_to_pc_copy_list_slots) {
+    CHECK(pc_slot_of_dma_list_slot(2) == 2);
+    CHECK(pc_slot_of_dma_list_slot(dma_list_slot::kGetType) == kNoPcSlot);
+    CHECK(pc_slot_of_dma_list_slot(9) == pc_list_slot::kClose);
+    CHECK(pc_slot_of_dma_list_slot(10) == pc_list_slot::kReset);
+    CHECK(pc_slot_of_dma_list_slot(11) == pc_list_slot::kCopyBufferRegion);
+    CHECK(pc_slot_of_dma_list_slot(dma_list_slot::kResourceBarrier) == pc_list_slot::kResourceBarrier);
+    CHECK(pc_slot_of_dma_list_slot(21) == pc_list_slot::kEndEvent);
+    CHECK(pc_slot_of_dma_list_slot(22) == kNoPcSlot);
+}

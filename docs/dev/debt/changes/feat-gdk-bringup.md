@@ -18,6 +18,12 @@
   Title IDs: 1738CA2A
 - `SetFrameIntervalX` ignores its output and flags; `ScheduleFrameEventX` honours flag 1 (no signal) and ignores the others.
   Title IDs: 1738CA2A
+- Graphics command list slots 56 to 59 are taken to be `SetMarker`, `BeginEvent`, `EndEvent` and `ExecuteIndirect` in PC order; no title has called them yet. Slots 60 and up are probes.
+  Title IDs: 1738CA2A
+- DMA command list slots 16 to 21 are taken to be `BeginQuery`, `EndQuery`, `ResolveQueryData`, `SetMarker`, `BeginEvent` and `EndEvent`; no title has called them yet. Slots 22 and up are probes.
+  Title IDs: 1738CA2A
+- Command list `ResourceBarrier` is taken to return a `UINT`; g6shim returns 0 without knowing what the title reads from it.
+  Title IDs: 1738CA2A
 
 ## add Functional
 
@@ -29,8 +35,5 @@
 - Shader-visible sampler heaps of the console's unbounded sampler type (4) become PC sampler heaps of at most 2048 descriptors; `GetDesc` reports the requested size.
   Closes when: a title is seen using more than 2048 samplers, or the heap is split.
   Title IDs: 1738CA2A
-- Console DMA command lists are PC copy lists; their console operations are probes.
-  Title IDs: 1738CA2A
-- Graphics command list slots after `GetType` (8) are in console order and are probes, so recorded lists are never closed and executing them removes the PC device.
-  Closes when: the console command list order is mapped.
+- Console DMA command lists are PC copy lists; their console-only operations are probes.
   Title IDs: 1738CA2A

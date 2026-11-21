@@ -45,13 +45,24 @@ HRESULT STDMETHODCALLTYPE get_device(T* self, REFIID riid, void** out) {
 
 template <class T>
 const void* const* child_table(const char* kind, std::size_t pc_slots, std::size_t slots,
-                               std::initializer_list<SlotOverride> extra = {}) {
+                               const std::vector<SlotOverride>& extra = {}) {
     std::vector<SlotOverride> overrides = {{kQueryInterfaceSlot, reinterpret_cast<const void*>(&query_self<T>)},
                                            {kAddRefSlot, reinterpret_cast<const void*>(&add_ref_object<T>)},
                                            {kReleaseSlot, reinterpret_cast<const void*>(&release_child<T>)},
                                            {kGetDeviceSlot, reinterpret_cast<const void*>(&get_device<T>)}};
     overrides.insert(overrides.end(), extra.begin(), extra.end());
     return build_table({kind, offsetof(T, pc), pc_slots, slots}, overrides);
+}
+
+template <class T>
+std::vector<SlotOverride> forwarded_slots(std::size_t slots, std::size_t (*pc_slot_of)(std::size_t)) {
+    std::vector<SlotOverride> forwarded;
+    for (std::size_t slot = 0; slot < slots; ++slot) {
+        const std::size_t pc_slot = pc_slot_of(slot);
+        if (pc_slot == kNoPcSlot) continue;
+        if (const void* thunk = forward_thunk(offsetof(T, pc), pc_slot)) forwarded.emplace_back(slot, thunk);
+    }
+    return forwarded;
 }
 
 D3D12_DESCRIPTOR_HEAP_DESC* STDMETHODCALLTYPE heap_get_desc(D3D12_DESCRIPTOR_HEAP_DESC* result, ConsoleHeap* self) {
@@ -80,15 +91,60 @@ T* wrap_child(ConsoleDevice* device, Pc* pc, const void* const* table) {
     return object;
 }
 
+UINT STDMETHODCALLTYPE list_resource_barrier(ConsoleList* self, UINT count, const D3D12_RESOURCE_BARRIER* barriers) {
+    self->pc->ResourceBarrier(count, barriers);
+    return kNoBarrierActions;
+}
+
+void STDMETHODCALLTYPE list_execute_bundle(ConsoleList* self, void* bundle) {
+    self->pc->ExecuteBundle(static_cast<ID3D12GraphicsCommandList*>(pc_list(bundle)));
+}
+
+void STDMETHODCALLTYPE list_set_descriptor_heaps(ConsoleList* self, UINT count, void* const* heaps) {
+    if (count > kMaxBoundDescriptorHeaps || (count && !heaps)) {
+        G6SHIM_WARN("SetDescriptorHeaps(%u heaps): too many or null, ignored", count);
+        return;
+    }
+    ID3D12DescriptorHeap* pc[kMaxBoundDescriptorHeaps];
+    for (UINT i = 0; i < count; ++i) pc[i] = pc_heap(heaps[i]);
+    self->pc->SetDescriptorHeaps(count, pc);
+}
+
+D3D12_COMMAND_LIST_TYPE STDMETHODCALLTYPE list_get_console_type(ConsoleList* self) {
+    return static_cast<D3D12_COMMAND_LIST_TYPE>(self->type);
+}
+
 const void* const* list_table() {
-    static const void* const* table =
-        child_table<ConsoleList>("ID3D12GraphicsCommandList", list_slot::kPcSlots, list_slot::kSlots);
+    static const void* const* table = [] {
+        std::vector<SlotOverride> slots = forwarded_slots<ConsoleList>(list_slot::kSlots, &pc_slot_of_list_slot);
+        slots.insert(slots.end(),
+                     {{list_slot::kGetType, reinterpret_cast<const void*>(&list_get_console_type)},
+                      {list_slot::kResourceBarrier, reinterpret_cast<const void*>(&list_resource_barrier)},
+                      {list_slot::kExecuteBundle, reinterpret_cast<const void*>(&list_execute_bundle)},
+                      {list_slot::kSetDescriptorHeaps, reinterpret_cast<const void*>(&list_set_descriptor_heaps)}});
+        return child_table<ConsoleList>("ID3D12GraphicsCommandList", list_slot::kMappedEnd, list_slot::kSlots, slots);
+    }();
     return table;
 }
 
 const void* const* dma_list_table() {
-    static const void* const* table =
-        child_table<ConsoleList>("DMA command list", dma_list_slot::kPcSlots, dma_list_slot::kSlots);
+    static const void* const* table = [] {
+        std::vector<SlotOverride> slots =
+            forwarded_slots<ConsoleList>(dma_list_slot::kSlots, &pc_slot_of_dma_list_slot);
+        slots.insert(slots.end(),
+                     {{dma_list_slot::kGetType, reinterpret_cast<const void*>(&list_get_console_type)},
+                      {dma_list_slot::kResourceBarrier, reinterpret_cast<const void*>(&list_resource_barrier)}});
+        return child_table<ConsoleList>("DMA command list", dma_list_slot::kPcSlots, dma_list_slot::kSlots, slots);
+    }();
+    return table;
+}
+
+const void* const* heap_table() {
+    static const void* const* table = child_table<ConsoleHeap>(
+        "ID3D12DescriptorHeap", heap_slot::kPcSlots, heap_slot::kSlots,
+        {{heap_slot::kGetDesc, reinterpret_cast<const void*>(&heap_get_desc)},
+         {heap_slot::kGetCpuStart, reinterpret_cast<const void*>(&heap_cpu_start)},
+         {heap_slot::kGetGpuStart, reinterpret_cast<const void*>(&heap_gpu_start)}});
     return table;
 }
 
@@ -109,6 +165,13 @@ ID3D12CommandList* pc_list(void* list) {
     const auto* head = static_cast<const GraphicsHead*>(list);
     if (head->table == list_table() || head->table == dma_list_table()) return static_cast<ConsoleList*>(list)->pc;
     return static_cast<ID3D12CommandList*>(list);
+}
+
+ID3D12DescriptorHeap* pc_heap(void* heap) {
+    if (!heap) return nullptr;
+    const auto* head = static_cast<const GraphicsHead*>(heap);
+    if (head->table == heap_table()) return static_cast<ConsoleHeap*>(heap)->pc;
+    return static_cast<ID3D12DescriptorHeap*>(heap);
 }
 
 ConsoleQueue* wrap_queue(ConsoleDevice* device, ID3D12CommandQueue* pc) {
@@ -133,12 +196,7 @@ ConsoleList* wrap_dma_list(ConsoleDevice* device, ID3D12GraphicsCommandList* pc)
 }
 
 ConsoleHeap* wrap_heap(ConsoleDevice* device, ID3D12DescriptorHeap* pc, const D3D12_DESCRIPTOR_HEAP_DESC& console_desc) {
-    static const void* const* table = child_table<ConsoleHeap>(
-        "ID3D12DescriptorHeap", heap_slot::kPcSlots, heap_slot::kSlots,
-        {{heap_slot::kGetDesc, reinterpret_cast<const void*>(&heap_get_desc)},
-         {heap_slot::kGetCpuStart, reinterpret_cast<const void*>(&heap_cpu_start)},
-         {heap_slot::kGetGpuStart, reinterpret_cast<const void*>(&heap_gpu_start)}});
-    ConsoleHeap* heap = wrap_child<ConsoleHeap>(device, pc, table);
+    ConsoleHeap* heap = wrap_child<ConsoleHeap>(device, pc, heap_table());
     if (heap) heap->console_desc = console_desc;
     return heap;
 }
