@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "g6shim/log.hpp"
 
+#include "log_format.hpp"
+
 #include <windows.h>
 
 #include <chrono>
@@ -60,12 +62,14 @@ const char* level_name(Level level) {
 
 void write_line(Level level, const char* message) {
     Sink& s = sink();
-    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - s.start).count();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() -
+                                                                               s.start);
+    const std::string timestamp = detail::format_elapsed(elapsed);
     const auto tid = static_cast<unsigned long long>(std::hash<std::thread::id>{}(std::this_thread::get_id()) %
                                                      kThreadTagModulus);
 
     char line[kMaxLine];
-    std::snprintf(line, sizeof line, "[%9.3f] [%s] [t%05llu] %s\n", seconds, level_name(level), tid, message);
+    std::snprintf(line, sizeof line, "[%s] [%s] [t%05llu] %s\n", timestamp.c_str(), level_name(level), tid, message);
 
     std::lock_guard<std::mutex> lock(s.mutex);
     if (s.file) {

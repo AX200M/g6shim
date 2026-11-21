@@ -20,6 +20,7 @@ add_executable(g6shim_tests
   unit/xg_layout_test.cpp
   unit/capture_test.cpp
   unit/xmem_alloc_test.cpp
+  unit/log_format_test.cpp
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/graphics_object.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/device.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/objects.cpp"
@@ -40,6 +41,7 @@ target_include_directories(g6shim_tests PRIVATE
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x"
   "${PROJECT_SOURCE_DIR}/hle/xg_x"
   "${PROJECT_SOURCE_DIR}/hle/xmem"
+  "${PROJECT_SOURCE_DIR}/runtime/src"
   "${PROJECT_SOURCE_DIR}/winrt")
 add_test(NAME unit COMMAND g6shim_tests)
 set_tests_properties(unit PROPERTIES TIMEOUT 30
