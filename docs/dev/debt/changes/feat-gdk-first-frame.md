@@ -8,6 +8,8 @@
   Title IDs: 1738CA2A
 - `PresentX` ignores its parameters and the pipeline token.
   Title IDs: 1738CA2A
+- The device's out-of-line flags (`+0x18`) are all set; which inline functions each bit covers is not known.
+  Title IDs: 1738CA2A
 
 ## add Functional
 

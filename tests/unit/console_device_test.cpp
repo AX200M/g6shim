@@ -394,3 +394,10 @@ TEST(unaligned_constant_views_follow_their_source) {
     CHECK(!relocate_constants(device.pc, 0x10, 96, &again));
     ring->Release();
 }
+
+TEST(console_devices_send_every_call_through_their_tables) {
+    WarpDevice device;
+    if (!device.ready()) return;
+    const auto* bytes = reinterpret_cast<const std::uint8_t*>(device.console);
+    CHECK(bytes[kDeviceOutOfLineFlagsOffset] == kEveryCallOutOfLine);
+}

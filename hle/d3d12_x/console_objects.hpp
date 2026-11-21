@@ -130,6 +130,8 @@ inline constexpr std::size_t kSlots = 32;
 }  // namespace dxgi_slot
 
 inline constexpr std::size_t kDeviceConsoleBytes = 0x58;
+inline constexpr std::size_t kDeviceOutOfLineFlagsOffset = 0x18;
+inline constexpr std::uint8_t kEveryCallOutOfLine = 0xFF;
 inline constexpr std::size_t kQueueConsoleBytes = 0x18;
 inline constexpr std::size_t kListConsoleBytes = 0x360;
 inline constexpr std::size_t kHeapConsoleBytes = 0x10;
@@ -255,11 +257,13 @@ struct ConsoleDxgiDevice;
 struct ConsoleDevice {
     GraphicsHead head;
     std::uint64_t null_constant_buffer_address;
-    unsigned char console_state[kDeviceConsoleBytes - 0x18];
+    std::uint8_t out_of_line_flags;
+    unsigned char console_state[kDeviceConsoleBytes - 0x19];
     ID3D12Device* pc;
     IDXGIAdapter1* adapter;
     ConsoleDxgiDevice* dxgi;
 };
+static_assert(offsetof(ConsoleDevice, out_of_line_flags) == kDeviceOutOfLineFlagsOffset);
 static_assert(offsetof(ConsoleDevice, pc) == kDeviceConsoleBytes);
 
 struct ConsoleQueue {

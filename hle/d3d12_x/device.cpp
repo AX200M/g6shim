@@ -337,6 +337,7 @@ HRESULT create_console_device(ID3D12Device* pc, IDXGIAdapter1* adapter, ConsoleD
     auto* device = new (std::nothrow) ConsoleDevice{};
     if (!device) return E_OUTOFMEMORY;
     init_head(device->head, table);
+    device->out_of_line_flags = kEveryCallOutOfLine;
     device->pc = pc;
     pc->AddRef();
     device->adapter = adapter;
