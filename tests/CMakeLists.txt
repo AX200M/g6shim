@@ -14,6 +14,7 @@ add_executable(g6shim_tests
   unit/auto_event_test.cpp
   unit/manifest_test.cpp
   unit/input_mapping_test.cpp
+  unit/apu_memory_test.cpp
   unit/graphics_object_test.cpp
   unit/console_d3d12_test.cpp
   unit/console_device_test.cpp
@@ -46,6 +47,7 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/xg_xs/texture_computer.cpp")
 target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim_shader g6shim::winrt d3d12 dxgi)
 target_include_directories(g6shim_tests PRIVATE
+  "${PROJECT_SOURCE_DIR}/hle/acphal"
   "${PROJECT_SOURCE_DIR}/hle/kernelx"
   "${PROJECT_SOURCE_DIR}/hle/d3d11_x"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x"

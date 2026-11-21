@@ -4,9 +4,4 @@
 
 G6SHIM_STUB(1, "AcpHal.dll", "AcpHalCreate")
 G6SHIM_STUB(2, "AcpHal.dll", "AcpHalReleaseShapeContexts")
-G6SHIM_STUB(3, "AcpHal.dll", "ApuAlloc")
-G6SHIM_STUB(4, "AcpHal.dll", "ApuFree")
-G6SHIM_STUB(5, "AcpHal.dll", "ApuIsVirtualAddressValid")
-G6SHIM_STUB(6, "AcpHal.dll", "ApuMapVirtualAddress")
-G6SHIM_STUB(7, "AcpHal.dll", "ApuCreateHeap")
 G6SHIM_STUB(8, "AcpHal.dll", "ApuMapApuAddress")
