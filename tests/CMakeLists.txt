@@ -10,6 +10,8 @@ add_executable(g6shim_tests
   unit/auto_event_test.cpp
   unit/manifest_test.cpp)
 target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim::winrt)
+target_include_directories(g6shim_tests PRIVATE
+  "${PROJECT_SOURCE_DIR}/hle/kernelx")
 add_test(NAME unit COMMAND g6shim_tests)
 set_tests_properties(unit PROPERTIES TIMEOUT 30
   ENVIRONMENT "G6SHIM_LOG=${CMAKE_CURRENT_BINARY_DIR}/unit.log;G6SHIM_LOG_STDERR=0")
