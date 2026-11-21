@@ -1,0 +1,6 @@
+LIBRARY "EtwPlus.dll"
+EXPORTS
+    EtxEventWrite=g6shim_stub_0
+    EtxFillCommonFields_v7=g6shim_stub_1
+    EtxRegister=g6shim_stub_2
+    EtxUnregister=g6shim_stub_3
