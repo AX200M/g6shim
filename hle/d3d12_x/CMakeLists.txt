@@ -4,5 +4,6 @@ file(GLOB sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
 g6shim_add_hle_module(hle_d3d12_x
     DLL "d3d12_x.dll"
     DEF "${CMAKE_CURRENT_SOURCE_DIR}/d3d12_x.def"
-    SOURCES ${sources})
+    SOURCES ${sources} "${PROJECT_SOURCE_DIR}/hle/xg_x/layout.cpp")
+target_include_directories(hle_d3d12_x PRIVATE "${PROJECT_SOURCE_DIR}/hle/xg_x")
 target_link_libraries(hle_d3d12_x PRIVATE d3d12 dxgi)

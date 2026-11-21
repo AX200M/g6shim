@@ -3,10 +3,13 @@
 #include "check.hpp"
 
 #include "console_objects.hpp"
+#include "texture_shadow.hpp"
 
 #include <dxgi1_4.h>
 
 #include <cstdio>
+#include <cstring>
+#include <vector>
 
 using namespace g6shim::d3d12;
 
@@ -57,6 +60,11 @@ using CreateList = HRESULT(STDMETHODCALLTYPE*)(ConsoleDevice*, UINT, UINT, ID3D1
 using ListHresult = HRESULT(STDMETHODCALLTYPE*)(void*);
 using ListType = UINT(STDMETHODCALLTYPE*)(void*);
 using ListRelease = ULONG(STDMETHODCALLTYPE*)(void*);
+using CreateQueue = HRESULT(STDMETHODCALLTYPE*)(ConsoleDevice*, const D3D12_COMMAND_QUEUE_DESC*, REFIID, void**);
+using CreateCommitted = HRESULT(STDMETHODCALLTYPE*)(ConsoleDevice*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS,
+                                                    const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES,
+                                                    const D3D12_CLEAR_VALUE*, REFIID, void**);
+using ExecuteLists = void(STDMETHODCALLTYPE*)(void*, UINT, void* const*);
 using CopyTextureRegionX = void(STDMETHODCALLTYPE*)(void*, const D3D12_TEXTURE_COPY_LOCATION*, UINT, UINT, UINT,
                                                     const D3D12_TEXTURE_COPY_LOCATION*, const D3D12_BOX*, UINT);
 
@@ -168,4 +176,125 @@ TEST(console_lists_copy_texture_regions_with_flags) {
     if (allocator) allocator->Release();
     if (upload) upload->Release();
     if (texture) texture->Release();
+}
+
+namespace {
+
+constexpr UINT kShadowTestSize = 8;
+constexpr UINT kShadowTestPitch = 256;
+
+std::uint8_t shadow_test_byte(UINT x, UINT y, UINT channel) {
+    return static_cast<std::uint8_t>(x * 16 + y * 4 + channel);
+}
+
+bool wait_idle(ID3D12Device* device, ID3D12CommandQueue* queue) {
+    ID3D12Fence* fence = nullptr;
+    if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)))) return false;
+    queue->Signal(fence, 1);
+    const bool done = SUCCEEDED(fence->SetEventOnCompletion(1, nullptr));
+    fence->Release();
+    return done;
+}
+
+bool texture_matches_pattern(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* texture) {
+    const D3D12_RESOURCE_DESC texture_desc = texture->GetDesc();
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+    UINT64 bytes = 0;
+    device->GetCopyableFootprints(&texture_desc, 0, 1, 0, &footprint, nullptr, nullptr, &bytes);
+    const D3D12_HEAP_PROPERTIES readback_heap{D3D12_HEAP_TYPE_READBACK};
+    const D3D12_RESOURCE_DESC readback_desc = buffer_desc(bytes, D3D12_RESOURCE_FLAG_NONE);
+    ID3D12Resource* readback = nullptr;
+    ID3D12CommandAllocator* allocator = nullptr;
+    ID3D12GraphicsCommandList* list = nullptr;
+    bool matches = false;
+    if (SUCCEEDED(device->CreateCommittedResource(&readback_heap, D3D12_HEAP_FLAG_NONE, &readback_desc,
+                                                  D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&readback))) &&
+        SUCCEEDED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))) &&
+        SUCCEEDED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator, nullptr,
+                                            IID_PPV_ARGS(&list)))) {
+        D3D12_RESOURCE_BARRIER barrier{D3D12_RESOURCE_BARRIER_TYPE_TRANSITION};
+        barrier.Transition = {texture, 0, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE};
+        list->ResourceBarrier(1, &barrier);
+        D3D12_TEXTURE_COPY_LOCATION destination{readback, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+        destination.PlacedFootprint = footprint;
+        D3D12_TEXTURE_COPY_LOCATION source{texture, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+        source.SubresourceIndex = 0;
+        list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+        list->Close();
+        ID3D12CommandList* lists[] = {list};
+        queue->ExecuteCommandLists(1, lists);
+        void* data = nullptr;
+        if (wait_idle(device, queue) && SUCCEEDED(readback->Map(0, nullptr, &data))) {
+            matches = true;
+            const auto* bytes_read = static_cast<const std::uint8_t*>(data);
+            for (UINT y = 0; y < kShadowTestSize; ++y)
+                for (UINT x = 0; x < kShadowTestSize; ++x)
+                    for (UINT c = 0; c < 4; ++c)
+                        if (bytes_read[y * footprint.Footprint.RowPitch + x * 4 + c] != shadow_test_byte(x, y, c))
+                            matches = false;
+            readback->Unmap(0, nullptr);
+        }
+    }
+    if (list) list->Release();
+    if (allocator) allocator->Release();
+    if (readback) readback->Release();
+    return matches;
+}
+
+}  // namespace
+
+TEST(console_textures_take_cpu_writes_through_their_address) {
+    WarpDevice device;
+    if (!device.ready()) return;
+    const D3D12_COMMAND_QUEUE_DESC queue_desc{D3D12_COMMAND_LIST_TYPE_DIRECT};
+    void* queue = nullptr;
+    CHECK(device.slot<CreateQueue>(device_slot::kCreateCommandQueue)(device.console, &queue_desc,
+                                                                     __uuidof(ID3D12CommandQueue), &queue) == S_OK);
+    D3D12_RESOURCE_DESC desc = buffer_desc(kShadowTestSize, D3D12_RESOURCE_FLAG_NONE);
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Height = kShadowTestSize;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    const D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_DEFAULT};
+    ID3D12Resource* texture = nullptr;
+    CHECK(device.slot<CreateCommitted>(device_slot::kCreateCommittedResource)(
+              device.console, &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+              __uuidof(ID3D12Resource), reinterpret_cast<void**>(&texture)) == S_OK);
+    if (!queue || !texture) return;
+    auto* texels = reinterpret_cast<std::uint8_t*>(texture->GetGPUVirtualAddress());
+    CHECK(texels != nullptr);
+    if (texels) {
+        for (UINT y = 0; y < kShadowTestSize; ++y)
+            for (UINT x = 0; x < kShadowTestSize; ++x)
+                for (UINT c = 0; c < 4; ++c) texels[y * kShadowTestPitch + x * 4 + c] = shadow_test_byte(x, y, c);
+        list_slot_fn<ExecuteLists>(queue, queue_slot::kExecuteCommandLists)(queue, 0, nullptr);
+        CHECK(texture_matches_pattern(device.pc, static_cast<ConsoleQueue*>(queue)->pc, texture));
+    }
+    CHECK(texture->Release() == 0);
+    list_slot_fn<ListRelease>(queue, kReleaseSlot)(queue);
+}
+
+TEST(texture_shadows_copy_every_subresource) {
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = 64;
+    desc.Height = 32;
+    desc.DepthOrArraySize = 2;
+    desc.MipLevels = 0;
+    desc.Format = DXGI_FORMAT_BC1_UNORM;
+    desc.SampleDesc.Count = 1;
+    std::vector<ShadowCopy> copies;
+    UINT64 bytes = 0;
+    CHECK(shadow_copies(desc, &copies, &bytes));
+    CHECK(copies.size() == 14);
+    if (copies.size() != 14) return;
+    CHECK(copies[0].subresource == 0 && copies[0].footprint.Offset == 0 && copies[0].footprint.Footprint.RowPitch == 256);
+    CHECK(copies[7].subresource == 7 && copies[7].footprint.Offset == copies[0].footprint.Offset + 2048);
+    CHECK(copies[6].footprint.Footprint.Width == 4 && copies[6].footprint.Footprint.Height == 4);
+    CHECK(bytes >= copies[13].footprint.Offset + 256);
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+    CHECK(!shadow_copies(desc, &copies, &bytes));
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.SampleDesc.Count = 4;
+    CHECK(!shadow_copies(desc, &copies, &bytes));
 }

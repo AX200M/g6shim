@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "console_objects.hpp"
+#include "texture_shadow.hpp"
 
 #include <g6shim/log.hpp>
 
@@ -195,6 +196,12 @@ HRESULT STDMETHODCALLTYPE device_check_feature_support(ConsoleDevice* self, D3D1
     return hr;
 }
 
+HRESULT tracked(HRESULT hr, const D3D12_RESOURCE_DESC* desc, void** out) {
+    if (SUCCEEDED(hr) && out && *out && desc && desc->Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+        track_texture(static_cast<ID3D12Resource*>(*out));
+    return hr;
+}
+
 const D3D12_RESOURCE_DESC* pc_resource_desc_or_null(const D3D12_RESOURCE_DESC* console, D3D12_RESOURCE_DESC* storage) {
     if (!console) return nullptr;
     *storage = pc_resource_desc(*console);
@@ -206,25 +213,27 @@ HRESULT STDMETHODCALLTYPE device_create_committed_resource(ConsoleDevice* self, 
                                                            D3D12_RESOURCE_STATES state, const D3D12_CLEAR_VALUE* clear,
                                                            REFIID riid, void** out) {
     D3D12_RESOURCE_DESC pc_desc{};
-    return self->pc->CreateCommittedResource(heap, heap_flags, pc_resource_desc_or_null(desc, &pc_desc),
-                                             pc_initial_state(desc, state), clear,
-                                             riid, out);
+    return tracked(self->pc->CreateCommittedResource(heap, heap_flags, pc_resource_desc_or_null(desc, &pc_desc),
+                                                     pc_initial_state(desc, state), clear, riid, out),
+                   desc, out);
 }
 
 HRESULT STDMETHODCALLTYPE device_create_placed_resource(ConsoleDevice* self, ID3D12Heap* heap, UINT64 offset,
                                                         const D3D12_RESOURCE_DESC* desc, D3D12_RESOURCE_STATES state,
                                                         const D3D12_CLEAR_VALUE* clear, REFIID riid, void** out) {
     D3D12_RESOURCE_DESC pc_desc{};
-    return self->pc->CreatePlacedResource(heap, offset, pc_resource_desc_or_null(desc, &pc_desc),
-                                          pc_initial_state(desc, state), clear, riid, out);
+    return tracked(self->pc->CreatePlacedResource(heap, offset, pc_resource_desc_or_null(desc, &pc_desc),
+                                                  pc_initial_state(desc, state), clear, riid, out),
+                   desc, out);
 }
 
 HRESULT STDMETHODCALLTYPE device_create_reserved_resource(ConsoleDevice* self, const D3D12_RESOURCE_DESC* desc,
                                                           D3D12_RESOURCE_STATES state, const D3D12_CLEAR_VALUE* clear,
                                                           REFIID riid, void** out) {
     D3D12_RESOURCE_DESC pc_desc{};
-    return self->pc->CreateReservedResource(pc_resource_desc_or_null(desc, &pc_desc), pc_initial_state(desc, state),
-                                            clear, riid, out);
+    return tracked(self->pc->CreateReservedResource(pc_resource_desc_or_null(desc, &pc_desc),
+                                                    pc_initial_state(desc, state), clear, riid, out),
+                   desc, out);
 }
 
 D3D12_RESOURCE_ALLOCATION_INFO* STDMETHODCALLTYPE device_resource_allocation_info(D3D12_RESOURCE_ALLOCATION_INFO* result,
