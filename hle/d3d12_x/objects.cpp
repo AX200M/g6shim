@@ -94,8 +94,28 @@ T* wrap_child(ConsoleDevice* device, Pc* pc, const void* const* table) {
     return object;
 }
 
+bool is_texture(ID3D12Resource* resource) {
+    return resource && resource->GetDesc().Dimension != D3D12_RESOURCE_DIMENSION_BUFFER;
+}
+
+void record_barriers(ConsoleList* self, UINT count, const D3D12_RESOURCE_BARRIER* barriers, bool copy_list) {
+    if (count > kMaxBarriersPerCall || (count && !barriers)) {
+        G6SHIM_WARN("ResourceBarrier(%u barriers): too many or null, ignored", count);
+        return;
+    }
+    D3D12_RESOURCE_BARRIER kept[kMaxBarriersPerCall];
+    UINT kept_count = 0;
+    for (UINT i = 0; i < count; ++i) {
+        const bool texture =
+            barriers[i].Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION && is_texture(barriers[i].Transition.pResource);
+        D3D12_RESOURCE_BARRIER& pc = kept[kept_count];
+        if (pc_transition(barriers[i], texture, &pc) && (!copy_list || kept_on_copy_list(pc))) ++kept_count;
+    }
+    if (kept_count) self->pc->ResourceBarrier(kept_count, kept);
+}
+
 UINT STDMETHODCALLTYPE list_resource_barrier(ConsoleList* self, UINT count, const D3D12_RESOURCE_BARRIER* barriers) {
-    self->pc->ResourceBarrier(count, barriers);
+    record_barriers(self, count, barriers, false);
     return kNoBarrierActions;
 }
 
@@ -114,15 +134,7 @@ void STDMETHODCALLTYPE list_set_descriptor_heaps(ConsoleList* self, UINT count, 
 }
 
 UINT STDMETHODCALLTYPE dma_list_resource_barrier(ConsoleList* self, UINT count, const D3D12_RESOURCE_BARRIER* barriers) {
-    if (count > kMaxBarriersPerCall || (count && !barriers)) {
-        G6SHIM_WARN("DMA ResourceBarrier(%u barriers): too many or null, ignored", count);
-        return kNoBarrierActions;
-    }
-    D3D12_RESOURCE_BARRIER kept[kMaxBarriersPerCall];
-    UINT kept_count = 0;
-    for (UINT i = 0; i < count; ++i)
-        if (kept_on_copy_list(barriers[i])) kept[kept_count++] = barriers[i];
-    if (kept_count) self->pc->ResourceBarrier(kept_count, kept);
+    record_barriers(self, count, barriers, true);
     return kNoBarrierActions;
 }
 

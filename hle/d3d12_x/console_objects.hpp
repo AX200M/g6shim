@@ -199,6 +199,17 @@ inline D3D12_RESOURCE_STATES pc_initial_state(const D3D12_RESOURCE_DESC* desc, D
     return texture && copy_state ? D3D12_RESOURCE_STATE_COMMON : state;
 }
 
+inline constexpr D3D12_RESOURCE_STATES kBufferOnlyStates =
+    D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_INDEX_BUFFER;
+
+inline bool pc_transition(const D3D12_RESOURCE_BARRIER& console, bool texture, D3D12_RESOURCE_BARRIER* pc) {
+    *pc = console;
+    if (console.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || !texture) return true;
+    pc->Transition.StateBefore &= ~kBufferOnlyStates;
+    pc->Transition.StateAfter &= ~kBufferOnlyStates;
+    return pc->Transition.StateBefore != pc->Transition.StateAfter;
+}
+
 struct ConsoleListDesc {
     std::uint32_t type;
     std::uint32_t flags;

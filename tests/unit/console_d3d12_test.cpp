@@ -152,3 +152,19 @@ TEST(frame_event_waits_hand_out_growing_tokens) {
           HRESULT_FROM_WIN32(ERROR_TIMEOUT));
     CHECK(device_set_frame_interval(nullptr, nullptr, 16667, 1, 0) == S_OK);
 }
+
+TEST(texture_transitions_drop_buffer_states) {
+    D3D12_RESOURCE_BARRIER console{};
+    console.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    console.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    console.Transition.StateAfter = static_cast<D3D12_RESOURCE_STATES>(0x8C3);
+    D3D12_RESOURCE_BARRIER pc{};
+    CHECK(pc_transition(console, true, &pc));
+    CHECK(pc.Transition.StateAfter == static_cast<D3D12_RESOURCE_STATES>(0x8C0));
+    CHECK(pc_transition(console, false, &pc) && pc.Transition.StateAfter == console.Transition.StateAfter);
+    console.Transition.StateBefore = D3D12_RESOURCE_STATE_INDEX_BUFFER;
+    console.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+    CHECK(!pc_transition(console, true, &pc));
+    console.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    CHECK(pc_transition(console, true, &pc));
+}

@@ -18,3 +18,5 @@
   Title IDs: 1738CA2A
 - Textures are handed to the title as PC objects whose function table is replaced by a copy with its own `Release` and `GetGPUVirtualAddress`.
   Closes when: resources are wrapped in console objects.
+- Texture transitions lose the vertex and constant buffer and index buffer states; a transition left with equal states is dropped.
+  Title IDs: 1738CA2A
