@@ -4,6 +4,7 @@
 
 #include <g6shim/log.hpp>
 
+#include <atomic>
 #include <initializer_list>
 #include <new>
 #include <vector>
@@ -124,6 +125,15 @@ UINT STDMETHODCALLTYPE dma_list_resource_barrier(ConsoleList* self, UINT count, 
     return kNoBarrierActions;
 }
 
+void STDMETHODCALLTYPE list_copy_texture_region_x(ConsoleList* self, const D3D12_TEXTURE_COPY_LOCATION* destination,
+                                                  UINT x, UINT y, UINT z, const D3D12_TEXTURE_COPY_LOCATION* source,
+                                                  const D3D12_BOX* box, UINT flags) {
+    static std::atomic<int> logged{0};
+    if (flags && logged.fetch_add(1, std::memory_order_relaxed) < kLoggedFlagWarnings)
+        G6SHIM_WARN("CopyTextureRegionX: flags 0x%X ignored", flags);
+    self->pc->CopyTextureRegion(destination, x, y, z, source, box);
+}
+
 D3D12_COMMAND_LIST_TYPE STDMETHODCALLTYPE list_get_console_type(ConsoleList* self) {
     return static_cast<D3D12_COMMAND_LIST_TYPE>(self->type);
 }
@@ -135,7 +145,8 @@ const void* const* list_table() {
                      {{list_slot::kGetType, reinterpret_cast<const void*>(&list_get_console_type)},
                       {list_slot::kResourceBarrier, reinterpret_cast<const void*>(&list_resource_barrier)},
                       {list_slot::kExecuteBundle, reinterpret_cast<const void*>(&list_execute_bundle)},
-                      {list_slot::kSetDescriptorHeaps, reinterpret_cast<const void*>(&list_set_descriptor_heaps)}});
+                      {list_slot::kSetDescriptorHeaps, reinterpret_cast<const void*>(&list_set_descriptor_heaps)},
+                      {list_slot::kCopyTextureRegionX, reinterpret_cast<const void*>(&list_copy_texture_region_x)}});
         return child_table<ConsoleList>("ID3D12GraphicsCommandList", list_slot::kMappedEnd, list_slot::kSlots, slots);
     }();
     return table;

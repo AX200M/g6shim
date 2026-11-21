@@ -22,9 +22,11 @@
   Title IDs: 1738CA2A
 - `SetFrameIntervalX` ignores its output and flags; `ScheduleFrameEventX` honours flag 1 (no signal) and ignores the others.
   Title IDs: 1738CA2A
-- Graphics command list slots 56 to 59 are taken to be `SetMarker`, `BeginEvent`, `EndEvent` and `ExecuteIndirect` in PC order; no title has called them yet. Slots 60 and up are probes.
+- Graphics command list slots 56 to 59 are taken to be `SetMarker`, `BeginEvent`, `EndEvent` and `ExecuteIndirect` in PC order; no title has called them yet. Slots 60 and up are probes, except 83.
   Title IDs: 1738CA2A
 - DMA command list slots 16 to 21 are taken to be `BeginQuery`, `EndQuery`, `ResolveQueryData`, `SetMarker`, `BeginEvent` and `EndEvent`; no title has called them yet. Slots 22 and up are probes.
+  Title IDs: 1738CA2A
+- `CopyTextureRegionX` (graphics list slot 83) ignores its flags and logs non-zero ones.
   Title IDs: 1738CA2A
 - Command list `ResourceBarrier` is taken to return a `UINT`; g6shim returns 0 without knowing what the title reads from it.
   Title IDs: 1738CA2A

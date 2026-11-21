@@ -72,6 +72,7 @@ inline constexpr std::size_t kFirstQuery = 28;
 inline constexpr std::size_t kSetDescriptorHeaps = kFirstQuery + pc_list_slot::kQueryAndPredicationSlots;
 inline constexpr std::size_t kAfterMovedBlock = pc_list_slot::kBeginQuery + pc_list_slot::kQueryAndPredicationSlots;
 inline constexpr std::size_t kMappedEnd = pc_list_slot::kExecuteIndirect + 1;
+inline constexpr std::size_t kCopyTextureRegionX = 83;
 inline constexpr std::size_t kSlots = 160;
 }  // namespace list_slot
 
@@ -138,6 +139,7 @@ inline constexpr std::uint32_t kMaxBarriersPerCall = 256;
 inline constexpr UINT kNoBarrierActions = 0;
 inline constexpr UINT64 kNoGpuDescriptorAddress = 0;
 inline constexpr UINT kMaxAllocationInfoDescs = 64;
+inline constexpr int kLoggedFlagWarnings = 4;
 inline constexpr UINT64 kInvalidAllocationSize = ~0ull;
 
 inline constexpr std::uint32_t kConsoleQueueTypeDirect = 0;
