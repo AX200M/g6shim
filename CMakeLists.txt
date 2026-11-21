@@ -23,8 +23,16 @@ add_compile_definitions(_CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN NOMINMAX)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
+include(cmake/g6shim.cmake)
+
+add_subdirectory(runtime)
+
 if(G6SHIM_BUILD_TOOLS)
   add_subdirectory(src)
+endif()
+
+if(G6SHIM_BUILD_HLE)
+  g6shim_add_hle_dir("${G6SHIM_HLE_DIR}")
 endif()
 
 if(G6SHIM_BUILD_TOOLS AND G6SHIM_BUILD_TESTS)

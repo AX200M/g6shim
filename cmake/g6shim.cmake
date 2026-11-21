@@ -1,0 +1,88 @@
+# SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
+# SPDX-License-Identifier: LGPL-3.0-or-later
+function(g6shim_forward_imports target def)
+  file(READ "${def}" text)
+  string(ASCII 1 separator)
+  string(REPLACE ";" "${separator}" text "${text}")
+  string(REPLACE "\r" "" text "${text}")
+  string(REPLACE "\n" ";" lines "${text}")
+  set(modules)
+  foreach(line IN LISTS lines)
+    string(FIND "${line}" "${separator}" at)
+    if(at GREATER_EQUAL 0)
+      string(SUBSTRING "${line}" 0 ${at} line)
+    endif()
+    if(line MATCHES "^[ \t]*[^ \t=]+[ \t]*=[ \t]*([A-Za-z0-9_-]+)\\.([^ \t#][^ \t]*)")
+      string(TOLOWER "${CMAKE_MATCH_1}" module)
+      list(APPEND modules "${module}")
+      list(APPEND "names_${module}" "${CMAKE_MATCH_2}")
+    endif()
+  endforeach()
+  list(REMOVE_DUPLICATES modules)
+
+  foreach(module IN LISTS modules)
+    set(base "${CMAKE_CURRENT_BINARY_DIR}/${target}_forward_${module}")
+    list(REMOVE_DUPLICATES "names_${module}")
+    list(JOIN "names_${module}" "\n    " exports)
+    set(content "LIBRARY ${module}.dll\nEXPORTS\n    ${exports}\n")
+    set(old "")
+    if(EXISTS "${base}.def")
+      file(READ "${base}.def" old)
+    endif()
+    if(NOT "${old}" STREQUAL "${content}")
+      file(WRITE "${base}.def" "${content}")
+    endif()
+    add_custom_command(OUTPUT "${base}.lib"
+      COMMAND "${CMAKE_AR}" /nologo /machine:x64 "/def:${base}.def" "/out:${base}.lib"
+      DEPENDS "${base}.def"
+      VERBATIM)
+    add_custom_target(${target}_forward_${module} DEPENDS "${base}.lib")
+    add_dependencies(${target} ${target}_forward_${module})
+    target_link_libraries(${target} PRIVATE "${base}.lib")
+  endforeach()
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${def}")
+endfunction()
+
+function(g6shim_add_hle_module target)
+  cmake_parse_arguments(PARSE_ARGV 1 ARG "" "DLL;DEF" "SOURCES")
+  if(NOT ARG_DLL OR NOT ARG_DEF)
+    message(FATAL_ERROR "g6shim_add_hle_module(${target}): DLL and DEF are required")
+  endif()
+
+  add_library(${target} SHARED ${ARG_SOURCES} ${ARG_DEF})
+  target_link_libraries(${target} PRIVATE g6shim::runtime)
+  target_link_options(${target} PRIVATE /INCLUDE:g6shim_runtime_marker)
+  g6shim_forward_imports(${target} "${ARG_DEF}")
+
+  get_filename_component(stem "${ARG_DLL}" NAME_WLE)
+  get_filename_component(ext "${ARG_DLL}" LAST_EXT)
+  if(NOT ext)
+    set(ext ".dll")
+  endif()
+  set_target_properties(${target} PROPERTIES PREFIX "" OUTPUT_NAME "${stem}" SUFFIX "${ext}")
+
+  set_property(GLOBAL APPEND PROPERTY G6SHIM_HLE_TARGETS ${target})
+endfunction()
+
+function(g6shim_add_hle_dir dir)
+  file(GLOB children LIST_DIRECTORIES true RELATIVE "${dir}" CONFIGURE_DEPENDS "${dir}/*")
+  list(SORT children)
+  foreach(child IN LISTS children)
+    if(IS_DIRECTORY "${dir}/${child}" AND EXISTS "${dir}/${child}/CMakeLists.txt")
+      add_subdirectory("${dir}/${child}" "${CMAKE_BINARY_DIR}/hle/${child}")
+    endif()
+  endforeach()
+
+  get_property(hle_targets GLOBAL PROPERTY G6SHIM_HLE_TARGETS)
+  if(G6SHIM_GAME_DIR)
+    set(files $<TARGET_FILE:g6shim_runtime>)
+    foreach(t IN LISTS hle_targets)
+      list(APPEND files $<TARGET_FILE:${t}>)
+    endforeach()
+    add_custom_target(g6shim_deploy
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${files} "${G6SHIM_GAME_DIR}"
+      DEPENDS g6shim_runtime ${hle_targets}
+      COMMENT "Copying g6shim DLLs into ${G6SHIM_GAME_DIR}"
+      VERBATIM)
+  endif()
+endfunction()
