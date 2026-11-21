@@ -117,4 +117,128 @@ HRESULT compute_linear_layout(const Texture2DDesc& desc, ResourceLayout* layout)
     return S_OK;
 }
 
+namespace {
+
+std::uint32_t next_power_of_two(std::uint32_t value) {
+    std::uint32_t result = 1;
+    while (result < value) result <<= 1;
+    return result;
+}
+
+std::uint32_t morton_index(std::uint32_t x, std::uint32_t y) {
+    std::uint32_t index = 0;
+    for (std::uint32_t bit = 0; bit < 3; ++bit) {
+        index |= ((x >> bit) & 1u) << (2 * bit);
+        index |= ((y >> bit) & 1u) << (2 * bit + 1);
+    }
+    return index;
+}
+
+struct LayoutCounts {
+    FormatInfo format;
+    std::uint32_t mips;
+    std::uint32_t array_size;
+    std::uint32_t samples;
+};
+
+HRESULT layout_counts(const Texture2DDesc& desc, ResourceLayout* layout, LayoutCounts* counts) {
+    if (!layout) return E_POINTER;
+    if (desc.width == 0 || desc.height == 0 || !format_info(desc.format, &counts->format)) return E_INVALIDARG;
+    counts->mips = desc.mip_levels ? desc.mip_levels : full_mip_chain(desc.width, desc.height);
+    if (counts->mips > kMaxMipLevels || counts->mips > full_mip_chain(desc.width, desc.height)) return E_INVALIDARG;
+    counts->array_size = std::max(desc.array_size, 1u);
+    counts->samples = std::max(desc.sample_count, 1u);
+    return S_OK;
+}
+
+void finish_layout(const LayoutCounts& counts, std::uint64_t size, ResourceLayout* layout) {
+    PlaneLayout& plane = layout->plane[0];
+    plane.usage = kPlaneUsageDefault;
+    plane.size_bytes = size;
+    plane.base_alignment_bytes = kTiledSliceAlignment;
+    plane.bytes_per_element = counts.format.bytes_per_element;
+    layout->size_bytes = size;
+    layout->base_alignment_bytes = kTiledSliceAlignment;
+    layout->mip_levels = counts.mips;
+    layout->planes = 1;
+    layout->dimension = kResourceDimensionTexture2D;
+}
+
+}  // namespace
+
+HRESULT compute_tiled_layout(const Texture2DDesc& desc, ResourceLayout* layout) {
+    LayoutCounts counts{};
+    const HRESULT hr = layout_counts(desc, layout, &counts);
+    if (FAILED(hr)) return hr;
+    if (counts.samples > 1) return E_INVALIDARG;
+    std::memset(layout, 0, sizeof *layout);
+    const FormatInfo& format = counts.format;
+    const bool chain = counts.mips > 1;
+    const std::uint32_t slices = chain ? next_power_of_two(counts.array_size) : counts.array_size;
+    std::uint64_t offset = 0;
+    for (std::uint32_t level = 0; level < counts.mips; ++level) {
+        MipLayout& mip = layout->plane[0].mips[level];
+        std::uint32_t texels_wide = std::max(desc.width >> level, 1u);
+        std::uint32_t texels_high = std::max(desc.height >> level, 1u);
+        const std::uint32_t width = elements(texels_wide, format.block_width);
+        const std::uint32_t height = elements(texels_high, format.block_height);
+        if (chain) {
+            texels_wide = std::max(next_power_of_two(desc.width) >> level, 1u);
+            texels_high = next_power_of_two(texels_high);
+        }
+        std::uint32_t pitch = static_cast<std::uint32_t>(
+            align_up(elements(texels_wide, format.block_width), kMicroTileElements));
+        const auto padded_height = static_cast<std::uint32_t>(
+            align_up(elements(texels_high, format.block_height), kMicroTileElements));
+        while (std::uint64_t{pitch} * padded_height * format.bytes_per_element % kTiledSliceAlignment != 0)
+            pitch += kMicroTileElements;
+        mip.slice_2d_size_bytes = std::uint64_t{pitch} * padded_height * format.bytes_per_element;
+        mip.size_bytes = mip.slice_2d_size_bytes * slices;
+        mip.offset_bytes = offset;
+        mip.pitch_pixels = pitch * format.block_width;
+        mip.pitch_bytes = pitch * format.bytes_per_element;
+        mip.alignment_bytes = kTiledSliceAlignment;
+        mip.padded_width_elements = pitch;
+        mip.padded_height_elements = padded_height;
+        mip.padded_depth_or_array_size = slices;
+        mip.width_elements = width;
+        mip.height_elements = height;
+        mip.depth_or_array_size = counts.array_size;
+        mip.sample_count = 1;
+        mip.tile_mode = kTileModeThin1D;
+        mip.slice_depth_elements = 1;
+        offset += mip.size_bytes;
+    }
+    finish_layout(counts, offset, layout);
+    return S_OK;
+}
+
+HRESULT compute_layout(const Texture2DDesc& desc, ResourceLayout* layout) {
+    switch (desc.tile_mode) {
+    case kTileModeThin1D: return compute_tiled_layout(desc, layout);
+    case kTileModeLinearGeneral: return compute_linear_layout(desc, layout);
+    default: return E_INVALIDARG;
+    }
+}
+
+std::uint64_t tiled_element_offset(std::uint32_t x, std::uint32_t y, std::uint32_t pitch_elements,
+                                   std::uint32_t bytes_per_element) {
+    const std::uint64_t tiles_per_row = pitch_elements / kMicroTileElements;
+    const std::uint64_t tile = (y / kMicroTileElements) * tiles_per_row + x / kMicroTileElements;
+    const std::uint64_t tile_bytes = std::uint64_t{kMicroTileElements} * kMicroTileElements * bytes_per_element;
+    return tile * tile_bytes + std::uint64_t{morton_index(x % kMicroTileElements, y % kMicroTileElements)} *
+                                   bytes_per_element;
+}
+
+void detile(const unsigned char* tiled, std::uint32_t pitch_elements, std::uint32_t width_elements,
+            std::uint32_t height_elements, std::uint32_t bytes_per_element, unsigned char* linear,
+            std::uint64_t row_pitch) {
+    for (std::uint32_t y = 0; y < height_elements; ++y) {
+        unsigned char* row = linear + y * row_pitch;
+        for (std::uint32_t x = 0; x < width_elements; ++x)
+            std::memcpy(row + std::uint64_t{x} * bytes_per_element,
+                        tiled + tiled_element_offset(x, y, pitch_elements, bytes_per_element), bytes_per_element);
+    }
+}
+
 }  // namespace g6shim::xg

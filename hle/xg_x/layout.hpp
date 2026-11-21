@@ -14,6 +14,9 @@ inline constexpr std::uint32_t kMaxPlanes = 4;
 inline constexpr std::uint32_t kResourceDimensionTexture2D = 3;
 inline constexpr std::uint32_t kPlaneUsageDefault = 1;
 inline constexpr std::uint32_t kTileModeLinearGeneral = 8;
+inline constexpr std::uint32_t kTileModeThin1D = 13;
+inline constexpr std::uint32_t kMicroTileElements = 8;
+inline constexpr std::uint32_t kTiledSliceAlignment = 256;
 inline constexpr std::uint32_t kRowPitchAlignment = 256;
 inline constexpr std::uint32_t kPlacementAlignment = 512;
 
@@ -92,5 +95,16 @@ struct FormatInfo {
 bool format_info(std::uint32_t format, FormatInfo* info);
 std::uint32_t full_mip_chain(std::uint32_t width, std::uint32_t height);
 HRESULT compute_linear_layout(const Texture2DDesc& desc, ResourceLayout* layout);
+HRESULT compute_tiled_layout(const Texture2DDesc& desc, ResourceLayout* layout);
+HRESULT compute_layout(const Texture2DDesc& desc, ResourceLayout* layout);
+
+inline std::uint32_t optimal_tile_mode(std::uint32_t dimension, std::uint32_t samples) {
+    return dimension == kResourceDimensionTexture2D && samples <= 1 ? kTileModeThin1D : kTileModeLinearGeneral;
+}
+std::uint64_t tiled_element_offset(std::uint32_t x, std::uint32_t y, std::uint32_t pitch_elements,
+                                   std::uint32_t bytes_per_element);
+void detile(const unsigned char* tiled, std::uint32_t pitch_elements, std::uint32_t width_elements,
+            std::uint32_t height_elements, std::uint32_t bytes_per_element, unsigned char* linear,
+            std::uint64_t row_pitch);
 
 }  // namespace g6shim::xg

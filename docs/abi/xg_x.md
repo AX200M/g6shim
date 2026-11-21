@@ -1,12 +1,12 @@
 # xg_x.dll
 
-The console's texture layout library. Titles ask it how a texture is laid out in memory before they write texel data themselves. Observed with 1738CA2A (GDK build). g6shim describes every texture as linear, with the row pitches and placements the PC copy functions need.
+The console's texture layout library. Titles ask it how a texture is laid out in memory before they write texel data themselves. Observed with 1738CA2A (GDK build), and compared with the console library's results. g6shim reproduces the console's layout for tile mode 13 and describes other textures as linear, with the row pitches and placements the PC copy functions need.
 
 ## Exports
 
 | Export | Signature and use |
 |---|---|
-| `XGComputeOptimalTileMode` | `UINT (dimension, format, width, height, array size, sample count, bind flags, misc flags)`; 1738CA2A passes dimension 3 (2D) and bind flags 8 (shader resource). g6shim returns 8 (linear general). |
+| `XGComputeOptimalTileMode` | `UINT (dimension, format, width, height, array size, sample count, bind flags, misc flags)`; 1738CA2A passes dimension 3 (2D) and bind flags 8 (shader resource). The console answers 13 for single-sample 2D textures of every size and format tried; g6shim does the same and answers 8 (linear general) otherwise. |
 | `XGCreateTexture2DComputer` | `HRESULT (const desc*, computer**)` |
 
 ## Texture 2D description (0x3C bytes)
@@ -66,3 +66,17 @@ Mip record:
 | +0x58 | `UINT32` slice depth |
 
 Widths and heights count elements: 4×4 blocks for block-compressed formats, whose bytes per element is the block size. The row pitch in texels counts texels. The slices of a mip are stored one after another. Records beyond the mip and plane counts are zero. 1738CA2A reads each mip's offset to stream mips separately.
+
+## Tile mode 13
+
+Tile mode 13 lays a texture out in tiles of 8×8 elements (texels, or 4×4 blocks for block-compressed formats). Tiles run row by row across the padded width. Inside a tile, the element at (x, y) is number `x0 | y0<<1 | x1<<2 | y1<<3 | x2<<4 | y2<<5`, where `xn` and `yn` are bit n of x and y. Its byte offset is that number times the element size.
+
+Padding of a level:
+
+- Without mips, width and height are rounded up to 8 elements.
+- With more than one mip, the width of level n is `next power of two of the base width` shifted right n times, and its height is the next power of two of the level's own height. Both are then rounded up to 8 elements, and the array size is rounded up to a power of two.
+- Then the width grows by 8 elements until one slice is a multiple of 256 bytes.
+
+Levels follow each other with no gap. Within a level, each array slice is complete before the next. The row pitch in bytes is the padded width times the element size, and alignments are 256 bytes.
+
+1738CA2A reads texture files into the memory of its textures in this layout, without converting them.

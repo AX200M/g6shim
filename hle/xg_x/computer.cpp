@@ -15,7 +15,7 @@ namespace g6shim::xg {
 
 namespace {
 
-constexpr int kLoggedCalls = 4;
+constexpr int kLoggedCalls = 64;
 
 ULONG STDMETHODCALLTYPE computer_add_ref(TextureComputer* self) {
     return self->refs.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -66,7 +66,7 @@ HRESULT create_texture_2d_computer(const Texture2DDesc* desc, TextureComputer** 
     *out = nullptr;
     auto* computer = new (std::nothrow) TextureComputer{};
     if (!computer) return E_OUTOFMEMORY;
-    const HRESULT hr = compute_linear_layout(*desc, &computer->layout);
+    const HRESULT hr = compute_layout(*desc, &computer->layout);
     if (FAILED(hr)) {
         delete computer;
         return hr;
@@ -81,16 +81,17 @@ HRESULT create_texture_2d_computer(const Texture2DDesc* desc, TextureComputer** 
 
 using namespace g6shim::xg;
 
-extern "C" std::uint32_t g6shim_XGComputeOptimalTileMode(std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t,
-                                                         std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t) {
-    return kTileModeLinearGeneral;
+extern "C" std::uint32_t g6shim_XGComputeOptimalTileMode(std::uint32_t dimension, std::uint32_t, std::uint32_t,
+                                                         std::uint32_t, std::uint32_t, std::uint32_t samples,
+                                                         std::uint32_t, std::uint32_t) {
+    return optimal_tile_mode(dimension, samples);
 }
 
 extern "C" HRESULT g6shim_XGCreateTexture2DComputer(const Texture2DDesc* desc, TextureComputer** out) {
     const HRESULT hr = create_texture_2d_computer(desc, out);
     static std::atomic<int> logged{0};
     if (desc && (FAILED(hr) || logged.fetch_add(1, std::memory_order_relaxed) < kLoggedCalls))
-        G6SHIM_INFO("XGCreateTexture2DComputer(%ux%u, %u mips, %u slices, format %u) -> 0x%08lX", desc->width,
-                    desc->height, desc->mip_levels, desc->array_size, desc->format, hr);
+        G6SHIM_INFO("XGCreateTexture2DComputer(%ux%u, %u mips, %u slices, format %u, tile mode %u) -> 0x%08lX",
+                    desc->width, desc->height, desc->mip_levels, desc->array_size, desc->format, desc->tile_mode, hr);
     return hr;
 }

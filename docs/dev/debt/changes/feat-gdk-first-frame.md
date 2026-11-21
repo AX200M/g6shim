@@ -29,3 +29,17 @@
 - Constant buffer views that break the PC's 256-byte alignment read a copy of their data, refreshed from the title's upload buffer before every `ExecuteCommandLists`, so frames still on the GPU may see constants written for a later frame. Views outside upload buffers move down to the alignment and read the wrong bytes.
   Closes when: the copies are tied to the submissions that use them.
   Title IDs: 1738CA2A
+
+# xg_x
+
+## change returns the linear general tile mode
+
+- `XGComputeOptimalTileMode` answers from the dimension and sample count only: tile mode 13 for single-sample 2D textures, linear general (8) otherwise.
+  Closes when: a title is seen getting another tile mode from the console.
+  Title IDs: 1738CA2A
+
+## change Texture layouts are linear
+
+- Only tile modes 13 and 8 are described; computers for other tile modes get `E_INVALIDARG`. Mode 13 matches the console's layouts, mode 8 uses the row pitch (256 bytes) and placement (512 bytes) of PC copy footprints.
+  Closes when: a title asks for another tile mode.
+  Title IDs: 1738CA2A

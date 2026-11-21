@@ -10,6 +10,7 @@
 
 #include <cstdio>
 #include <memory>
+#include <vector>
 
 using namespace g6shim::xg;
 
@@ -132,4 +133,91 @@ TEST(xg_texture_computer_hands_out_its_layout) {
     CHECK(reinterpret_cast<Count>(computer->table[computer_slot::kRelease])(computer) == 0);
     const Texture2DDesc bad = texture(64, 32, 0, DXGI_FORMAT_UNKNOWN);
     CHECK(create_texture_2d_computer(&bad, &computer) == E_INVALIDARG && !computer);
+}
+
+namespace {
+
+Texture2DDesc tiled(std::uint32_t width, std::uint32_t height, std::uint32_t mips, DXGI_FORMAT format,
+                    std::uint32_t slices = 1) {
+    Texture2DDesc desc = texture(width, height, mips, format);
+    desc.array_size = slices;
+    desc.tile_mode = kTileModeThin1D;
+    return desc;
+}
+
+}  // namespace
+
+TEST(xg_picks_thin_tiling_for_2d_textures) {
+    CHECK(optimal_tile_mode(kResourceDimensionTexture2D, 1) == kTileModeThin1D);
+    CHECK(optimal_tile_mode(kResourceDimensionTexture2D, 4) == kTileModeLinearGeneral);
+    CHECK(optimal_tile_mode(2, 1) == kTileModeLinearGeneral);
+}
+
+TEST(xg_tiled_layouts_match_the_console) {
+    auto layout = std::make_unique<ResourceLayout>();
+    CHECK(compute_layout(tiled(100, 60, 1, DXGI_FORMAT_R8G8B8A8_UNORM), layout.get()) == S_OK);
+    const MipLayout& single = layout->plane[0].mips[0];
+    CHECK(layout->size_bytes == 26624 && single.padded_width_elements == 104 && single.padded_height_elements == 64);
+    CHECK(single.pitch_bytes == 416 && single.tile_mode == kTileModeThin1D);
+
+    CHECK(compute_layout(tiled(100, 60, 0, DXGI_FORMAT_R8G8B8A8_UNORM), layout.get()) == S_OK);
+    const PlaneLayout& chain = layout->plane[0];
+    CHECK(layout->size_bytes == 44288 && layout->mip_levels == 7);
+    CHECK(chain.mips[0].padded_width_elements == 128 && chain.mips[0].padded_height_elements == 64);
+    CHECK(chain.mips[1].offset_bytes == 32768 && chain.mips[3].offset_bytes == 43008 && chain.mips[6].offset_bytes == 44032);
+    CHECK(chain.mips[4].width_elements == 6 && chain.mips[4].height_elements == 3 && chain.mips[4].size_bytes == 256);
+
+    CHECK(compute_layout(tiled(1, 1, 1, DXGI_FORMAT_A8_UNORM), layout.get()) == S_OK);
+    CHECK(layout->plane[0].mips[0].padded_width_elements == 32 && layout->plane[0].mips[0].padded_height_elements == 8);
+    CHECK(compute_layout(tiled(6, 10, 1, DXGI_FORMAT_A8_UNORM), layout.get()) == S_OK);
+    CHECK(layout->plane[0].mips[0].padded_width_elements == 16 && layout->plane[0].mips[0].padded_height_elements == 16);
+
+    CHECK(compute_layout(tiled(1, 17, 0, DXGI_FORMAT_R8G8B8A8_UNORM), layout.get()) == S_OK);
+    CHECK(layout->size_bytes == 2048 && layout->plane[0].mips[1].padded_height_elements == 8);
+    CHECK(compute_layout(tiled(17, 1, 0, DXGI_FORMAT_R8G8B8A8_UNORM), layout.get()) == S_OK);
+    CHECK(layout->size_bytes == 2304 && layout->plane[0].mips[1].padded_width_elements == 16);
+
+    CHECK(compute_layout(tiled(1, 2, 0, DXGI_FORMAT_R8G8B8A8_UNORM, 3), layout.get()) == S_OK);
+    CHECK(layout->size_bytes == 2048 && layout->plane[0].mips[0].padded_depth_or_array_size == 4);
+    CHECK(layout->plane[0].mips[0].depth_or_array_size == 3);
+
+    CHECK(compute_layout(tiled(300, 200, 0, DXGI_FORMAT_BC1_UNORM), layout.get()) == S_OK);
+    CHECK(layout->size_bytes == 89600 && layout->plane[0].mips[0].pitch_pixels == 512);
+    CHECK(layout->plane[0].mips[0].padded_width_elements == 128 && layout->plane[0].mips[0].width_elements == 75);
+
+    Texture2DDesc unknown = tiled(16, 16, 1, DXGI_FORMAT_R8G8B8A8_UNORM);
+    unknown.tile_mode = 14;
+    CHECK(compute_layout(unknown, layout.get()) == E_INVALIDARG);
+}
+
+TEST(xg_tiled_elements_follow_the_console_order) {
+    CHECK(tiled_element_offset(0, 0, 64, 4) == 0);
+    CHECK(tiled_element_offset(1, 0, 64, 4) == 0x4 && tiled_element_offset(0, 1, 64, 4) == 0x8);
+    CHECK(tiled_element_offset(2, 0, 64, 4) == 0x10 && tiled_element_offset(4, 0, 64, 4) == 0x40);
+    CHECK(tiled_element_offset(7, 7, 64, 4) == 0xFC && tiled_element_offset(8, 0, 64, 4) == 0x100);
+    CHECK(tiled_element_offset(0, 8, 64, 4) == 0x800 && tiled_element_offset(9, 8, 64, 4) == 0x904);
+    CHECK(tiled_element_offset(8, 0, 2048, 4) == 0x100 && tiled_element_offset(0, 8, 2048, 4) == 0x10000);
+    CHECK(tiled_element_offset(1, 1, 64, 1) == 0x3 && tiled_element_offset(4, 4, 64, 1) == 0x30);
+    CHECK(tiled_element_offset(1, 0, 64, 8) == 0x8 && tiled_element_offset(0, 2, 64, 8) == 0x40);
+    CHECK(tiled_element_offset(3, 3, 64, 16) == 0xF0);
+}
+
+TEST(xg_detiling_restores_rows) {
+    constexpr std::uint32_t kPitch = 16;
+    constexpr std::uint32_t kWidth = 12;
+    constexpr std::uint32_t kHeight = 10;
+    std::vector<unsigned char> tiled_bytes(kPitch * 16 * 2);
+    for (std::uint32_t y = 0; y < kHeight; ++y)
+        for (std::uint32_t x = 0; x < kWidth; ++x) {
+            const std::uint64_t at = tiled_element_offset(x, y, kPitch, 2);
+            tiled_bytes[at] = static_cast<unsigned char>(x);
+            tiled_bytes[at + 1] = static_cast<unsigned char>(y);
+        }
+    std::vector<unsigned char> rows(64 * kHeight);
+    detile(tiled_bytes.data(), kPitch, kWidth, kHeight, 2, rows.data(), 64);
+    bool ok = true;
+    for (std::uint32_t y = 0; y < kHeight; ++y)
+        for (std::uint32_t x = 0; x < kWidth; ++x)
+            ok = ok && rows[y * 64 + x * 2] == x && rows[y * 64 + x * 2 + 1] == y;
+    CHECK(ok);
 }
