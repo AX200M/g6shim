@@ -133,6 +133,7 @@ inline constexpr std::uint32_t kMaxExecutedLists = 256;
 inline constexpr std::uint32_t kMaxBoundDescriptorHeaps = 2;
 inline constexpr std::uint32_t kMaxBarriersPerCall = 256;
 inline constexpr UINT kNoBarrierActions = 0;
+inline constexpr UINT64 kNoGpuDescriptorAddress = 0;
 
 inline constexpr std::uint32_t kConsoleQueueTypeDirect = 0;
 inline constexpr std::uint32_t kConsoleQueueTypeCompute = 2;
@@ -151,6 +152,10 @@ inline constexpr std::uint32_t kConsoleHeapTypeSamplerUnbounded = 4;
 inline D3D12_DESCRIPTOR_HEAP_TYPE pc_heap_type(std::uint32_t console_type) {
     return console_type == kConsoleHeapTypeSamplerUnbounded ? D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER
                                                             : static_cast<D3D12_DESCRIPTOR_HEAP_TYPE>(console_type);
+}
+
+inline bool shader_visible(const D3D12_DESCRIPTOR_HEAP_DESC& desc) {
+    return desc.Flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 }
 
 inline D3D12_DESCRIPTOR_HEAP_DESC pc_heap_desc(const D3D12_DESCRIPTOR_HEAP_DESC& console) {

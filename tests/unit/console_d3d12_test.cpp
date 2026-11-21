@@ -29,6 +29,9 @@ TEST(console_sampler_heaps_fit_the_pc_limit) {
     CHECK(pc.Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     CHECK(pc.NumDescriptors == 100000);
     CHECK(pc_heap_type(D3D12_DESCRIPTOR_HEAP_TYPE_RTV) == D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    CHECK(shader_visible(console));
+    console.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    CHECK(!shader_visible(console));
 }
 
 TEST(console_options_structure_is_larger) {

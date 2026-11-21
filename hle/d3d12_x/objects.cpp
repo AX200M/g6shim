@@ -75,6 +75,7 @@ SIZE_T STDMETHODCALLTYPE heap_cpu_start(ConsoleHeap* self) {
 }
 
 UINT64 STDMETHODCALLTYPE heap_gpu_start(ConsoleHeap* self) {
+    if (!shader_visible(self->console_desc)) return kNoGpuDescriptorAddress;
     return self->pc->GetGPUDescriptorHandleForHeapStart().ptr;
 }
 
