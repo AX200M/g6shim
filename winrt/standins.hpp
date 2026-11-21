@@ -12,6 +12,7 @@ void register_user();
 void register_account_picker();
 void register_application_context();
 void register_connected_storage();
+void register_sensor();
 
 void* local_user();
 const void* gamepad_get_current_reading();

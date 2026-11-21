@@ -19,6 +19,7 @@ void register_standins() {
         register_account_picker();
         register_application_context();
         register_connected_storage();
+        register_sensor();
     });
 }
 
