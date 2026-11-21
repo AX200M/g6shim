@@ -39,6 +39,7 @@ inline constexpr std::size_t kSlots = 160;
 
 namespace queue_slot {
 inline constexpr std::size_t kExecuteCommandLists = 10;
+inline constexpr std::size_t kPresentX = 30;
 inline constexpr std::size_t kPcSlots = 18;
 inline constexpr std::size_t kSlots = 64;
 }  // namespace queue_slot
@@ -210,6 +211,14 @@ inline bool pc_transition(const D3D12_RESOURCE_BARRIER& console, bool texture, D
     return pc->Transition.StateBefore != pc->Transition.StateAfter;
 }
 
+struct ConsolePresentPlane {
+    std::uint64_t token;
+    std::uint32_t resource_count;
+    std::uint32_t reserved;
+    ID3D12Resource* const* resources;
+};
+static_assert(offsetof(ConsolePresentPlane, resources) == 0x10);
+
 struct ConsoleListDesc {
     std::uint32_t type;
     std::uint32_t flags;
@@ -296,6 +305,8 @@ static_assert(offsetof(ConsoleDxgiDevice, device) == kDxgiDeviceConsoleBytes);
 
 HRESULT create_console_device(ID3D12Device* pc, IDXGIAdapter1* adapter, ConsoleDevice** out);
 ConsoleQueue* wrap_queue(ConsoleDevice* device, ID3D12CommandQueue* pc);
+HRESULT STDMETHODCALLTYPE queue_present_x(ConsoleQueue* self, UINT plane_count, const ConsolePresentPlane* planes,
+                                          const void* parameters);
 ConsoleList* wrap_list(ConsoleDevice* device, ID3D12GraphicsCommandList* pc);
 ConsoleList* wrap_dma_list(ConsoleDevice* device, ID3D12GraphicsCommandList* pc);
 ID3D12CommandList* pc_list(void* list);

@@ -245,7 +245,8 @@ ID3D12DescriptorHeap* pc_heap(void* heap) {
 ConsoleQueue* wrap_queue(ConsoleDevice* device, ID3D12CommandQueue* pc) {
     static const void* const* table = child_table<ConsoleQueue>(
         "ID3D12CommandQueue", queue_slot::kPcSlots, queue_slot::kSlots,
-        {{queue_slot::kExecuteCommandLists, reinterpret_cast<const void*>(&queue_execute_command_lists)}});
+        {{queue_slot::kExecuteCommandLists, reinterpret_cast<const void*>(&queue_execute_command_lists)},
+         {queue_slot::kPresentX, reinterpret_cast<const void*>(&queue_present_x)}});
     ConsoleQueue* queue = wrap_child<ConsoleQueue>(device, pc, table);
     if (queue) queue->type = static_cast<std::uint32_t>(pc->GetDesc().Type);
     return queue;

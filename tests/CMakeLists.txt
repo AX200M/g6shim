@@ -25,6 +25,7 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/frame_pacing.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/texture_shadow.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/removal.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_x/present.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xg_x/layout.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xg_x/computer.cpp")
 target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim::winrt d3d12 dxgi)

@@ -7,6 +7,7 @@
 #include "texture_shadow.hpp"
 
 #include <dxgi1_4.h>
+#include <g6shim/window.hpp>
 
 #include <cstdio>
 #include <cstring>
@@ -318,4 +319,42 @@ TEST(patched_tables_copy_only_readable_slots) {
     CHECK(readable_slots(table + 500, resource_slot::kCopiedSlots) == 12);
     VirtualFree(page, 0, MEM_RELEASE);
     CHECK(readable_slots(table, resource_slot::kCopiedSlots) == 0);
+}
+
+TEST(console_queues_present_a_render_target) {
+    WarpDevice device;
+    if (!device.ready()) return;
+    const HWND window = CreateWindowExW(0, L"STATIC", L"g6shim present test", WS_OVERLAPPEDWINDOW, 0, 0, 64, 64,
+                                        nullptr, nullptr, nullptr, nullptr);
+    CHECK(window != nullptr);
+    if (!window) return;
+    g6shim::set_main_window(window);
+    const D3D12_COMMAND_QUEUE_DESC queue_desc{D3D12_COMMAND_LIST_TYPE_DIRECT};
+    void* queue = nullptr;
+    CHECK(device.slot<CreateQueue>(device_slot::kCreateCommandQueue)(device.console, &queue_desc,
+                                                                     __uuidof(ID3D12CommandQueue), &queue) == S_OK);
+    D3D12_RESOURCE_DESC desc = buffer_desc(64, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Height = 32;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    const D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_DEFAULT};
+    ID3D12Resource* back_buffer = nullptr;
+    CHECK(SUCCEEDED(device.pc->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON,
+                                                       nullptr, IID_PPV_ARGS(&back_buffer))));
+    if (queue && back_buffer) {
+        using PresentX = HRESULT(STDMETHODCALLTYPE*)(void*, UINT, const ConsolePresentPlane*, const void*);
+        ConsolePresentPlane plane{1, 1, 0, &back_buffer};
+        for (int frame = 0; frame < 4; ++frame) {
+            plane.token = static_cast<std::uint64_t>(frame) + 1;
+            CHECK(list_slot_fn<PresentX>(queue, queue_slot::kPresentX)(queue, 1, &plane, nullptr) == S_OK);
+        }
+        CHECK(list_slot_fn<PresentX>(queue, queue_slot::kPresentX)(queue, 0, &plane, nullptr) == E_INVALIDARG);
+        CHECK(wait_idle(device.pc, static_cast<ConsoleQueue*>(queue)->pc));
+        CHECK(!report_device_removal(device.pc));
+    }
+    if (back_buffer) back_buffer->Release();
+    if (queue) list_slot_fn<ListRelease>(queue, kReleaseSlot)(queue);
+    g6shim::set_main_window(nullptr);
+    DestroyWindow(window);
 }

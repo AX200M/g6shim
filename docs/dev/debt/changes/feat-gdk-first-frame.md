@@ -6,6 +6,8 @@
   Title IDs: 1738CA2A
 - `FlushPipelineX` (graphics list slot 67) is taken to be a cache flush over a memory range and does nothing; its flags are not decoded.
   Title IDs: 1738CA2A
+- `PresentX` ignores its parameters and the pipeline token.
+  Title IDs: 1738CA2A
 
 ## add Functional
 
@@ -19,4 +21,6 @@
 - Textures are handed to the title as PC objects whose function table is replaced by a copy with its own `Release` and `GetGPUVirtualAddress`.
   Closes when: resources are wrapped in console objects.
 - Texture transitions lose the vertex and constant buffer and index buffer states; a transition left with equal states is dropped.
+  Title IDs: 1738CA2A
+- `PresentX` copies the first resource of the first plane into a flip-model swap chain on the title's largest top-level window and presents without waiting for the display; other planes are ignored.
   Title IDs: 1738CA2A
