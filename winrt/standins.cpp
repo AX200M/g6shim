@@ -13,6 +13,8 @@ void register_standins() {
     std::call_once(once, [] {
         register_core_application();
         register_app_model();
+        register_controller();
+        register_mouse();
     });
 }
 

@@ -12,11 +12,13 @@ add_executable(g6shim_tests
   unit/packet_test.cpp
   unit/view_desc_test.cpp
   unit/auto_event_test.cpp
-  unit/manifest_test.cpp)
+  unit/manifest_test.cpp
+  unit/input_mapping_test.cpp)
 target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim::winrt)
 target_include_directories(g6shim_tests PRIVATE
   "${PROJECT_SOURCE_DIR}/hle/kernelx"
-  "${PROJECT_SOURCE_DIR}/hle/d3d11_x")
+  "${PROJECT_SOURCE_DIR}/hle/d3d11_x"
+  "${PROJECT_SOURCE_DIR}/winrt")
 add_test(NAME unit COMMAND g6shim_tests)
 set_tests_properties(unit PROPERTIES TIMEOUT 30
   ENVIRONMENT "G6SHIM_LOG=${CMAKE_CURRENT_BINARY_DIR}/unit.log;G6SHIM_LOG_STDERR=0")
