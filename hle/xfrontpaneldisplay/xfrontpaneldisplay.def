@@ -1,0 +1,8 @@
+LIBRARY "XFrontPanelDisplay.dll"
+EXPORTS
+    XFrontPanelGetButtonStates=g6shim_stub_0
+    XFrontPanelGetLightStates=g6shim_stub_1
+    XFrontPanelGetScreenDimensions=g6shim_stub_2
+    XFrontPanelIsSupported=g6shim_stub_3
+    XFrontPanelPresentBuffer=g6shim_stub_4
+    XFrontPanelSetLightStates=g6shim_stub_5
