@@ -1,3 +1,5 @@
+Claimed as: <!-- item ID from #2 (no game files) or #3 (own title files), or none -->
+
 Summary:
 
 - [ ] Based on current `main`

@@ -18,6 +18,7 @@ The hooks run `tools/check_conventions.py` on staged files and on each commit me
 
 ## Pull requests
 
+- Claim the work first in the coordination issues: [#2](https://github.com/gookie-dev/g6shim/issues/2) for work without game files, [#3](https://github.com/gookie-dev/g6shim/issues/3) for work with your own title files. Comment `claiming: <ID>`, or `finding: <one line>` for work you found but will not do.
 - One topic per PR, based on current `main`. Follow-up work goes in a new PR.
 - All tests pass: `ctest --preset release`. New behaviour comes with tests.
 - At most three open PRs per author.
