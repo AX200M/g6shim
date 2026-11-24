@@ -24,6 +24,7 @@ constexpr wchar_t kBackslash = L'\\';
 constexpr wchar_t kColon = L':';
 constexpr int kFirstFreeLetter = L'D';
 constexpr std::size_t kMaxModulePath = 0x8000;
+constexpr wchar_t kPersistentFolder[] = L"g6shim_persistent";
 
 struct Mount {
     wchar_t letter;
@@ -273,6 +274,25 @@ int mount_drive(const wchar_t* root) {
     }
     G6SHIM_WARN("drives: no free letter for %ls", wide.c_str());
     return 0;
+}
+
+int persistent_storage_drive() {
+    const std::wstring folder = executable_folder();
+    if (folder.empty()) return 0;
+    const std::wstring root = folder + kBackslash + kPersistentFolder;
+    if (!CreateDirectoryW(root.c_str(), nullptr)) {
+        const DWORD error = GetLastError();
+        if (error != ERROR_ALREADY_EXISTS) {
+            G6SHIM_WARN("drives: cannot create %ls (error %lu)", root.c_str(), error);
+            return 0;
+        }
+    }
+    const DWORD attributes = GetFileAttributesW(root.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+        G6SHIM_WARN("drives: %ls is not a folder", root.c_str());
+        return 0;
+    }
+    return mount_drive(root.c_str());
 }
 
 void mount_drive_at(wchar_t letter, const wchar_t* root) {

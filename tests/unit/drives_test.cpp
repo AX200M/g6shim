@@ -17,6 +17,7 @@ using g6shim::drives::mount_drive;
 using g6shim::drives::mount_drive_at;
 using g6shim::drives::on_drive;
 using g6shim::drives::translate;
+using g6shim::drives::persistent_storage_drive;
 using g6shim::drives::translate_package;
 
 namespace {
@@ -363,4 +364,35 @@ TEST(drives_forwarders_copy_files_between_drive_paths) {
         CHECK(file_size(mounted.host(target.c_str())) == kPayloadSize);
         CHECK(copy2(L"Y:\\missing.txt", L"Y:\\d.txt", nullptr) == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
     }
+}
+
+TEST(drives_mount_persistent_storage_on_a_free_letter) {
+    const std::wstring root = exe_folder() + L"\\g6shim_persistent";
+    const int letter = persistent_storage_drive();
+    CHECK(letter >= L'D');
+    CHECK(letter <= L'Z');
+    CHECK(letter != L'G');
+    CHECK(((GetLogicalDrives() >> (letter - L'A')) & 1u) == 0);
+    const DWORD attributes = GetFileAttributesW(root.c_str());
+    CHECK(attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0);
+    std::wstring drive(1, static_cast<wchar_t>(letter));
+    drive += L":";
+    CHECK(is(translate((drive + L"\\saves\\slot0.bin").c_str()), root + L"\\saves\\slot0.bin"));
+    CHECK(is(translate(drive.c_str()), root + L"\\"));
+    CHECK(is(translate(L"G:\\data"), exe_folder() + L"\\data"));
+    CHECK(persistent_storage_drive() == letter);
+
+    TempFolder other;
+    const int other_letter = mount_drive(other.path.c_str());
+    CHECK(other_letter != letter);
+    CHECK(persistent_storage_drive() == letter);
+
+    mount_drive_at(static_cast<wchar_t>(letter), other.path.c_str());
+    const int moved = persistent_storage_drive();
+    CHECK(moved != 0);
+    CHECK(moved != letter);
+    std::wstring moved_drive(1, static_cast<wchar_t>(moved));
+    moved_drive += L":\\a";
+    CHECK(is(translate(moved_drive.c_str()), root + L"\\a"));
+    RemoveDirectoryW(root.c_str());
 }
