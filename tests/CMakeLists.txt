@@ -74,6 +74,7 @@ add_executable(g6shim_tests
   unit/bvh_builder_test.cpp
   unit/d3d12_xs_pipeline_test.cpp
   unit/d3d12_xs_list_test.cpp
+  unit/d3d12_xs_acceleration_test.cpp
   unit/d3d12_xs_queue_test.cpp
   unit/d3d12_xs_primitive_test.cpp
   unit/d3d12_xs_indirect_test.cpp

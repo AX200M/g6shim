@@ -176,6 +176,11 @@ void State::reset(Object* pipeline) {
     table_failed_ = false;
 }
 
+void State::release_host_bindings() {
+    host_pipeline_ = nullptr;
+    host_roots_[1] = nullptr;
+}
+
 std::vector<Root>& State::roots(bool compute) { return compute ? compute_ : graphics_; }
 
 const std::vector<Root>& State::roots(bool compute) const { return compute ? compute_ : graphics_; }

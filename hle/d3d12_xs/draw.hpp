@@ -68,6 +68,7 @@ struct State {
     void dispatch_mesh(host::HostList& list, std::uint32_t x);
     bool execute_indirect(host::HostList& list, std::tuple<std::uint32_t, std::uint32_t, std::uint32_t> signature,
                           std::uint64_t arguments, std::optional<std::uint64_t> count);
+    void release_host_bindings();
 
 private:
     void release_dynamic();
