@@ -6,11 +6,14 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <windows.h>
@@ -157,30 +160,100 @@ struct BitWriter {
     }
 };
 
-}  // namespace
-
-TEST(bcpack_table_file_parses_when_provided) {
+bool load_table_file(std::vector<std::uint8_t>& bytes) {
     const DWORD needed = GetEnvironmentVariableW(L"G6SHIM_BCPACK_TABLES", nullptr, 0);
-    if (needed == 0) {
-        std::printf("note: G6SHIM_BCPACK_TABLES is not set; skipping the table file check\n");
-        return;
-    }
+    if (needed == 0) return false;
     std::wstring path(needed, L'\0');
     const DWORD written = GetEnvironmentVariableW(L"G6SHIM_BCPACK_TABLES", path.data(), needed);
     CHECK(written > 0 && written < needed);
-    if (written == 0 || written >= needed) return;
+    if (written == 0 || written >= needed) return false;
     path.resize(written);
     const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                                     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     CHECK(file != INVALID_HANDLE_VALUE);
-    if (file == INVALID_HANDLE_VALUE) return;
+    if (file == INVALID_HANDLE_VALUE) return false;
     LARGE_INTEGER size{};
     CHECK(GetFileSizeEx(file, &size) != 0);
-    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size.QuadPart), 0);
+    bytes.assign(static_cast<std::size_t>(size.QuadPart), 0);
     DWORD got = 0;
     CHECK(ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &got, nullptr) != 0);
     CHECK(got == bytes.size());
     CloseHandle(file);
+    return true;
+}
+
+void add_shipped_tables(std::vector<std::uint8_t>& bytes, std::optional<Tables>& shipped,
+                        std::vector<const Tables*>& sets) {
+    if (!load_table_file(bytes)) return;
+    BcpackError error{};
+    shipped = Tables::parse(bytes, &error);
+    CHECK(shipped.has_value());
+    if (shipped) sets.push_back(&*shipped);
+}
+
+std::pair<std::uint8_t, std::uint32_t> reference_decode(const Tables& t, std::uint8_t model,
+                                                       std::uint32_t x) {
+    const auto& freq = t.freq[model];
+    const auto& start = t.start[model];
+    const std::uint32_t slot = x & 0xffffu;
+    std::size_t bucket = 0;
+    for (std::size_t b = 1; b < kBcpackBuckets; ++b)
+        if (start[b] <= slot) ++bucket;
+    std::uint8_t sym = 0;
+    if (bucket == 0) {
+        sym = 0;
+    } else if (bucket == 1) {
+        sym = 1;
+    } else {
+        sym = static_cast<std::uint8_t>((std::uint32_t{1} << (bucket - 1)) +
+                                        (slot - start[bucket]) / freq[bucket]);
+    }
+    std::uint32_t f = 0;
+    std::uint32_t c = 0;
+    if (sym == 0) {
+        f = freq[0] - 1;
+        c = 1;
+    } else {
+        const unsigned k = std::bit_width(static_cast<unsigned>(sym));
+        f = freq[k];
+        c = ((static_cast<std::uint32_t>(sym) - (std::uint32_t{1} << (k - 1))) * f + start[k]) &
+            0xffffu;
+    }
+    return {sym, (x >> 16) * f - c + slot};
+}
+
+std::vector<std::vector<std::uint8_t>> random_records(const std::vector<std::uint8_t>& widths,
+                                                      std::size_t per, std::size_t blocks,
+                                                      bool bc7) {
+    std::uint64_t seed = 0x9e3779b97f4a7c15ull;
+    std::vector<std::vector<std::uint8_t>> records;
+    records.reserve(blocks);
+    for (std::size_t i = 0; i < blocks; ++i) {
+        std::vector<std::uint8_t> record(widths.size() * per, 0);
+        for (std::size_t k = 0; k < record.size(); ++k) {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            const std::uint32_t alphabet = std::uint32_t{1} << (widths[k / per] + 1);
+            record[k] = static_cast<std::uint8_t>(static_cast<std::uint32_t>(seed) % alphabet);
+        }
+        if (bc7) {
+            record[30] = 0;
+            record[31] = 0;
+        }
+        records.push_back(std::move(record));
+    }
+    return records;
+}
+
+}  // namespace
+
+TEST(bcpack_table_file_parses_when_provided) {
+    std::vector<std::uint8_t> bytes;
+    if (!load_table_file(bytes)) {
+        std::printf("note: G6SHIM_BCPACK_TABLES is not set; skipping the table file check\n");
+        return;
+    }
     BcpackError error{};
     CHECK(Tables::parse(bytes, &error).has_value());
 }
@@ -292,6 +365,104 @@ TEST(bcpack_noise_never_panics) {
         for (const std::uint8_t bc : std::array<std::uint8_t, 6>{1, 3, 4, 5, 6, 7}) {
             std::vector<std::uint8_t> dst(16 * (1 + round % 40), 0);
             (void)decode(bc, src, dst, t);
+        }
+    }
+}
+
+TEST(bcpack_bucket_lookup_matches_a_scan_of_the_starts) {
+    std::vector<std::uint8_t> narrow = test_tables();
+    for (std::size_t m = 0; m < kBcpackModels; ++m) {
+        const std::size_t used = m / 16 + 2;
+        std::uint32_t rest = std::uint32_t{1} << 16;
+        for (std::size_t b = 1; b < used; ++b) rest -= std::uint32_t{1} << (b - 1);
+        for (std::size_t b = 0; b < used; ++b) {
+            const std::uint16_t f = b == 0 ? static_cast<std::uint16_t>(rest) : std::uint16_t{1};
+            narrow[(m * kBcpackBuckets + b) * 2] = static_cast<std::uint8_t>(f & 0xff);
+            narrow[(m * kBcpackBuckets + b) * 2 + 1] = static_cast<std::uint8_t>(f >> 8);
+        }
+    }
+    BcpackError error{};
+    const auto narrow_tables = Tables::parse(narrow, &error);
+    CHECK(narrow_tables.has_value());
+    if (!narrow_tables) return;
+
+    std::vector<std::uint8_t> shipped_bytes;
+    std::optional<Tables> shipped;
+    std::vector<const Tables*> sets;
+    add_shipped_tables(shipped_bytes, shipped, sets);
+    sets.push_back(&tables());
+    sets.push_back(&*narrow_tables);
+    for (const Tables* t : sets) {
+        for (std::uint32_t model = 0; model < kBcpackModels; ++model) {
+            for (std::uint32_t slot = 0; slot < 1u << 16; ++slot) {
+                std::size_t scan = 0;
+                for (std::size_t b = 1; b <= kBcpackBuckets; ++b)
+                    if (t->start[model][b] <= slot) ++scan;
+                CHECK(bucket_of(*t, static_cast<std::uint8_t>(model), slot) == scan);
+            }
+        }
+    }
+}
+
+TEST(bcpack_payload_step_matches_the_reference_decode) {
+    std::vector<std::uint8_t> shipped_bytes;
+    std::optional<Tables> shipped;
+    std::vector<const Tables*> sets;
+    add_shipped_tables(shipped_bytes, shipped, sets);
+    sets.push_back(&tables());
+    for (const Tables* t : sets) {
+        for (std::uint32_t model = 0; model < kBcpackModels; ++model) {
+            for (const std::uint32_t high : {0x100u, 0x1234u, 0xffffu}) {
+                for (std::uint32_t slot = 0; slot < 1u << 16; ++slot) {
+                    const std::uint32_t x = high << 16 | slot;
+                    if (x <= kBcpackLow) continue;
+                    BcpackLane lane;
+                    lane.phase = 3;
+                    lane.model = static_cast<std::uint8_t>(model);
+                    lane.x = x;
+                    lane.left = 1;
+                    CHECK(!lane.step(*t).has_value());
+                    const auto expected = reference_decode(*t, lane.model, x);
+                    CHECK(lane.out.has_value() && *lane.out == expected.first);
+                    CHECK(lane.x == expected.second);
+                }
+            }
+        }
+    }
+}
+
+TEST(bcpack_every_layout_round_trips_through_the_lanes) {
+    const Tables& t = tables();
+    constexpr std::array<std::uint8_t, 12> lanes1{7, 7, 4, 5, 4, 4, 5, 4, 7, 7, 7, 7};
+    constexpr std::array<std::uint8_t, 12> lanes3{3, 3, 7, 5, 5, 5, 5, 4, 5, 4, 7, 7};
+    constexpr std::array<std::uint8_t, 12> lanes5{3, 3, 7, 7, 5, 5, 5, 5, 5, 5, 5, 5};
+    constexpr std::array<std::uint8_t, 16> lanes6{3, 3, 7, 7, 7, 4, 4, 4, 5, 5, 5, 7, 7, 7, 7, 4};
+    const std::array<std::pair<std::vector<std::uint8_t>, std::size_t>, 6> layouts{{
+        {std::vector<std::uint8_t>(lanes1.begin(), lanes1.end()), 1},
+        {std::vector<std::uint8_t>(lanes3.begin(), lanes3.end()), 2},
+        {std::vector<std::uint8_t>(kLanes4.begin(), kLanes4.end()), 1},
+        {std::vector<std::uint8_t>(lanes5.begin(), lanes5.end()), 2},
+        {std::vector<std::uint8_t>(lanes6.begin(), lanes6.end()), 2},
+        {std::vector<std::uint8_t>(kLanes7.begin(), kLanes7.end()), 2},
+    }};
+    for (const auto& [widths, per] : layouts) {
+        for (const std::size_t blocks : {std::size_t{1}, std::size_t{2}, std::size_t{17},
+                                         std::size_t{300}, std::size_t{1000}}) {
+            const auto records = random_records(widths, per, blocks, false);
+            const auto src = stream(widths, per, records);
+            std::size_t stride = 0;
+            for (const auto& record : records) stride += record.size();
+            std::vector<std::uint8_t> got(stride, 0);
+            std::size_t next = 0;
+            const BcpackFetch fetch = [&](std::size_t) -> std::optional<std::uint8_t> {
+                if (next >= src.size()) return std::nullopt;
+                return src[next++];
+            };
+            CHECK(!lanes(t, widths, per, blocks, fetch, got).has_value());
+            std::vector<std::uint8_t> expected;
+            for (const auto& record : records)
+                expected.insert(expected.end(), record.begin(), record.end());
+            CHECK(got == expected);
         }
     }
 }

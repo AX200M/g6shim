@@ -158,6 +158,10 @@ TEST(acphal_xma_contexts_decode_into_their_output_rings) {
     CHECK(context.field(0, 20, 2) == 0);
     CHECK(context.field(2, 26, 5) == 4);
 
+    context.set(9, 3);
+    submit(18, {1, UINT32_MAX});
+    CHECK(context.field(9, 0, 5) == 2);
+
     submit(7, {1});
     CHECK(!xma_produced(1).has_value());
     (methods->release)(static_cast<Acp*>(acp));

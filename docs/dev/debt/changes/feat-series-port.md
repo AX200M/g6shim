@@ -230,3 +230,10 @@
   Closes when: the command list, queue, draw and pipeline parts land.
 - `buffer_copy_to_host` refreshes a whole buffer into its host copy immediately; no title path calls it yet.
   Closes when: title copies are recorded as deferred steps.
+
+# xcrdapi
+
+## add Functional
+
+- BCPack lanes decode one symbol step at a time in the schedule's order, at roughly 30-60 MB/s for BC1 and 15-20 MB/s for BC7 on one core; dividing the input per lane and decoding the lanes apart is not done.
+  Closes when: texture streaming needs more throughput.
