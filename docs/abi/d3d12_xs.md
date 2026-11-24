@@ -212,6 +212,8 @@ Every device child also answers for `63ee58fb-1268-4835-86da-f008ce62f0d6` (`ID3
 | 0x1d8, 0x1e0 | 59, 60 | `ExecuteIndirect`, `CopyMemoryToMemoryX` |
 | 0x228-0x248 | 69-73 | bottom-of-pipe writes, value waits, depth order |
 | 0x298, 0x2a0 | 83, 84 | `CopyTextureRegionX`, `CopyResourceX` |
+| 0x3a8, 0x3b0, 0x3b8 | 117-119 | `BuildRaytracingAccelerationStructure`, `EmitRaytracingAccelerationStructurePostbuildInfo`, `CopyRaytracingAccelerationStructure` |
+| 0x3d0 | 122 | batched build: count, then 0x50 descriptions |
 | 0x3f8 | 127 | `DispatchMesh` |
 | 0x448 | 137 | `ResetX` |
 
@@ -457,4 +459,4 @@ Entry `u` holds the pointer of the node whose child starts at 64-byte unit `u` c
 
 ### Host bindings
 
-The builder binds memory through root unordered-access views at `host_base + console address`, so every buffer it reads or writes (destination, scratch, source, vertex, index and transform buffers, instance descriptions and the bottom-level structures they name) must be in the unordered-access state. A bottom-level structure named by an instance is read through one view at `host_base`, so its console address must lie below 4 GiB and inside the address space; otherwise the instance has no BLAS. A build replaces the command list's compute root signature, pipeline and root arguments.
+The builder binds memory through root unordered-access views at `host_base + console address`, so every buffer it reads or writes (destination, scratch, source, vertex, index and transform buffers, instance descriptions and the bottom-level structures they name) must be in the unordered-access state. A bottom-level structure named by an instance is read through one view at `host_base`, so its console address must lie below 4 GiB and inside the address space; otherwise the instance has no BLAS. A build replaces the command list's compute root signature, pipeline and root arguments. A command list records those commands into one 8 MiB window: a console address is an offset in that window, or a pointer into its upload mapping, and `host_base` is the window's GPU address. The window is moved to the unordered-access state before the builder runs, and closing the list copies it back for the CPU. The list drops the host pipeline and compute root signature it had cached. The build method reads the 0x50 batched description; a non-zero postbuild-count argument replaces the description's own postbuild fields. `GetRaytracingAccelerationStructurePrebuildInfo` has no slot in the known device table.

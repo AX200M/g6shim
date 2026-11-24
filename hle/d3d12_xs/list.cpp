@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "list.hpp"
 
+#include "bvh/builder.hpp"
 #include "descriptor.hpp"
 #include "device.hpp"
 #include "pipeline_bridge.hpp"
@@ -71,6 +72,8 @@ struct List : Object {
     std::unique_ptr<host::HostList> host;
     std::mutex state_mutex;
     draw::State state;
+    bool acceleration = false;
+    std::uint8_t acceleration_prior = 0;
 };
 
 std::atomic<std::uint64_t> g_draws{0};
@@ -161,6 +164,373 @@ std::optional<Barrier> host_barrier(host::HostList& list, const Barrier& barrier
     }
 }
 
+constexpr std::uint64_t kAccelerationBytes = 8ull << 20;
+constexpr std::uint32_t kMaxPostbuildInfos = 64;
+constexpr std::uint32_t kMaxBatchedBuilds = 64;
+constexpr std::uint32_t kMaxGeometries = 1u << 20;
+constexpr std::uint32_t kDirectList = 0;
+constexpr std::uint32_t kComputeList = 2;
+constexpr std::uint32_t kPostbuildStride = 8;
+constexpr std::uint8_t kArenaCopyDest = 0;
+constexpr std::uint8_t kArenaUnordered = 1;
+constexpr std::uint8_t kArenaCopySource = 2;
+
+struct BatchedBuild {
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc;
+    std::uint32_t postbuild_count;
+    std::uint32_t reserved;
+    const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC* postbuild;
+    std::uint64_t stream_bytes;
+    const void* stream;
+};
+static_assert(sizeof(BatchedBuild) == 0x50);
+static_assert(offsetof(BatchedBuild, postbuild_count) == 0x30);
+static_assert(offsetof(BatchedBuild, postbuild) == 0x38);
+static_assert(offsetof(BatchedBuild, stream_bytes) == 0x40);
+
+struct AccelerationArena {
+    Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+    Microsoft::WRL::ComPtr<ID3D12Resource> upload;
+    Microsoft::WRL::ComPtr<ID3D12Resource> readback;
+    std::uint8_t* upload_bytes = nullptr;
+    std::uint8_t* readback_bytes = nullptr;
+    std::uint64_t gpu = 0;
+    std::uint8_t state = kArenaCopyDest;
+};
+
+std::mutex g_arena_mutex;
+AccelerationArena g_arena;
+
+void refuse_once(const char* text) {
+    static std::mutex seen_mutex;
+    static std::vector<const char*> seen;
+    std::lock_guard<std::mutex> lock(seen_mutex);
+    if (std::find(seen.begin(), seen.end(), text) != seen.end()) return;
+    seen.push_back(text);
+    G6SHIM_WARN("d3d12_xs: %s", text);
+}
+
+D3D12_RESOURCE_DESC acceleration_buffer(std::uint64_t bytes, D3D12_RESOURCE_FLAGS flags) {
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    desc.Width = bytes;
+    desc.Height = 1;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    desc.Flags = flags;
+    return desc;
+}
+
+bool open_arena() {
+    if (g_arena.resource) return true;
+    host::Host* gpu = host::host();
+    if (gpu == nullptr || gpu->device() == nullptr) return false;
+    ID3D12Device* device = gpu->device();
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC desc = acceleration_buffer(kAccelerationBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
+                                               nullptr, IID_PPV_ARGS(&g_arena.resource)))) {
+        refuse_once("no acceleration-structure window");
+        return false;
+    }
+    g_arena.gpu = g_arena.resource->GetGPUVirtualAddress();
+    host::name(g_arena.resource.Get(), "acceleration window");
+    heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    desc = acceleration_buffer(kAccelerationBytes, D3D12_RESOURCE_FLAG_NONE);
+    if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ,
+                                               nullptr, IID_PPV_ARGS(&g_arena.upload))) ||
+        FAILED(g_arena.upload->Map(0, nullptr, reinterpret_cast<void**>(&g_arena.upload_bytes)))) {
+        g_arena.resource.Reset();
+        refuse_once("no acceleration-structure window");
+        return false;
+    }
+    std::memset(g_arena.upload_bytes, 0, static_cast<std::size_t>(kAccelerationBytes));
+    heap.Type = D3D12_HEAP_TYPE_READBACK;
+    if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
+                                               nullptr, IID_PPV_ARGS(&g_arena.readback))) ||
+        FAILED(g_arena.readback->Map(0, nullptr, reinterpret_cast<void**>(&g_arena.readback_bytes)))) {
+        g_arena.resource.Reset();
+        g_arena.upload.Reset();
+        g_arena.upload_bytes = nullptr;
+        refuse_once("no acceleration-structure window");
+        return false;
+    }
+    return g_arena.gpu != 0;
+}
+
+void transition_resource(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, D3D12_RESOURCE_STATES before,
+                         D3D12_RESOURCE_STATES after) {
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = resource;
+    barrier.Transition.StateBefore = before;
+    barrier.Transition.StateAfter = after;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    list->ResourceBarrier(1, &barrier);
+}
+
+bool prepare_arena(Object* object) {
+    std::lock_guard<std::mutex> lock(g_arena_mutex);
+    if (!open_arena()) {
+        refuse_once("acceleration structures need a host GPU");
+        return false;
+    }
+    host::HostList* host = host_list(object);
+    if (host == nullptr || host->list() == nullptr) {
+        refuse_once("an acceleration structure command has no host list");
+        return false;
+    }
+    List* title = title_list(object);
+    if (title->kind != kDirectList && title->kind != kComputeList) {
+        refuse_once("acceleration structures are not built on this command list type");
+        return false;
+    }
+    ID3D12GraphicsCommandList* commands = host->list();
+    if (!title->acceleration) {
+        title->acceleration = true;
+        title->acceleration_prior = g_arena.state;
+    }
+    if (g_arena.state == kArenaCopySource) {
+        transition_resource(commands, g_arena.resource.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+                            D3D12_RESOURCE_STATE_COPY_DEST);
+        g_arena.state = kArenaCopyDest;
+    }
+    if (g_arena.state == kArenaCopyDest) {
+        commands->CopyBufferRegion(g_arena.resource.Get(), 0, g_arena.upload.Get(), 0, kAccelerationBytes);
+        transition_resource(commands, g_arena.resource.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        g_arena.state = kArenaUnordered;
+    } else {
+        const D3D12_RESOURCE_BARRIER barrier = uav_barrier();
+        commands->ResourceBarrier(1, &barrier);
+    }
+    return true;
+}
+
+std::optional<std::uint64_t> window_offset(std::uint64_t address) {
+    if (address < kAccelerationBytes) return address;
+    if (g_arena.upload_bytes == nullptr) return std::nullopt;
+    const auto base = reinterpret_cast<std::uint64_t>(g_arena.upload_bytes);
+    if (address >= base && address - base < kAccelerationBytes) return address - base;
+    return std::nullopt;
+}
+
+bool translate_address(std::uint64_t address, std::uint64_t* out) {
+    if (address == 0) {
+        *out = 0;
+        return true;
+    }
+    const auto offset = window_offset(address);
+    if (!offset) {
+        refuse_once("an acceleration-structure address is outside the host window");
+        return false;
+    }
+    *out = *offset;
+    return true;
+}
+
+bool translate_triangles(D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC* triangles) {
+    std::uint64_t vertex = 0;
+    std::uint64_t index = 0;
+    std::uint64_t transform = 0;
+    if (!translate_address(triangles->VertexBuffer.StartAddress, &vertex) ||
+        !translate_address(triangles->IndexBuffer, &index) || !translate_address(triangles->Transform3x4, &transform))
+        return false;
+    triangles->VertexBuffer.StartAddress = vertex;
+    triangles->IndexBuffer = index;
+    triangles->Transform3x4 = transform;
+    return true;
+}
+
+bvh::Builder* acceleration_builder() {
+    static std::mutex mutex;
+    static std::unique_ptr<bvh::Builder> built;
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!built) {
+        host::Host* gpu = host::host();
+        if (gpu != nullptr && gpu->device() != nullptr) built = bvh::Builder::create(gpu->device());
+    }
+    if (!built) refuse_once("the acceleration-structure builder is not available");
+    return built.get();
+}
+
+void drop_bindings(Object* object) {
+    with_state(object, [](host::HostList&, draw::State& state) { state.release_host_bindings(); });
+}
+
+void note_result(HRESULT result) {
+    if (result == S_OK) return;
+    if (result == E_INVALIDARG) refuse_once("an acceleration-structure command was refused");
+    else if (result == E_NOTIMPL) refuse_once("an acceleration-structure command is not implemented");
+    else refuse_once("an acceleration-structure command failed");
+}
+
+bvh::AddressSpace arena_space() { return {g_arena.gpu, kAccelerationBytes}; }
+
+void build_recorded(Object* object, const BatchedBuild& batched, std::uint32_t postbuild_count,
+                    const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC* postbuild) {
+    if (!prepare_arena(object)) return;
+    bvh::Builder* built = acceleration_builder();
+    host::HostList* host = host_list(object);
+    if (built == nullptr || host == nullptr) return;
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc = batched.desc;
+    std::uint64_t dest = 0;
+    std::uint64_t source = 0;
+    std::uint64_t scratch = 0;
+    if (!translate_address(desc.DestAccelerationStructureData, &dest) ||
+        !translate_address(desc.SourceAccelerationStructureData, &source) ||
+        !translate_address(desc.ScratchAccelerationStructureData, &scratch))
+        return;
+    desc.DestAccelerationStructureData = dest;
+    desc.SourceAccelerationStructureData = source;
+    desc.ScratchAccelerationStructureData = scratch;
+    std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometries;
+    std::vector<const D3D12_RAYTRACING_GEOMETRY_DESC*> pointers;
+    if (desc.Inputs.Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL && desc.Inputs.NumDescs > 0) {
+        if (desc.Inputs.NumDescs > kMaxGeometries) {
+            refuse_once("an acceleration-structure build was refused");
+            return;
+        }
+        geometries.resize(desc.Inputs.NumDescs);
+        if (desc.Inputs.DescsLayout == D3D12_ELEMENTS_LAYOUT_ARRAY) {
+            if (desc.Inputs.pGeometryDescs == nullptr) {
+                refuse_once("an acceleration-structure build was refused");
+                return;
+            }
+            for (UINT index = 0; index < desc.Inputs.NumDescs; ++index) {
+                geometries[index] = desc.Inputs.pGeometryDescs[index];
+                if (geometries[index].Type == D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES &&
+                    !translate_triangles(&geometries[index].Triangles))
+                    return;
+            }
+            desc.Inputs.pGeometryDescs = geometries.data();
+        } else if (desc.Inputs.DescsLayout == D3D12_ELEMENTS_LAYOUT_ARRAY_OF_POINTERS) {
+            if (desc.Inputs.ppGeometryDescs == nullptr) {
+                refuse_once("an acceleration-structure build was refused");
+                return;
+            }
+            pointers.resize(desc.Inputs.NumDescs);
+            for (UINT index = 0; index < desc.Inputs.NumDescs; ++index) {
+                if (desc.Inputs.ppGeometryDescs[index] == nullptr) {
+                    refuse_once("an acceleration-structure build was refused");
+                    return;
+                }
+                geometries[index] = *desc.Inputs.ppGeometryDescs[index];
+                if (geometries[index].Type == D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES &&
+                    !translate_triangles(&geometries[index].Triangles))
+                    return;
+                pointers[index] = &geometries[index];
+            }
+            desc.Inputs.ppGeometryDescs = pointers.data();
+        }
+    } else if (desc.Inputs.Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL) {
+        std::uint64_t instances = 0;
+        if (!translate_address(desc.Inputs.InstanceDescs, &instances)) return;
+        desc.Inputs.InstanceDescs = instances;
+    }
+    const bvh::AddressSpace space = arena_space();
+    note_result(built->build(host->list(), desc, space));
+    drop_bindings(object);
+    const std::uint32_t count = postbuild_count != 0 ? postbuild_count : batched.postbuild_count;
+    const auto* infos = postbuild_count != 0 ? postbuild : batched.postbuild;
+    if (count == 0) return;
+    if (infos == nullptr || count > kMaxPostbuildInfos) {
+        refuse_once("an acceleration-structure build was refused");
+        return;
+    }
+    for (std::uint32_t index = 0; index < count; ++index) {
+        std::uint64_t info_dest = 0;
+        if (!translate_address(infos[index].DestBuffer, &info_dest)) return;
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC local = infos[index];
+        local.DestBuffer = info_dest;
+        note_result(built->postbuild(host->list(), local, dest, space));
+        drop_bindings(object);
+    }
+}
+
+void build_acceleration(Object* object, const void* desc, std::uint32_t postbuild_count, const void* postbuild) {
+    if (desc == nullptr) {
+        refuse_once("an acceleration-structure build was refused");
+        return;
+    }
+    BatchedBuild batched{};
+    std::memcpy(&batched, desc, sizeof batched);
+    build_recorded(object, batched, postbuild_count,
+                   static_cast<const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC*>(postbuild));
+}
+
+void build_acceleration_batched(Object* object, std::uint32_t count, const void* descs) {
+    if (descs == nullptr || count == 0 || count > kMaxBatchedBuilds) {
+        refuse_once("an acceleration-structure build was refused");
+        return;
+    }
+    const auto* batched = static_cast<const BatchedBuild*>(descs);
+    for (std::uint32_t index = 0; index < count; ++index) build_recorded(object, batched[index], 0, nullptr);
+}
+
+void copy_acceleration(Object* object, std::uint64_t dest, std::uint64_t source, std::uint32_t mode) {
+    if (!prepare_arena(object)) return;
+    bvh::Builder* built = acceleration_builder();
+    host::HostList* host = host_list(object);
+    if (built == nullptr || host == nullptr) return;
+    std::uint64_t to = 0;
+    std::uint64_t from = 0;
+    if (!translate_address(dest, &to) || !translate_address(source, &from)) return;
+    const std::uint64_t room = to < kAccelerationBytes ? kAccelerationBytes - to : 0;
+    note_result(built->copy(host->list(), to, from, room,
+                            static_cast<D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE>(mode), arena_space()));
+    drop_bindings(object);
+}
+
+void emit_acceleration(Object* object, const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC* desc,
+                       std::uint32_t count, const std::uint64_t* sources) {
+    if (desc == nullptr || sources == nullptr || count == 0 || count > kMaxPostbuildInfos) {
+        refuse_once("an acceleration-structure query was refused");
+        return;
+    }
+    if (!prepare_arena(object)) return;
+    bvh::Builder* built = acceleration_builder();
+    host::HostList* host = host_list(object);
+    if (built == nullptr || host == nullptr) return;
+    const bvh::AddressSpace space = arena_space();
+    for (std::uint32_t index = 0; index < count; ++index) {
+        std::uint64_t dest = 0;
+        std::uint64_t source = 0;
+        if (!translate_address(desc->DestBuffer + static_cast<std::uint64_t>(index) * kPostbuildStride, &dest) ||
+            !translate_address(sources[index], &source))
+            return;
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC local = *desc;
+        local.DestBuffer = dest;
+        note_result(built->postbuild(host->list(), local, source, space));
+        drop_bindings(object);
+    }
+}
+
+void publish_acceleration(Object* object) {
+    List* title = title_list(object);
+    if (title == nullptr || !title->acceleration) return;
+    std::lock_guard<std::mutex> lock(g_arena_mutex);
+    host::HostList* host = host_list(object);
+    if (host != nullptr && host->list() != nullptr && g_arena.state == kArenaUnordered && g_arena.resource) {
+        transition_resource(host->list(), g_arena.resource.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                            D3D12_RESOURCE_STATE_COPY_SOURCE);
+        host->list()->CopyBufferRegion(g_arena.readback.Get(), 0, g_arena.resource.Get(), 0, kAccelerationBytes);
+        g_arena.state = kArenaCopySource;
+    }
+    title->acceleration = false;
+}
+
+void reset_acceleration(Object* object) {
+    List* title = title_list(object);
+    if (title == nullptr || !title->acceleration) return;
+    std::lock_guard<std::mutex> lock(g_arena_mutex);
+    g_arena.state = title->acceleration_prior;
+    title->acceleration = false;
+}
+
 }  // namespace
 
 extern "C" {
@@ -182,12 +552,14 @@ std::uint32_t list_release(Object* object) { return release_boxed<List>(object);
 std::uint32_t list_type(Object* object) { return title_list(object)->kind; }
 
 HRESULT list_close(Object* object) {
+    publish_acceleration(object);
     if (host::HostList* host = host_list(object)) host->close();
     return S_OK;
 }
 
 HRESULT list_reset(Object* object, Object* allocator, Object* pipeline) {
     if (allocator == nullptr) return E_INVALIDARG;
+    reset_acceleration(object);
     {
         List* list_object = title_list(object);
         std::lock_guard<std::mutex> lock(list_object->uploads_mutex);
@@ -695,7 +1067,11 @@ std::size_t newer_slot(std::size_t slot) { return slot >= kFirstShiftedSlot ? sl
 
 std::array<const void*, kMaxSlots> make_list_table(bool newer) {
     std::array<const void*, kMaxSlots> functions = d3d12_object(missing_table<kList, kMaxSlots>());
-    const std::array<std::pair<std::size_t, const void*>, 52> methods{{
+    constexpr std::size_t kBuildAcceleration = 117;
+    constexpr std::size_t kEmitAcceleration = 118;
+    constexpr std::size_t kCopyAcceleration = 119;
+    constexpr std::size_t kBuildAccelerationBatched = 122;
+    const std::array<std::pair<std::size_t, const void*>, 56> methods{{
         {0, reinterpret_cast<const void*>(&list_query)},
         {2, reinterpret_cast<const void*>(&list_release)},
         {7, reinterpret_cast<const void*>(&parent_device)},
@@ -746,6 +1122,10 @@ std::array<const void*, kMaxSlots> make_list_table(bool newer) {
         {73, reinterpret_cast<const void*>(&ignored_state)},
         {83, reinterpret_cast<const void*>(&copy_texture_region_x)},
         {84, reinterpret_cast<const void*>(&copy_resource_x)},
+        {kBuildAcceleration, reinterpret_cast<const void*>(&build_acceleration)},
+        {kEmitAcceleration, reinterpret_cast<const void*>(&emit_acceleration)},
+        {kCopyAcceleration, reinterpret_cast<const void*>(&copy_acceleration)},
+        {kBuildAccelerationBatched, reinterpret_cast<const void*>(&build_acceleration_batched)},
         {124, reinterpret_cast<const void*>(&ignored_state)},
         {127, reinterpret_cast<const void*>(&state::dispatch_mesh)},
     }};
@@ -788,6 +1168,16 @@ std::size_t upload_count(Object* object) {
 host::HostList* host_list(Object* object) {
     if (object == nullptr) return nullptr;
     return title_list(object)->host.get();
+}
+
+AccelerationMemory acceleration_memory() {
+    std::lock_guard<std::mutex> lock(g_arena_mutex);
+    AccelerationMemory memory;
+    if (!open_arena()) return memory;
+    memory.upload = g_arena.upload_bytes;
+    memory.readback = g_arena.readback_bytes;
+    memory.size = kAccelerationBytes;
+    return memory;
 }
 
 std::pair<std::uint64_t, std::uint64_t> take_counts() {
