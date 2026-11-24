@@ -87,3 +87,60 @@
 ## change paths are translated
 
 - `G:\` paths are translated through the shared drive table in `g6shim_runtime.dll`, in kernelx's own file functions and in `ucrtbase.dll`'s imports of nine file functions. Modules that call the PC's file functions directly need one of the file forwarder DLLs.
+
+# shader
+
+## add Functional
+
+- A code-table read past the table's end returns its last dword; the console reads whatever memory follows the code.
+  Closes when: a title relies on a constant table that runs into following memory.
+- Translated loops leave after 2^20 iterations per entry; a genuine loop with more iterations is cut short.
+  Closes when: the console's loop bound is proven finite for such a loop.
+- `v_sin_f32`, `v_cos_f32` and their 16-bit forms use 2π for turns below 2^-12, a last-place difference from the console's scale.
+  Closes when: a title compares those results bit for bit.
+- LDS addresses are taken as dword-aligned and in bounds; out-of-bounds console accesses read zero and drop writes.
+  Closes when: a title depends on the clamp.
+- A quad mask is taken as "some lane of the quad": derivatives are right, and a side effect under that mask would not be.
+  Closes when: a side effect lives under a quad mask.
+- A global load of a byte or half is taken not to cross a dword.
+  Closes when: a title loads a field across a dword boundary.
+- A descriptor read as data reports a base level of 0 and stops the translation for its address, format and tiling dwords.
+  Closes when: a title needs a descriptor's other dwords.
+- Typed-format loads take the descriptor's channel swizzle as the identity, elements of 4 bytes or more as dword-aligned, and norm conversion as the host's division, which is 1 ULP off the hardware's rounding for some values.
+  Closes when: a title compares converted values exactly.
+- One immediate sampler used with and without comparison becomes a comparison sampler.
+  Closes when: a title uses the same sampler words both ways.
+- Mesh programs request the declared vertex and primitive maxima and cull primitives past the program's count by emitting all-zero indices, so the host sees unused vertex and primitive slots.
+  Closes when: frame time shows the unused slots matter.
+- A mesh group id arrives multiplied by `PSV0`'s thread count when the runtime info is version 2 or later, and by the group's lane count otherwise.
+  Closes when: an older container's group id is observed.
+- 16-bit vertex inputs are not unpacked; a read of one stops the translation.
+  Closes when: a title reads a 16-bit vertex input.
+- `v_fma_f32` and the f16 multiply-adds lower as `FMad` in f32, which may round twice.
+  Closes when: a title depends on a single rounding.
+- `v_rcp_f32` and its f16 form divide instead of using the hardware's approximate reciprocal.
+  Closes when: a title compares reciprocals bit for bit.
+- `v_cvt_u16_f16` and `v_cvt_i16_f16` convert through 32 bits, so out-of-range values wrap instead of saturating.
+  Closes when: a title converts a value outside the 16-bit range.
+- Inline f16 constants of a packed operation are taken to fill both halves.
+  Closes when: a packed operation uses one half of such a constant.
+- Image stores are taken to write all four channels of a float format; other mask patterns stop the translation.
+  Closes when: a title stores fewer channels.
+- 64-bit image and buffer atomics stop the translation.
+  Closes when: a title uses one.
+- `d16` image and buffer results and stores are taken as floats; integer 16-bit formats would keep 16 bits.
+  Closes when: a title uses an integer 16-bit format.
+- Typed buffer stores are taken to write all four channels of a float format.
+  Closes when: a title stores fewer channels.
+- A cube sample's view is taken as a cube, not a cube array; the face operand's array slice is ignored.
+  Closes when: a title samples a cube array.
+- Without the misc vector, `pos1` and `pos2` carry clip then cull distances in semantic order.
+  Closes when: point size, render-target or viewport index exports are seen.
+- The merged-wave info sets only the wave index (bits 24-27); the console's other bits are left zero.
+  Closes when: a title reads those bits.
+- The float `MODE` register is not modelled; `s_setreg_b32`, `s_setreg_imm32_b32` and `s_version` stop the translation.
+  Closes when: a title sets the float mode.
+- `s_swappc_b64` (the vertex fetch call) is not followed; its results arrive as inputs.
+  Closes when: a title's fetch results are not inputs.
+- A cross-lane operation in a mesh shader stops the translation: SM 6.6 has no mesh wave size.
+  Closes when: a mesh program needs one.

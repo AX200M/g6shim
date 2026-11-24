@@ -152,7 +152,7 @@ struct ConstantKeyHash {
     std::size_t operator()(const ConstantKey& key) const noexcept;
 };
 
-struct Op {
+struct BitOp {
     enum class Kind : std::uint8_t {
         Bin,
         Cast,
@@ -179,48 +179,48 @@ struct Op {
     std::vector<V> args;
     std::vector<std::pair<V, std::size_t>> incoming;
 
-    static Op bin(Bin op, V a, V b);
-    static Op cast(Cast op, V v, Ty to);
-    static Op cmp(std::uint8_t predicate, V a, V b);
-    static Op select(V condition, V on_true, V on_false);
-    static Op extract(V aggregate, std::uint32_t index);
-    static Op call(std::uint32_t function, std::vector<V> args);
-    static Op phi(std::vector<std::pair<V, std::size_t>> incoming);
-    static Op gep(Ty type, V pointer, std::vector<V> indices);
-    static Op load(V pointer);
-    static Op store(V pointer, V value);
-    static Op atomic_rmw(Rmw op, V pointer, V value);
-    static Op cmp_xchg(V pointer, V expected, V new_value);
+    static BitOp bin(Bin op, V a, V b);
+    static BitOp cast(Cast op, V v, Ty to);
+    static BitOp cmp(std::uint8_t predicate, V a, V b);
+    static BitOp select(V condition, V on_true, V on_false);
+    static BitOp extract(V aggregate, std::uint32_t index);
+    static BitOp call(std::uint32_t function, std::vector<V> args);
+    static BitOp phi(std::vector<std::pair<V, std::size_t>> incoming);
+    static BitOp gep(Ty type, V pointer, std::vector<V> indices);
+    static BitOp load(V pointer);
+    static BitOp store(V pointer, V value);
+    static BitOp atomic_rmw(Rmw op, V pointer, V value);
+    static BitOp cmp_xchg(V pointer, V expected, V new_value);
 };
 
 template <typename F>
-void for_each_operand(const Op& op, F&& f) {
+void for_each_operand(const BitOp& op, F&& f) {
     switch (op.kind) {
-        case Op::Kind::Bin:
-        case Op::Kind::Cmp:
-        case Op::Kind::Store:
-        case Op::Kind::AtomicRmw:
+        case BitOp::Kind::Bin:
+        case BitOp::Kind::Cmp:
+        case BitOp::Kind::Store:
+        case BitOp::Kind::AtomicRmw:
             f(op.a);
             f(op.b);
             break;
-        case Op::Kind::Cast:
-        case Op::Kind::Extract:
-        case Op::Kind::Load:
+        case BitOp::Kind::Cast:
+        case BitOp::Kind::Extract:
+        case BitOp::Kind::Load:
             f(op.a);
             break;
-        case Op::Kind::Select:
-        case Op::Kind::CmpXchg:
+        case BitOp::Kind::Select:
+        case BitOp::Kind::CmpXchg:
             f(op.a);
             f(op.b);
             f(op.c);
             break;
-        case Op::Kind::Call:
+        case BitOp::Kind::Call:
             for (const V& v : op.args) f(v);
             break;
-        case Op::Kind::Phi:
+        case BitOp::Kind::Phi:
             for (const auto& entry : op.incoming) f(entry.first);
             break;
-        case Op::Kind::Gep:
+        case BitOp::Kind::Gep:
             f(op.a);
             for (const V& v : op.args) f(v);
             break;
@@ -229,7 +229,7 @@ void for_each_operand(const Op& op, F&& f) {
 
 struct Inst {
     Ty type;
-    Op op;
+    BitOp op;
 };
 
 struct Term {
@@ -396,7 +396,7 @@ public:
 
 private:
     V constant(Ty type, Constant constant);
-    V push(std::size_t block, Ty type, Op op);
+    V push(std::size_t block, Ty type, BitOp op);
     bool is_void(Ty type) const;
 
     std::vector<TypeDef> types_;

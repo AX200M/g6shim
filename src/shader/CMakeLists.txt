@@ -5,6 +5,13 @@ add_library(g6shim_shader STATIC
   dxil.cpp
   emit/bitcode.cpp
   emit/container.cpp
+  emit/emit.cpp
+  emit/lower.cpp
+  emit/lower_export.cpp
+  emit/lower_image.cpp
+  emit/lower_memory.cpp
+  emit/lower_salu.cpp
+  emit/lower_valu.cpp
   emit/sampler.cpp
   emit/shader.cpp
   emit/validator.cpp

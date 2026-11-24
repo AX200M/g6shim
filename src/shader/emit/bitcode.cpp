@@ -99,8 +99,8 @@ Successors successors(const std::optional<Term>& term) {
     return {};
 }
 
-Op Op::bin(Bin op, V a, V b) {
-    Op out;
+BitOp BitOp::bin(Bin op, V a, V b) {
+    BitOp out;
     out.kind = Kind::Bin;
     out.code = static_cast<std::uint8_t>(op);
     out.a = a;
@@ -108,8 +108,8 @@ Op Op::bin(Bin op, V a, V b) {
     return out;
 }
 
-Op Op::cast(Cast op, V v, Ty to) {
-    Op out;
+BitOp BitOp::cast(Cast op, V v, Ty to) {
+    BitOp out;
     out.kind = Kind::Cast;
     out.code = static_cast<std::uint8_t>(op);
     out.a = v;
@@ -117,8 +117,8 @@ Op Op::cast(Cast op, V v, Ty to) {
     return out;
 }
 
-Op Op::cmp(std::uint8_t predicate, V a, V b) {
-    Op out;
+BitOp BitOp::cmp(std::uint8_t predicate, V a, V b) {
+    BitOp out;
     out.kind = Kind::Cmp;
     out.code = predicate;
     out.a = a;
@@ -126,8 +126,8 @@ Op Op::cmp(std::uint8_t predicate, V a, V b) {
     return out;
 }
 
-Op Op::select(V condition, V on_true, V on_false) {
-    Op out;
+BitOp BitOp::select(V condition, V on_true, V on_false) {
+    BitOp out;
     out.kind = Kind::Select;
     out.a = condition;
     out.b = on_true;
@@ -135,31 +135,31 @@ Op Op::select(V condition, V on_true, V on_false) {
     return out;
 }
 
-Op Op::extract(V aggregate, std::uint32_t index) {
-    Op out;
+BitOp BitOp::extract(V aggregate, std::uint32_t index) {
+    BitOp out;
     out.kind = Kind::Extract;
     out.a = aggregate;
     out.index = index;
     return out;
 }
 
-Op Op::call(std::uint32_t function, std::vector<V> args) {
-    Op out;
+BitOp BitOp::call(std::uint32_t function, std::vector<V> args) {
+    BitOp out;
     out.kind = Kind::Call;
     out.function = function;
     out.args = std::move(args);
     return out;
 }
 
-Op Op::phi(std::vector<std::pair<V, std::size_t>> incoming) {
-    Op out;
+BitOp BitOp::phi(std::vector<std::pair<V, std::size_t>> incoming) {
+    BitOp out;
     out.kind = Kind::Phi;
     out.incoming = std::move(incoming);
     return out;
 }
 
-Op Op::gep(Ty type, V pointer, std::vector<V> indices) {
-    Op out;
+BitOp BitOp::gep(Ty type, V pointer, std::vector<V> indices) {
+    BitOp out;
     out.kind = Kind::Gep;
     out.type = type;
     out.a = pointer;
@@ -167,23 +167,23 @@ Op Op::gep(Ty type, V pointer, std::vector<V> indices) {
     return out;
 }
 
-Op Op::load(V pointer) {
-    Op out;
+BitOp BitOp::load(V pointer) {
+    BitOp out;
     out.kind = Kind::Load;
     out.a = pointer;
     return out;
 }
 
-Op Op::store(V pointer, V value) {
-    Op out;
+BitOp BitOp::store(V pointer, V value) {
+    BitOp out;
     out.kind = Kind::Store;
     out.a = pointer;
     out.b = value;
     return out;
 }
 
-Op Op::atomic_rmw(Rmw op, V pointer, V value) {
-    Op out;
+BitOp BitOp::atomic_rmw(Rmw op, V pointer, V value) {
+    BitOp out;
     out.kind = Kind::AtomicRmw;
     out.code = static_cast<std::uint8_t>(op);
     out.a = pointer;
@@ -191,8 +191,8 @@ Op Op::atomic_rmw(Rmw op, V pointer, V value) {
     return out;
 }
 
-Op Op::cmp_xchg(V pointer, V expected, V new_value) {
-    Op out;
+BitOp BitOp::cmp_xchg(V pointer, V expected, V new_value) {
+    BitOp out;
     out.kind = Kind::CmpXchg;
     out.a = pointer;
     out.b = expected;
@@ -416,7 +416,7 @@ Ty Module::type_of(V value) const {
     return Ty{};
 }
 
-V Module::push(std::size_t block, Ty type, Op op) {
+V Module::push(std::size_t block, Ty type, BitOp op) {
     const std::uint32_t id = static_cast<std::uint32_t>(insts_.size());
     insts_.push_back(Inst{type, std::move(op)});
     blocks_[block].body.push_back(id);
@@ -424,19 +424,19 @@ V Module::push(std::size_t block, Ty type, Op op) {
 }
 
 V Module::bin(std::size_t block, Bin op, V a, V b) {
-    return push(block, type_of(a), Op::bin(op, a, b));
+    return push(block, type_of(a), BitOp::bin(op, a, b));
 }
 
 V Module::cast(std::size_t block, Cast op, V value, Ty to) {
-    return push(block, to, Op::cast(op, value, to));
+    return push(block, to, BitOp::cast(op, value, to));
 }
 
 V Module::cmp(std::size_t block, std::uint8_t predicate, V a, V b) {
-    return push(block, int_type(1), Op::cmp(predicate, a, b));
+    return push(block, int_type(1), BitOp::cmp(predicate, a, b));
 }
 
 V Module::select(std::size_t block, V condition, V on_true, V on_false) {
-    return push(block, type_of(on_true), Op::select(condition, on_true, on_false));
+    return push(block, type_of(on_true), BitOp::select(condition, on_true, on_false));
 }
 
 V Module::extract(std::size_t block, V aggregate, std::uint32_t index) {
@@ -450,7 +450,7 @@ V Module::extract(std::size_t block, V aggregate, std::uint32_t index) {
     } else {
         throw std::logic_error("extractvalue of a non-aggregate");
     }
-    return push(block, result, Op::extract(aggregate, index));
+    return push(block, result, BitOp::extract(aggregate, index));
 }
 
 V Module::call(std::size_t block, V function, std::vector<V> args) {
@@ -458,12 +458,12 @@ V Module::call(std::size_t block, V function, std::vector<V> args) {
     const Func& callee = funcs_[function.index];
     const TypeDef& type = types_[callee.type.index];
     if (type.kind != TypeDef::Kind::Func) throw std::logic_error("call of a non-function");
-    return push(block, type.result, Op::call(function.index, std::move(args)));
+    return push(block, type.result, BitOp::call(function.index, std::move(args)));
 }
 
 V Module::phi(std::size_t block, Ty type) {
     const std::uint32_t id = static_cast<std::uint32_t>(insts_.size());
-    insts_.push_back(Inst{type, Op::phi({})});
+    insts_.push_back(Inst{type, BitOp::phi({})});
     blocks_[block].phis.push_back(id);
     return V::inst(id);
 }
@@ -478,21 +478,21 @@ V Module::element(std::size_t block, V pointer, V index) {
     const Ty element_type = array_type.pointee;
     const Ty result = ptr_in(element_type, space);
     const V zero = i32(0);
-    return push(block, result, Op::gep(array, pointer, {zero, index}));
+    return push(block, result, BitOp::gep(array, pointer, {zero, index}));
 }
 
 V Module::load(std::size_t block, V pointer) {
     const TypeDef& type = types_[type_of(pointer).index];
     if (type.kind != TypeDef::Kind::Ptr) throw std::logic_error("load from a non-pointer");
-    return push(block, type.pointee, Op::load(pointer));
+    return push(block, type.pointee, BitOp::load(pointer));
 }
 
 void Module::store(std::size_t block, V pointer, V value) {
-    push(block, void_type(), Op::store(pointer, value));
+    push(block, void_type(), BitOp::store(pointer, value));
 }
 
 V Module::atomic(std::size_t block, Rmw op, V pointer, V value) {
-    return push(block, type_of(value), Op::atomic_rmw(op, pointer, value));
+    return push(block, type_of(value), BitOp::atomic_rmw(op, pointer, value));
 }
 
 V Module::cmpxchg(std::size_t block, V pointer, V expected, V new_value) {
@@ -501,13 +501,13 @@ V Module::cmpxchg(std::size_t block, V pointer, V expected, V new_value) {
     pair_def.kind = TypeDef::Kind::Struct;
     pair_def.fields = {value_type, int_type(1)};
     const Ty pair = ty(std::move(pair_def));
-    const V result = push(block, pair, Op::cmp_xchg(pointer, expected, new_value));
+    const V result = push(block, pair, BitOp::cmp_xchg(pointer, expected, new_value));
     return extract(block, result, 0);
 }
 
 void Module::set_phi(V phi, std::vector<std::pair<V, std::size_t>> incoming) {
     if (phi.kind != V::Kind::Inst) throw std::logic_error("phi of a non-instruction");
-    insts_[phi.index].op = Op::phi(std::move(incoming));
+    insts_[phi.index].op = BitOp::phi(std::move(incoming));
 }
 
 void Module::terminate(std::size_t block, Term term) {
@@ -798,18 +798,18 @@ std::vector<std::uint8_t> Module::write() const {
     const auto instruction = [&](std::uint32_t i) {
         const Inst& inst = insts_[i];
         switch (inst.op.kind) {
-            case Op::Kind::Bin: w.record(2, {relative(inst.op.a), relative(inst.op.b), inst.op.code}); break;
-            case Op::Kind::Cast:
+            case BitOp::Kind::Bin: w.record(2, {relative(inst.op.a), relative(inst.op.b), inst.op.code}); break;
+            case BitOp::Kind::Cast:
                 w.record(3, {relative(inst.op.a), inst.type.index, inst.op.code});
                 break;
-            case Op::Kind::Cmp:
+            case BitOp::Kind::Cmp:
                 w.record(28, {relative(inst.op.a), relative(inst.op.b), inst.op.code});
                 break;
-            case Op::Kind::Select:
+            case BitOp::Kind::Select:
                 w.record(29, {relative(inst.op.b), relative(inst.op.c), relative(inst.op.a)});
                 break;
-            case Op::Kind::Extract: w.record(26, {relative(inst.op.a), inst.op.index}); break;
-            case Op::Kind::Call: {
+            case BitOp::Kind::Extract: w.record(26, {relative(inst.op.a), inst.op.index}); break;
+            case BitOp::Kind::Call: {
                 r.clear();
                 r.insert(r.end(), {0, std::uint64_t{1} << 15, funcs_[inst.op.function].type.index});
                 r.push_back(relative(V::func(inst.op.function)));
@@ -817,7 +817,7 @@ std::vector<std::uint8_t> Module::write() const {
                 w.record(34, r);
                 break;
             }
-            case Op::Kind::Phi: {
+            case BitOp::Kind::Phi: {
                 r.clear();
                 r.push_back(inst.type.index);
                 for (const auto& entry : inst.op.incoming) {
@@ -829,19 +829,19 @@ std::vector<std::uint8_t> Module::write() const {
                 w.record(16, r);
                 break;
             }
-            case Op::Kind::Gep: {
+            case BitOp::Kind::Gep: {
                 r.clear();
                 r.insert(r.end(), {0, inst.op.type.index, relative(inst.op.a)});
                 for (const V index : inst.op.args) r.push_back(relative(index));
                 w.record(43, r);
                 break;
             }
-            case Op::Kind::Load: w.record(20, {relative(inst.op.a), inst.type.index, 3, 0}); break;
-            case Op::Kind::Store: w.record(44, {relative(inst.op.a), relative(inst.op.b), 3, 0}); break;
-            case Op::Kind::AtomicRmw:
+            case BitOp::Kind::Load: w.record(20, {relative(inst.op.a), inst.type.index, 3, 0}); break;
+            case BitOp::Kind::Store: w.record(44, {relative(inst.op.a), relative(inst.op.b), 3, 0}); break;
+            case BitOp::Kind::AtomicRmw:
                 w.record(38, {relative(inst.op.a), relative(inst.op.b), inst.op.code, 0, 6, 1});
                 break;
-            case Op::Kind::CmpXchg:
+            case BitOp::Kind::CmpXchg:
                 w.record(46, {relative(inst.op.a), relative(inst.op.b), relative(inst.op.c), 0, 6, 1, 6, 0});
                 break;
         }

@@ -181,3 +181,61 @@ Address modes 0-7 map to 1 wrap, 2 mirror, 3 clamp, 5 mirror once, 3, 5, 4 borde
 | `s_nand_saveexec_b32`, `s_nand_saveexec_b64` | 128 (0) | EXEC becomes every lane |
 
 The section ends at the first instruction that writes EXEC and reads the saved mask.
+
+## DXIL emission bindings
+
+| Space | Contents |
+|---|---|
+| 0 | user data `b0`, static samplers `s<n>` |
+| 1 | root CBVs `b<i>`, raw root SRVs `t<i>`, `i` the root parameter |
+
+| Handle properties (first word) | Resource |
+|---|---|
+| 10 | typed buffer, 4 float channels |
+| 11 | raw buffer |
+| 12 | structured buffer, second word the stride |
+| 13 | constant buffer, second word the size |
+| 14 | sampler; bit 15 marks a comparison sampler |
+| + 0x1000 | UAV |
+
+Handle annotation row is `0xFFFFFFFF`; a root CBV is annotated 65536 bytes.
+Resource heap indices shift the byte address right by 5, sampler heap indices by 4.
+Root CBVs and root SRVs are annotated with row 0xFFFFFFFF.
+
+## Descriptor fields read as data
+
+| Field | Word, bits |
+|---|---|
+| image width - 1 (low bits) | 2, 0-13 |
+| image width - 1 (high bits) | 1, 30-31 |
+| image height - 1 | 2, 14-29 |
+| image last level | 3, 16-19 |
+| image type | 3, 28-31 (0, 8, 9, 10, 12, 13 for 1D, 2D, 3D, 2D array, cube, 2D MSAA) |
+| image depth or layers - 1 | 4 |
+| buffer record count | 2 |
+
+Word 3's low bits are `0xFAC`.
+
+## GFX10 buffer formats
+
+Families in number order; each family lists its numeric formats in the order
+unorm, snorm, uscaled, sscaled, uint, sint, float. Channel widths run from the
+lowest bits up.
+
+| Family | Widths | Numeric formats |
+|---|---|---|
+| 1-6 | 8 | unorm, snorm, uscaled, sscaled, uint, sint |
+| 7-13 | 16 | all seven |
+| 14-19 | 8, 8 | six without float |
+| 20-22 | 32 | uint, sint, float |
+| 23-29 | 16, 16 | all seven |
+| 30-36 | 11, 11, 10 | all seven |
+| 37-43 | 10, 11, 11 | all seven |
+| 44-49 | 2, 10, 10, 10 | six without float |
+| 50-55 | 10, 10, 10, 2 | six without float |
+| 56-61 | 8, 8, 8, 8 | six without float |
+| 62-64 | 32, 32 | uint, sint, float |
+| 65-71 | 16, 16, 16, 16 | all seven |
+| 72-74 | 32, 32, 32 | uint, sint, float |
+| 75-77 | 32, 32, 32, 32 | uint, sint, float |
+
