@@ -20,6 +20,7 @@ add_executable(g6shim_tests
   unit/xg_layout_test.cpp
   unit/capture_test.cpp
   unit/xmem_alloc_test.cpp
+  unit/chad_dsp_test.cpp
   unit/log_format_test.cpp
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/graphics_object.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/device.cpp"
@@ -33,7 +34,8 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/xg_x/layout.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xg_x/computer.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xg_x/console_xg.cpp"
-  "${PROJECT_SOURCE_DIR}/hle/xmem/alloc.cpp")
+  "${PROJECT_SOURCE_DIR}/hle/xmem/alloc.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/chad/dsp.cpp")
 target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim::winrt d3d12 dxgi)
 target_include_directories(g6shim_tests PRIVATE
   "${PROJECT_SOURCE_DIR}/hle/kernelx"
@@ -41,6 +43,7 @@ target_include_directories(g6shim_tests PRIVATE
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x"
   "${PROJECT_SOURCE_DIR}/hle/xg_x"
   "${PROJECT_SOURCE_DIR}/hle/xmem"
+  "${PROJECT_SOURCE_DIR}/hle/chad"
   "${PROJECT_SOURCE_DIR}/runtime/src"
   "${PROJECT_SOURCE_DIR}/winrt")
 add_test(NAME unit COMMAND g6shim_tests)
