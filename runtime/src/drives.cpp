@@ -9,9 +9,11 @@
 #include <algorithm>
 #include <climits>
 #include <cstring>
+#include <filesystem>
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace g6shim::drives {
@@ -25,6 +27,9 @@ constexpr wchar_t kColon = L':';
 constexpr int kFirstFreeLetter = L'D';
 constexpr std::size_t kMaxModulePath = 0x8000;
 constexpr wchar_t kPersistentFolder[] = L"g6shim_persistent";
+constexpr wchar_t kTemporaryDrive = L'T';
+constexpr wchar_t kTemporaryPrefix[] = L"g6shim_temp_";
+constexpr int kTemporaryNameAttempts = 16;
 
 struct Mount {
     wchar_t letter;
@@ -276,23 +281,95 @@ int mount_drive(const wchar_t* root) {
     return 0;
 }
 
-int persistent_storage_drive() {
-    const std::wstring folder = executable_folder();
-    if (folder.empty()) return 0;
-    const std::wstring root = folder + kBackslash + kPersistentFolder;
+namespace {
+
+bool ensure_folder(const std::wstring& root) {
     if (!CreateDirectoryW(root.c_str(), nullptr)) {
         const DWORD error = GetLastError();
         if (error != ERROR_ALREADY_EXISTS) {
             G6SHIM_WARN("drives: cannot create %ls (error %lu)", root.c_str(), error);
-            return 0;
+            return false;
         }
     }
     const DWORD attributes = GetFileAttributesW(root.c_str());
     if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
         G6SHIM_WARN("drives: %ls is not a folder", root.c_str());
-        return 0;
+        return false;
     }
+    return true;
+}
+
+struct TemporaryFolder {
+    std::mutex mutex;
+    std::wstring root;
+    TemporaryFolder() = default;
+    TemporaryFolder(const TemporaryFolder&) = delete;
+    TemporaryFolder& operator=(const TemporaryFolder&) = delete;
+    ~TemporaryFolder() {
+        if (root.empty()) return;
+        std::error_code ignored;
+        std::filesystem::remove_all(root, ignored);
+    }
+};
+
+TemporaryFolder& temporary_folder() {
+    static TemporaryFolder folder;
+    return folder;
+}
+
+std::wstring create_temporary_root() {
+    wchar_t base[MAX_PATH + 1] = L"";
+    const DWORD length = GetTempPathW(MAX_PATH + 1, base);
+    if (length == 0 || length > MAX_PATH) return {};
+    const std::wstring stem = std::wstring(base) + kTemporaryPrefix + std::to_wstring(GetCurrentProcessId()) + L"_" +
+                              std::to_wstring(GetTickCount64());
+    for (int attempt = 0; attempt < kTemporaryNameAttempts; ++attempt) {
+        const std::wstring root = attempt == 0 ? stem : stem + L"_" + std::to_wstring(attempt);
+        if (CreateDirectoryW(root.c_str(), nullptr)) return root;
+        if (GetLastError() != ERROR_ALREADY_EXISTS) break;
+    }
+    G6SHIM_WARN("drives: cannot create a temporary folder under %ls", base);
+    return {};
+}
+
+int mount_preferring(wchar_t preferred, const std::wstring& root) {
+    ensure_default_mount();
+    const std::wstring wide = root_wide(root.c_str());
+    if (wide.empty()) return 0;
+    {
+        std::lock_guard<std::mutex> lock(table_mutex());
+        for (const auto& entry : mounts())
+            if (entry.root == wide) return entry.letter;
+        const unsigned bit = static_cast<unsigned>(preferred - L'A');
+        if (((GetLogicalDrives() >> bit) & 1u) == 0 && find_mount(preferred) == nullptr) {
+            set_mount(preferred, wide);
+            G6SHIM_INFO("drives: %c: is %ls", preferred, wide.c_str());
+            return preferred;
+        }
+    }
+    return mount_drive(wide.c_str());
+}
+
+}  // namespace
+
+int persistent_storage_drive() {
+    const std::wstring folder = executable_folder();
+    if (folder.empty()) return 0;
+    const std::wstring root = folder + kBackslash + kPersistentFolder;
+    if (!ensure_folder(root)) return 0;
     return mount_drive(root.c_str());
+}
+
+int temporary_storage_drive() {
+    TemporaryFolder& folder = temporary_folder();
+    std::wstring root;
+    {
+        std::lock_guard<std::mutex> lock(folder.mutex);
+        if (folder.root.empty()) folder.root = create_temporary_root();
+        root = folder.root;
+    }
+    if (root.empty() || !ensure_folder(root)) return 0;
+    return mount_preferring(kTemporaryDrive, root);
 }
 
 void mount_drive_at(wchar_t letter, const wchar_t* root) {

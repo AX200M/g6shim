@@ -92,5 +92,6 @@ Translated shaders and compiled host pipelines are kept outside the game folder 
 ## Notes
 
 - The console's game drive `G:\` is the game folder; for a GDK title it is the folder of the executable, and the file forwarders translate it.
+- The console's temporary drive is `%TEMP%\g6shim_temp_<process id>_<tick count>`, made on the first request for it and mounted on `T:`, or on the highest free letter when the host or another mount uses `T:`. It is deleted with everything in it when the process exits normally.
 - DLLs the game ships for its own WinRT classes are activated from the game folder. Some need the Visual C++ 2012 x64 runtime.
 - A window close ends the game.
