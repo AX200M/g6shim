@@ -13,6 +13,7 @@ The audio hardware addresses memory with 32-bit APU addresses, so APU blocks liv
 | `ApuFree` | `void (void* va)` |
 | `ApuMapVirtualAddress` | `UINT32 (const void* va)`: the APU address of a pointer into a block. Titles write the result into hardware contexts |
 | `ApuIsVirtualAddressValid` | `BOOLEAN (const void* va, UINT32 size)`: whether `size` bytes from `va` lie in one block. Titles check buffers with it before mapping them |
+| `ApuMapApuAddress` | `void* (UINT32 apu)`: the host address of any byte of a block, null outside every block. Titles hand the result to host code |
 
 ## Shape contexts
 
@@ -22,7 +23,7 @@ The hardware keeps one set of context arrays per process, one array per kind of 
 |---|---|
 | `AcpHalAllocateShapeContexts` | `HRESULT (void* config)`. Reads six context counts and writes six array pointers back into `config`. Titles clear the arrays themselves after the call. |
 | `AcpHalReleaseShapeContexts` | `HRESULT ()`. Frees the arrays; titles call it after releasing their `IAcpHal` objects. |
-| `AcpHalCreate` | `HRESULT (IAcpHal** hal)` |
+| `AcpHalCreate` | `HRESULT (IAcpHal** hal)`: one audio coprocessor object |
 
 `config` is 0x60 bytes; titles zero it before filling the counts.
 
@@ -45,3 +46,78 @@ The hardware keeps one set of context arrays per process, one array per kind of 
 - The PCM array follows the XMA array in one block.
 - A second allocation fails with `0x8AC80001`; a release without an allocation fails with `0x8AC80002`.
 - Kinds 1 and 2 are named after the hardware blocks by their context sizes; the names of kinds 0 and 3 to 5 match the shared-context fields the console's audio library uses.
+
+## Audio coprocessor
+
+`AcpHalCreate` returns a pointer to an object whose first field is a pointer to this method table.
+
+| Index | Method | Behaviour |
+|---|---|---|
+| 0 | `HRESULT connect(UINT32 commands, UINT32 messages)` | `E_INVALIDARG` when `commands` is 0; otherwise records the message queue size |
+| 1 | `HRESULT disconnect()` | `E_FAIL` when not connected; otherwise queues message `0x80` if registered |
+| 2 | `HRESULT submit(UINT32 command, UINT64 id, UINT32 frame, const void* data, UINT32 notification)` | completes at once, always `S_OK`; `data` starts with the command's `UINT32` words |
+| 3 | `bool pop_message(Message* out)` | removes the oldest message; false when the queue is empty |
+| 4 | `UINT32 message_count()` | number of queued messages |
+| 5 | `void release()` | destroys the object |
+
+`Message` is 28 bytes:
+
+| Offset | Content |
+|---|---|
+| +0x00 | `UINT32` kind |
+| +0x04 | `UINT32` messages dropped since the previous one queued |
+| +0x08 | `UINT32` microseconds since the object was created |
+| +0x0C | 16 data bytes |
+
+| Kind | Meaning | Data |
+|---|---|---|
+| `0x02` | flowgraph completed | flowgraph id, `UINT32` |
+| `0x10` | command completed | command `UINT32`, id `UINT64`, audio frame `UINT32` |
+| `0x80` | disconnected | none |
+
+A message is only queued when its kind bit is set by a register command (`0x02`, `0x10`, `0x80` may be combined). A full queue drops the message and counts it in the next queued message.
+
+| Command | Effect |
+|---|---|
+| 1 | load flowgraph: word 1 is the flowgraph id; queues `0x02` |
+| 2 | register messages: word 0 is the kind mask |
+| 3 | unregister messages: word 0 is the kind mask |
+| 5 | enable one XMA context: word 0 is the index |
+| 6 | enable a set of XMA contexts: word *n* holds the bits of contexts 32*n* to 32*n*+31 |
+| 7 | disable one XMA context |
+| 8 | disable a set of XMA contexts |
+| 18 | advance the read block: word 0 is the index, word 1 the number of blocks |
+
+Any other command is acknowledged without effect. When `id` is not 0, command `0x10` is queued regardless of the message mask. When `notification` is not 0, it is an APU address whose `UINT32` word is set to 1 at once; the title reads it as volatile.
+
+## XMA decoder
+
+Kind 4 contexts are 64 bytes: 16 `UINT32` words each, written by the title and by the hardware. Enabled contexts are decoded on a background thread every 2 ms into their output rings.
+
+| Word | Bits | Content |
+|---|---|---|
+| 0 | 0-11 | input 0 size in 2048-byte packets |
+| 0 | 12-19 | loop count; 255 loops forever |
+| 0 | 20-21 | input validity bits |
+| 0 | 22-26 | output ring size in 256-byte blocks |
+| 0 | 27-31 | write block, written by the hardware |
+| 1 | 0-11 | input 1 size in packets |
+| 1 | 12-13 | loop end subframe |
+| 1 | 17-19 | loop start subframes to skip |
+| 1 | 24-26 | subframes to skip at the start |
+| 1 | 27-28 | sample rate: 0 = 24 kHz, 1 = 32 kHz, 2 = 44.1 kHz, 3 = 48 kHz |
+| 1 | 29 | stereo |
+| 1 | 31 | output writable |
+| 2 | 0-25 | read position in bits |
+| 2 | 26-30 | error status; 4 = input ran out |
+| 2 | 31 | error |
+| 3 | 0-25 | loop start position in bits |
+| 4 | 0-25 | loop end position in bits |
+| 4 | 31 | current input |
+| 5 | 0-31 | input 0 APU address |
+| 6 | 0-31 | input 1 APU address |
+| 7 | 0-31 | output ring APU address |
+| 8 | 0-31 | overlap buffer APU address |
+| 9 | 0-4 | read block, written by the title through command 18 |
+
+Each output block is 256 bytes of interleaved 16-bit samples, so 128 samples per channel. Titles read back the write block, the writable bit and the read block, and consume whatever lies between the read and write blocks.

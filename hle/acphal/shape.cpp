@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "shape_contexts.hpp"
 
+#include "xma_voices.hpp"
+
 #include <g6shim/log.hpp>
 
 namespace g6shim::acphal {
@@ -38,10 +40,17 @@ void log_allocation(const void* config, HRESULT hr) {
 extern "C" HRESULT WINAPI g6shim_AcpHalAllocateShapeContexts(void* config) {
     const HRESULT hr = shape_contexts().allocate(config);
     log_allocation(config, hr);
+    if (SUCCEEDED(hr)) {
+        const ShapeCounts counts = read_shape_counts(config);
+        shape_contexts().with_table([&](const ShapeTable& table) {
+            set_xma_context_array(static_cast<std::uint8_t*>(table.arrays[kShapeKindXma]), counts[kShapeKindXma]);
+        });
+    }
     return hr;
 }
 
 extern "C" HRESULT WINAPI g6shim_AcpHalReleaseShapeContexts() {
     G6SHIM_INFO("AcpHalReleaseShapeContexts");
+    clear_xma_context_array();
     return shape_contexts().release();
 }

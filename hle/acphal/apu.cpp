@@ -54,6 +54,10 @@ extern "C" UINT32 WINAPI g6shim_ApuMapVirtualAddress(const void* va) {
     return apu;
 }
 
+extern "C" void* WINAPI g6shim_ApuMapApuAddress(UINT32 apu) {
+    return apu_memory().virtual_address(apu, 1);
+}
+
 extern "C" BOOLEAN WINAPI g6shim_ApuIsVirtualAddressValid(const void* va, UINT32 size) {
     return apu_memory().contains(va, size) ? TRUE : FALSE;
 }
