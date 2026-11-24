@@ -196,13 +196,13 @@ EXPORTS
     ConvertThreadToFiber=kernel32.ConvertThreadToFiber
     ConvertThreadToFiberEx=kernel32.ConvertThreadToFiberEx
     CopyContext=kernel32.CopyContext
-    CopyFile2=kernel32.CopyFile2
+    CopyFile2=g6shim_CopyFile2
     CopyFileA=kernel32.CopyFileA
     CopyFileExA=kernel32.CopyFileExA
     CopyFileExW=kernel32.CopyFileExW
     CopyFileTransactedA=kernel32.CopyFileTransactedA
     CopyFileTransactedW=kernel32.CopyFileTransactedW
-    CopyFileW=kernel32.CopyFileW
+    CopyFileW=g6shim_CopyFileW
     CopyLZFile=kernel32.CopyLZFile
     CreateActCtxA=kernel32.CreateActCtxA
     CreateActCtxW=kernel32.CreateActCtxW
@@ -212,7 +212,7 @@ EXPORTS
     CreateConsoleScreenBuffer=kernel32.CreateConsoleScreenBuffer
     CreateDirectory2A=kernel32.CreateDirectory2A
     CreateDirectory2W=kernel32.CreateDirectory2W
-    CreateDirectoryA=kernel32.CreateDirectoryA
+    CreateDirectoryA=g6shim_CreateDirectoryA
     CreateDirectoryExA=kernel32.CreateDirectoryExA
     CreateDirectoryExW=kernel32.CreateDirectoryExW
     CreateDirectoryTransactedA=kernel32.CreateDirectoryTransactedA
@@ -423,7 +423,7 @@ EXPORTS
     FindFirstChangeNotificationA=kernel32.FindFirstChangeNotificationA
     FindFirstChangeNotificationW=kernel32.FindFirstChangeNotificationW
     FindFirstFileA=kernel32.FindFirstFileA
-    FindFirstFileExA=kernel32.FindFirstFileExA
+    FindFirstFileExA=g6shim_FindFirstFileExA
     FindFirstFileExW=g6shim_FindFirstFileExW
     FindFirstFileNameTransactedW=kernel32.FindFirstFileNameTransactedW
     FindFirstFileNameW=kernel32.FindFirstFileNameW
@@ -650,7 +650,7 @@ EXPORTS
     GetFullPathNameA=kernel32.GetFullPathNameA
     GetFullPathNameTransactedA=kernel32.GetFullPathNameTransactedA
     GetFullPathNameTransactedW=kernel32.GetFullPathNameTransactedW
-    GetFullPathNameW=kernel32.GetFullPathNameW
+    GetFullPathNameW=g6shim_GetFullPathNameW
     GetGeoInfoA=kernel32.GetGeoInfoA
     GetGeoInfoEx=kernel32.GetGeoInfoEx
     GetGeoInfoW=kernel32.GetGeoInfoW

@@ -120,6 +120,11 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/xcrdapi/dstorage.cpp")
 target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim_shader g6shim::winrt Opus::opus d3d12 dxgi onecore)
 target_link_options(g6shim_tests PRIVATE "/EXPORT:__XMemAllocationHooks__,DATA" "/EXPORT:g6shim_xmem_map_alias")
+foreach(forwarder IN ITEMS hle_g6shim_file hle_g6shim_file2 hle_g6shim_crtfs hle_g6shim_kernel32)
+  if(TARGET ${forwarder})
+    add_dependencies(g6shim_tests ${forwarder})
+  endif()
+endforeach()
 target_include_directories(g6shim_tests PRIVATE
   "${PROJECT_SOURCE_DIR}/hle/acphal"
   "${PROJECT_SOURCE_DIR}/hle/kernelx"
