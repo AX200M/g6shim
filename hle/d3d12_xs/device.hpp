@@ -40,6 +40,7 @@ static_assert(sizeof(Device) == 0x58);
 
 Object* device();
 bool newer();
+bool is_device(const Iid* iid);
 
 HRESULT create(const void* adapter, const std::uint32_t* parameters, const Iid* iid, Object** out);
 

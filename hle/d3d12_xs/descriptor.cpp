@@ -334,6 +334,36 @@ std::optional<RtvRecord> rtv_record(std::uint64_t handle) { return tagged_record
 
 std::optional<RtvRecord> dsv_record(std::uint64_t handle) { return tagged_record(handle, kDsvTag); }
 
+namespace {
+
+template <typename T>
+std::optional<T> host_description(const RtvRecord& record, std::uint32_t dimension) {
+    static_assert(sizeof(T) <= sizeof(record.desc));
+    std::array<std::uint32_t, 6> words{};
+    if (record.described != 0) {
+        words = record.desc;
+    } else {
+        const auto format = resource::view_format(record.resource);
+        if (!format) return std::nullopt;
+        words = {*format, dimension, 0, 0, 0, 0};
+    }
+    words[0] = resource::pc_format(words[0]);
+    T description{};
+    std::memcpy(&description, words.data(), sizeof description);
+    return description;
+}
+
+}  // namespace
+
+std::optional<D3D12_RENDER_TARGET_VIEW_DESC> rtv_description(const RtvRecord& record) {
+    constexpr std::uint32_t kTexture2D = 4;
+    return host_description<D3D12_RENDER_TARGET_VIEW_DESC>(record, kTexture2D);
+}
+
+std::optional<D3D12_DEPTH_STENCIL_VIEW_DESC> dsv_description(const RtvRecord& record) {
+    constexpr std::uint32_t kTexture2D = 3;
+    return host_description<D3D12_DEPTH_STENCIL_VIEW_DESC>(record, kTexture2D);
+}
 void release_dynamic(Object* heap, std::uint32_t first, std::uint32_t count) {
     later::descriptor_release_dynamic(heap, first, count);
 }

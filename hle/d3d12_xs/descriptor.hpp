@@ -5,6 +5,8 @@
 #include "object.hpp"
 #include "resource.hpp"
 
+#include <d3d12.h>
+
 #include <array>
 #include <compare>
 #include <cstdint>
@@ -123,6 +125,8 @@ void forget(Object* resource_object);
 std::optional<View> view(std::uint64_t handle);
 std::optional<RtvRecord> rtv_record(std::uint64_t handle);
 std::optional<RtvRecord> dsv_record(std::uint64_t handle);
+std::optional<D3D12_RENDER_TARGET_VIEW_DESC> rtv_description(const RtvRecord& record);
+std::optional<D3D12_DEPTH_STENCIL_VIEW_DESC> dsv_description(const RtvRecord& record);
 void release_dynamic(Object* heap, std::uint32_t first, std::uint32_t count);
 
 }  // namespace g6shim::d3d12_xs::descriptor

@@ -798,17 +798,26 @@ void HostList::defer_texture(std::shared_ptr<texture::Staging> staging) {
 }
 
 std::optional<std::pair<std::uint64_t, std::uint8_t*>> HostList::upload(std::uint64_t bytes) {
+    auto made = upload_with_resource(bytes);
+    if (!made) return std::nullopt;
+    return std::make_pair(made->gpu, made->data);
+}
+
+std::optional<HostList::Upload> HostList::upload_with_resource(std::uint64_t bytes) {
     Host* gpu = host();
     if (gpu == nullptr) return std::nullopt;
     auto buffer = gpu->upload_buffer(bytes);
     if (!buffer) return std::nullopt;
     name(buffer->first.Get(), "list upload");
-    const std::uint64_t address = buffer->first->GetGPUVirtualAddress();
+    Upload made;
+    made.gpu = buffer->first->GetGPUVirtualAddress();
+    made.data = buffer->second;
     {
         std::lock_guard<std::mutex> lock(deferred_mutex_);
         deferred_.uploads.push_back(buffer->first);
     }
-    return std::make_pair(address, buffer->second);
+    made.buffer = std::move(buffer->first);
+    return made;
 }
 
 std::optional<std::pair<std::uint64_t, std::uint8_t*>> HostList::scratch(std::uint64_t bytes) {

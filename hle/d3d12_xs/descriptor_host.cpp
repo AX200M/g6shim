@@ -431,16 +431,17 @@ D3D12_UNORDERED_ACCESS_VIEW_DESC null_uav_desc(std::optional<std::uint32_t> dime
 }
 
 HostHeap::HostHeap(Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap, std::uint64_t cpu, std::uint64_t gpu,
-                   std::uint32_t step, std::uint32_t count, bool sampler)
+                   std::uint32_t step, std::uint32_t count, std::uint32_t dynamic, bool sampler)
     : heap_(std::move(heap)),
       cpu_(cpu),
       gpu_(gpu),
       step_(step),
       count_(count),
+      dynamic_(dynamic),
       sampler_(sampler),
       made_(count, 0),
-      kept_(static_cast<std::size_t>(count) + (sampler ? 0 : kDynamicSlots)),
-      taken_(sampler ? 0 : kDynamicSlots, false) {}
+      kept_(static_cast<std::size_t>(count) + dynamic),
+      taken_(dynamic, false) {}
 
 std::unique_ptr<HostHeap> HostHeap::create(bool sampler, std::uint32_t count) {
     host::Host* gpu = host::host();
@@ -456,24 +457,41 @@ std::unique_ptr<HostHeap> HostHeap::create(bool sampler, std::uint32_t count) {
         if (FAILED(gpu->device()->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&heap)))) return heap;
         return heap;
     };
-    const std::uint32_t extra = sampler ? 0 : kDynamicSlots;
-    count = std::min(count, std::numeric_limits<std::uint32_t>::max() - extra);
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap = make_heap(count + extra);
-    if (!heap && !sampler && count + extra > kPortableViews) {
-        G6SHIM_WARN("d3d12_xs: host view heap capped at %u descriptors", kPortableViews);
-        heap = make_heap(kPortableViews);
-        count = kPortableViews - extra;
-    }
-    if (!heap) {
-        G6SHIM_WARN("d3d12_xs: no host descriptor heap of %u descriptors", count + extra);
-        return nullptr;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap;
+    std::uint32_t dynamic = 0;
+    if (sampler) {
+        heap = make_heap(count);
+        if (!heap) {
+            G6SHIM_WARN("d3d12_xs: no host sampler heap of %u descriptors", count);
+            return nullptr;
+        }
+    } else {
+        count = std::min(count, std::numeric_limits<std::uint32_t>::max() - kDynamicSlots);
+        heap = make_heap(count + kDynamicSlots);
+        if (heap) {
+            dynamic = kDynamicSlots;
+        } else if ((heap = make_heap(count + kMinDynamicSlots)) != nullptr) {
+            dynamic = kMinDynamicSlots;
+        } else if (count + kMinDynamicSlots > kPortableViews) {
+            G6SHIM_WARN("d3d12_xs: host view heap capped at %u descriptors", kPortableViews);
+            heap = make_heap(kPortableViews);
+            count = kPortableViews - kMinDynamicSlots;
+            dynamic = kMinDynamicSlots;
+        } else {
+            G6SHIM_WARN("d3d12_xs: no host view heap of %u descriptors", count + kMinDynamicSlots);
+            return nullptr;
+        }
+        if (!heap) {
+            G6SHIM_WARN("d3d12_xs: host view heap capped at %u descriptors", kPortableViews);
+            return nullptr;
+        }
     }
     const std::uint64_t cpu = heap->GetCPUDescriptorHandleForHeapStart().ptr;
     const std::uint64_t address = heap->GetGPUDescriptorHandleForHeapStart().ptr;
     const std::uint32_t step = gpu->device()->GetDescriptorHandleIncrementSize(kind);
-    register_range(address, static_cast<std::uint64_t>(count + extra) * step, step, sampler);
-    std::unique_ptr<HostHeap> made(new HostHeap(std::move(heap), cpu, address, step, count, sampler));
-    if (!made->fill_null(kind, count + extra))
+    register_range(address, static_cast<std::uint64_t>(count + dynamic) * step, step, sampler);
+    std::unique_ptr<HostHeap> made(new HostHeap(std::move(heap), cpu, address, step, count, dynamic, sampler));
+    if (!made->fill_null(kind, count + dynamic))
         G6SHIM_WARN("d3d12_xs: host descriptor heap not made null");
     return made;
 }
@@ -525,14 +543,14 @@ void HostHeap::keep(std::uint32_t index, Microsoft::WRL::ComPtr<ID3D12Resource> 
 }
 
 std::optional<std::uint32_t> HostHeap::dynamic(std::uint32_t count) {
-    if (sampler_ || count == 0 || count > kDynamicSlots) return std::nullopt;
+    if (sampler_ || count == 0 || count > dynamic_) return std::nullopt;
     std::lock_guard<std::mutex> lock(next_mutex_);
     const std::size_t needed = count;
     std::optional<std::uint32_t> found;
     std::size_t run = 0;
     std::size_t last = std::numeric_limits<std::size_t>::max();
-    for (std::size_t step = 0; step < kDynamicSlots; ++step) {
-        const std::size_t at = (static_cast<std::size_t>(next_) + step) % kDynamicSlots;
+    for (std::size_t step = 0; step < dynamic_; ++step) {
+        const std::size_t at = (static_cast<std::size_t>(next_) + step) % dynamic_;
         if (at != last + 1) run = 0;
         last = at;
         run = taken_[at] ? 0 : run + 1;
@@ -546,7 +564,7 @@ std::optional<std::uint32_t> HostHeap::dynamic(std::uint32_t count) {
         return std::nullopt;
     }
     for (std::size_t i = 0; i < needed; ++i) taken_[*found + i] = true;
-    next_ = (*found + count) % kDynamicSlots;
+    next_ = (*found + count) % dynamic_;
     return count_ + *found;
 }
 
@@ -555,7 +573,7 @@ void HostHeap::release(std::uint32_t first, std::uint32_t count) {
     const std::uint32_t at = first - count_;
     std::lock_guard<std::mutex> lock(next_mutex_);
     const auto end = static_cast<std::uint32_t>(
-        std::min<std::uint64_t>(static_cast<std::uint64_t>(at) + count, kDynamicSlots));
+        std::min<std::uint64_t>(static_cast<std::uint64_t>(at) + count, dynamic_));
     for (std::uint32_t slot = at; slot < end; ++slot) taken_[slot] = false;
 }
 

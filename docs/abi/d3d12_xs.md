@@ -36,6 +36,9 @@ The Series console's Direct3D 12 runtime. Console graphics objects are g6shim ob
 | query heap | `Object` + description | 24: 3, 4, 1 |
 | command signature | `Object` + stride + arguments | 24: 3, 4, 1 |
 | pipeline | `Object` + 0x20 packet | 24: 3, 4, 1, 3 |
+| command allocator | 0x18 (`+0x10` type) | 24: 3, 4, 1, 2 |
+| command list | 0x960 console header, then list state | 160: 3, 4, 1, 1, 96, then List1-6; newer lists add 2 more |
+| command queue | `Object` + type + description | 36: 3, 4, 1, 26 |
 
 The object methods occupy slots 3 to 6: `GetPrivateData`, `SetPrivateData`, `SetPrivateDataInterface` (unwritten), `SetName`.
 
@@ -73,6 +76,7 @@ A subobject holds its type at +0, its data at +4, or at +8 when the data holds a
 | immediate samplers | static samplers `s<n>` space 0, in the translated shader's order |
 | heaps | CBV/SRV/UAV and sampler heaps directly indexed |
 | topology | console rectangles (19) and quads (32) become triangles |
+| binding | a draw or mesh dispatch sets the bound title pipeline's host PSO and root signature, each stage's user-data constants and root views, the descriptors its tables name and the vertex buffers its input layout reads; a dispatch does the compute half |
 | cache | `<cache>\shaders\<32 hex>.bin`, `<cache>\pipelines\host-pipelines.bin`, `early-pipelines.txt` |
 
 ## Device slots
@@ -81,10 +85,10 @@ A subobject holds its type at +0, its data at +4, or at +8 when the data holds a
 |---|---|---|
 | 0 | 0x00 | `QueryInterface` |
 | 7 | 0x38 | `GetNodeCount` |
-| 8 | 0x40 | `CreateCommandQueue` (later part) |
-| 9 | 0x48 | `CreateCommandAllocator` (later part) |
+| 8 | 0x40 | `CreateCommandQueue` |
+| 9 | 0x48 | `CreateCommandAllocator` |
 | 10, 11 | 0x50, 0x58 | `CreateGraphicsPipelineState`, `CreateComputePipelineState` |
-| 12 | 0x60 | `CreateCommandList` (later part) |
+| 12 | 0x60 | `CreateCommandList` |
 | 13 | 0x68 | `CheckFeatureSupport` |
 | 14, 15 | 0x70, 0x78 | `CreateDescriptorHeap`, `GetDescriptorHandleIncrementSize` |
 | 16 | 0x80 | `CreateRootSignature` |
@@ -96,12 +100,12 @@ A subobject holds its type at +0, its data at +4, or at +8 when the data holds a
 | 38 | 0x130 | `GetCopyableFootprints` |
 | 39 | 0x138 | `CreateQueryHeap` |
 | 41 | 0x148 | `CreateCommandSignature` |
-| 48 | 0x180 | `CreateCommandQueueX` (later part) |
+| 48 | 0x180 | `CreateCommandQueueX` |
 | 61 | 0x1e8 | `CreateSamplerX` |
 | 62 | 0x1f0 | `CreateComputePipelineStateX` |
 | 69 | 0x228 | debug error filter, accepted and ignored |
 | 70, 71 | 0x230, 0x238 | `CreateShaderResourceViewX`, `CreateUnorderedAccessViewX` of placed memory |
-| 73 | 0x248 | `CreateCommandListX` (later part) |
+| 73 | 0x248 | `CreateCommandListX` |
 | 74, 75 | 0x250, 0x258 | `RegisterPagePool`, `UnregisterPagePool` |
 | 76 | 0x260 | `CreateCommittedResourceX` |
 | 78-81 | 0x270-0x288 | `SetFrameIntervalX`, `ScheduleFrameEventX`, `WaitFrameEventX`, `GetFrameStatisticsX` |
@@ -126,6 +130,9 @@ A subobject holds its type at +0, its data at +4, or at +8 when the data holds a
 | root signature | `c54a6b66-72df-4ee8-8be5-a946a1429214` |
 | query heap | `0d9658ae-ed45-469e-a61d-970ec583cab4` |
 | command signature | `c36a797c-ec80-4f0a-8985-a7b2475082d1` |
+| command allocator | `6102dee4-af59-4b09-b999-b44d73f09b24` |
+| command queue | `0ec870a6-5d7e-4c22-8cfc-5baae07616ed` |
+| command list | `7116d91c-e7e4-47ce-b8c6-ec8168f437e5`, then List1-4, `8754318e-d3a9-4541-98cf-645b50dc4874`, console List5 `55050859-4024-474c-98cf-645b51dc4874`, console List6 `c3827890-4024-474c-98cf-645b51dc4874` |
 
 Every device child also answers for `63ee58fb-1268-4835-86da-f008ce62f0d6` (`ID3D12Pageable`), `905db94b-a00c-4140-9df5-2b64ca9ea357` (`ID3D12DeviceChild`) and `c4fec28f-7966-4e95-9f94-f431cb56c3b8` (`ID3D12Object`).
 
@@ -154,6 +161,10 @@ Every device child also answers for `63ee58fb-1268-4835-86da-f008ce62f0d6` (`ID3
 | root signature description | 0x28 | parameter count, parameters, sampler count, samplers, flags |
 | versioned root signature description | 0x30 | version, then the description |
 | command signature description | 0x18 | stride, count, arguments (each 4 words), node mask |
+| command queue description | 0x10 | type, priority, flags, node mask |
+| console queue description | 0x10 | type, flags, engine or pipe, queue |
+| console list description | 0x10 | type, flags, node mask, barrier batch size |
+| command list barrier | 0x20 | type, flags, resource, subresource/other resource, state |
 | query heap description | 0x0C | kind, count, node mask |
 
 ## Descriptor memory
@@ -170,6 +181,92 @@ Every device child also answers for `63ee58fb-1268-4835-86da-f008ce62f0d6` (`ID3
 | view | `vVIE` | tag, entry index, generation |
 | render target view | `vRTV` | tag, described, resource, 6 description words |
 | depth view | `vDSV` | as a render target view, tag `vDSV` |
+
+## Command lists
+
+| Offset | Field |
+|---|---|
+| +0x00 | function table |
+| +0x08 | device index and bookkeeping bits |
+| +0x0C | reference count |
+| +0x10 | `UINT32` list type |
+| +0x18 | five `UINT64`: put pointer, plain, draw, API and unbiased API limits (all zero) |
+| +0x40 | 64 reserved words |
+| +0x140 | 128 graphics root-header words |
+| +0x340 | 128 compute root-header words |
+| +0x540 | 32 pipeline-shadow bytes |
+| +0x560 | 256 words kept clear of newer titles' list state |
+
+| Slot | Offset | Method |
+|---|---|---|
+| 3-6 | 0x18-0x30 | object methods |
+| 0x38 | 7 | `GetDevice` |
+| 0x40, 0x48, 0x50 | 8-10 | `GetType`, `Close`, `Reset` |
+| 0x60-0x78 | 12-15 | `DrawInstanced`, `DrawIndexedInstanced`, `Dispatch`, `CopyBufferRegion` |
+| 0x80, 0x88, 0x98 | 16, 17, 19 | `CopyTextureRegion`, `CopyResource`, `ResolveSubresource` |
+| 0xa0-0xc0 | 20-24 | `IASetPrimitiveTopology`, viewports, scissors, blend factor, stencil reference |
+| 0xc8, 0xd0 | 25, 26 | `SetPipelineState`, `ResourceBarrier` |
+| 0x100-0x170 | 32-46 | descriptor heaps, root signatures, root tables, constants and views |
+| 0x178, 0x180, 0x190 | 47, 48, 50 | index buffer, vertex buffers, render targets |
+| 0x198, 0x1a0 | 51, 52 | `ClearDepthStencilView`, `ClearRenderTargetView` |
+| 0x1d8, 0x1e0 | 59, 60 | `ExecuteIndirect`, `CopyMemoryToMemoryX` |
+| 0x228-0x248 | 69-73 | bottom-of-pipe writes, value waits, depth order |
+| 0x298, 0x2a0 | 83, 84 | `CopyTextureRegionX`, `CopyResourceX` |
+| 0x3f8 | 127 | `DispatchMesh` |
+| 0x448 | 137 | `ResetX` |
+
+Newer lists move every slot from 0x1d8 on two later: `ExecuteIndirect` 0x1e8, depth bounds 0x230, writes 0x238/0x240, waits 0x248/0x250, depth order 0x258, `ResetX` 0x458. Their extra slots: 0x470 called from the state flush (ignored), 0x490 enhanced barriers, 0x4a0 list-owned upload memory `(size, alignment) -> pointer`.
+
+## Command queues
+
+| Offset | Field |
+|---|---|
+| +0x10 | `UINT32` type |
+| +0x14 | description: type, priority, flags, node mask |
+
+| Slot | Offset | Method |
+|---|---|---|
+| 0x50 | 10 | `ExecuteCommandLists` |
+| 0x58-0x68 | 11-13 | markers and events (ignored) |
+| 0x70, 0x78 | 14, 15 | `Signal`, `Wait` |
+| 0x80 | 16 | `GetTimestampFrequency` (100,000,000 Hz) |
+| 0xd0 | 26 | `GetDesc` |
+| 0xe8 | 29 | page mapping batch |
+| 0xf0 | 30 | `PresentX` |
+| 0x100, 0x108 | 32, 33 | `Signal` with sync settings, frame-token submission |
+
+Newer queues move every slot from 0x70 on two later: `Signal` 0x80, frequency 0x90, `PresentX` 0x100, frame-token submission 0x118, `GetDesc` 0xe0.
+
+| Page range kind | Meaning |
+|---|---|
+| 0 | `count` pool pages from `start` |
+| 1 | pool page `start` in each destination page |
+| 2 | unmap |
+| 3 | left as it is |
+
+Page size is 64 KiB.
+
+## Console primitives
+
+| Number | Topology | Host |
+|---|---|---|
+| 6 | triangle fan | triangle list |
+| 17 | rectangles | triangle list, six vertices per rectangle |
+| 18 | line loop | triangle list |
+| 19 | quads | triangle list |
+| 20 | quad strip | triangle list |
+
+A rectangle is three vertices `(v0, v1, v2)`; the fourth is `v0 + v2 - v1` per input element.
+
+## Indirect execution
+
+| Piece | Value |
+|---|---|
+| clamp shader | `cs_5_1`, 64 threads per group, one record per thread |
+| record kinds | 0 draw, 1 indexed draw, 2 dispatch, 10 mesh dispatch |
+| bounds | 2^24 vertices, 2^26 vertex instances, 65,535 groups per dimension, 2^20 groups per dispatch |
+| list budget | 2^27 vertex instances or threads (groups count 64 threads, mesh groups 128) |
+| consoles' single-pass dispatch | signature type 105, run as kind 2 |
 
 ## Frame events
 
@@ -215,7 +312,7 @@ Wait flag 2 makes a token when the wait times out. The token counts frames; tick
 
 | Piece | Value |
 |---|---|
-| host slots behind title slots | same index; views get 65536 extra dynamic slots |
+| host slots behind title slots | same index; views get 2^18 extra dynamic slots, or 2^16 when the host will not take the larger range |
 | host heap creation | made on the first draw that uses the title heap; title writes before wait in a pending list |
 | portable view heap limit | 1000000 descriptors; larger title heaps are capped |
 | dynamic search | from the slot after the last allocation, runs never wrap |

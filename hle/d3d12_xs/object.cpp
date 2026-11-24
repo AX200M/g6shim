@@ -174,8 +174,7 @@ HRESULT set_name(Object* object, const wchar_t* name) {
 }
 
 HRESULT parent_device(Object*, const Iid* iid, Object** out) {
-    const bool known = is_iid(iid, std::span<const Iid>(&device::kIid, 1));
-    return answer(kDevice, iid, known ? device::device() : nullptr, out);
+    return answer(kDevice, iid, device::is_device(iid) ? device::device() : nullptr, out);
 }
 
 HRESULT ignore(Object*) { return S_OK; }

@@ -20,13 +20,6 @@ namespace later {
 
 struct HostTexture;
 
-HRESULT create_command_queue(Object* device, const void* desc, const Iid* iid, Object** out);
-HRESULT create_command_queue_x(Object* device, const void* desc, std::uint32_t flags, const Iid* iid, Object** out);
-HRESULT create_command_allocator(Object* device, std::uint32_t type, const Iid* iid, Object** out);
-HRESULT create_command_list(Object* device, std::uint32_t node_mask, std::uint32_t type, Object* allocator,
-                            Object* state, const Iid* iid, Object** out);
-HRESULT create_command_list_x(Object* device, std::uint32_t node_mask, std::uint32_t type, Object* allocator,
-                              Object* state, const Iid* iid, Object** out);
 HRESULT create_graphics_pipeline(Object* device, const void* desc, const Iid* iid, Object** out);
 HRESULT create_compute_pipeline(Object* device, const void* desc, const Iid* iid, Object** out);
 HRESULT create_compute_pipeline_x(Object* device, const void* desc, std::uint32_t extension_count,

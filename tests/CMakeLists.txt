@@ -68,21 +68,31 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh/builder.cpp"
   unit/bvh_builder_test.cpp
   unit/d3d12_xs_pipeline_test.cpp
+  unit/d3d12_xs_list_test.cpp
+  unit/d3d12_xs_queue_test.cpp
+  unit/d3d12_xs_primitive_test.cpp
+  unit/d3d12_xs_indirect_test.cpp
+  unit/d3d12_xs_draw_test.cpp
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/console.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor_host.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/device.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/draw.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/dxgi.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/fence.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/frame.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/host.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/indirect.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/later.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/list.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/object.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/pipeline.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/pipeline_host.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/pipeline_library.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/pipeline_make.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/primitive.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/query.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/queue.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/resource.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/root.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/sampler.cpp"
@@ -119,7 +129,7 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/acphal/xma_voices.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xcrdapi/bcpack.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xcrdapi/dstorage.cpp")
-target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim_shader g6shim::winrt Opus::opus d3d12 dxgi onecore)
+target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim_shader g6shim::winrt Opus::opus d3d12 dxgi d3dcompiler onecore)
 target_link_options(g6shim_tests PRIVATE "/EXPORT:__XMemAllocationHooks__,DATA" "/EXPORT:g6shim_xmem_map_alias")
 foreach(forwarder IN ITEMS hle_g6shim_file hle_g6shim_file2 hle_g6shim_crtfs hle_g6shim_kernel32)
   if(TARGET ${forwarder})

@@ -31,7 +31,7 @@ HRESULT query(std::size_t kind, const Iid* iid, std::span<const Iid> known, Obje
 }
 
 HRESULT device_query(Object* object, const Iid* iid, Object** out) {
-    if (is_iid(iid, std::span<const Iid>(&::g6shim::d3d12_xs::device::kIid, 1)))
+    if (::g6shim::d3d12_xs::device::is_device(iid))
         return answer(kDxgiDevice, iid, ::g6shim::d3d12_xs::device::device(), out);
     return query(kDxgiDevice, iid, kDeviceIids, object, out);
 }

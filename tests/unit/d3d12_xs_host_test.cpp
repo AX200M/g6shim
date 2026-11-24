@@ -121,14 +121,14 @@ TEST(d3d12_xs_host_dynamic_slots_stay_taken_until_released) {
     if (test_host() == nullptr) return;
     auto heap = descriptor_host::HostHeap::create(false, 4);
     if (!heap) return;
-    const auto first = heap->dynamic(descriptor_host::kDynamicSlots - 100);
+    const auto first = heap->dynamic(heap->dynamic_slots() - 100);
     CHECK(first == 4u);
     const auto second = heap->dynamic(60);
-    CHECK(second == 4u + descriptor_host::kDynamicSlots - 100);
+    CHECK(second == 4u + heap->dynamic_slots() - 100);
     CHECK(!heap->dynamic(50).has_value());
     heap->release(4, 50);
     CHECK(heap->dynamic(50) == std::optional<std::uint32_t>(4));
-    CHECK(heap->dynamic(40) == std::optional<std::uint32_t>(4u + descriptor_host::kDynamicSlots - 40));
+    CHECK(heap->dynamic(40) == std::optional<std::uint32_t>(4u + heap->dynamic_slots() - 40));
 }
 
 TEST(d3d12_xs_host_null_uavs_keep_the_titles_dimension) {

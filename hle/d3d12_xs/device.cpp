@@ -7,7 +7,9 @@
 #include "fence.hpp"
 #include "frame.hpp"
 #include "later.hpp"
+#include "list.hpp"
 #include "query.hpp"
+#include "queue.hpp"
 #include "resource.hpp"
 #include "root.hpp"
 #include "signature.hpp"
@@ -17,6 +19,11 @@
 #include <cstring>
 
 namespace g6shim::d3d12_xs::device {
+
+bool is_device(const Iid* iid) {
+    if (is_iid(iid, std::span<const Iid>(&kIid, 1))) return true;
+    return is_iid(iid, kLevelIids);
+}
 
 namespace {
 
@@ -42,11 +49,6 @@ constexpr std::array<std::uint32_t, 16> kOptions{
 };
 
 std::atomic<bool> g_newer{false};
-
-bool is_device(const Iid* iid) {
-    if (is_iid(iid, std::span<const Iid>(&kIid, 1))) return true;
-    return is_iid(iid, kLevelIids);
-}
 
 HRESULT ignore(Object*) { return S_OK; }
 
@@ -136,11 +138,11 @@ std::array<const void*, kMaxSlots> make_functions() {
     std::array<const void*, kMaxSlots> f = d3d12_object(missing_table<kDevice, kMaxSlots>());
     f[0] = reinterpret_cast<const void*>(&query_interface);
     f[7] = reinterpret_cast<const void*>(&node_count);
-    f[8] = reinterpret_cast<const void*>(&later::create_command_queue);
-    f[9] = reinterpret_cast<const void*>(&later::create_command_allocator);
+    f[8] = reinterpret_cast<const void*>(&queue::create);
+    f[9] = reinterpret_cast<const void*>(&list::create_allocator);
     f[10] = reinterpret_cast<const void*>(&later::create_graphics_pipeline);
     f[11] = reinterpret_cast<const void*>(&later::create_compute_pipeline);
-    f[12] = reinterpret_cast<const void*>(&later::create_command_list);
+    f[12] = reinterpret_cast<const void*>(&list::create_list);
     f[13] = reinterpret_cast<const void*>(&check_feature_support);
     f[14] = reinterpret_cast<const void*>(&descriptor::create_heap);
     f[15] = reinterpret_cast<const void*>(&descriptor::increment_size);
@@ -162,13 +164,13 @@ std::array<const void*, kMaxSlots> make_functions() {
     f[38] = reinterpret_cast<const void*>(&resource::copyable_footprints);
     f[39] = reinterpret_cast<const void*>(&query::create);
     f[41] = reinterpret_cast<const void*>(&signature::create);
-    f[48] = reinterpret_cast<const void*>(&later::create_command_queue_x);
+    f[48] = reinterpret_cast<const void*>(&queue::create_x);
     f[61] = reinterpret_cast<const void*>(&descriptor::create_sampler_x);
     f[62] = reinterpret_cast<const void*>(&later::create_compute_pipeline_x);
     f[69] = reinterpret_cast<const void*>(&ignore);
     f[70] = reinterpret_cast<const void*>(&descriptor::create_placed_srv);
     f[71] = reinterpret_cast<const void*>(&descriptor::create_placed_uav);
-    f[73] = reinterpret_cast<const void*>(&later::create_command_list_x);
+    f[73] = reinterpret_cast<const void*>(&list::create_list_x);
     f[74] = reinterpret_cast<const void*>(&resource::register_page_pool);
     f[75] = reinterpret_cast<const void*>(&resource::unregister_page_pool);
     f[76] = reinterpret_cast<const void*>(&resource::create_committed);

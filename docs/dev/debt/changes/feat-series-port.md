@@ -177,7 +177,6 @@
 
 ## add Functional
 
-- Command queues, command allocators and command lists (device slots 8, 9, 12, 48 and 73) return `E_NOTIMPL` and log once until the host GPU parts fill them.
 - Resources have no host GPU copy: buffers are not shadowed, textures are not uploaded, and no host transitions happen.
 - Descriptor heap writes are not mirrored into a host heap; the shader-visible heap hooks do nothing.
 - Committed resources take the title's memory with guessed allocation attributes (2 MiB pages from 2 MiB, alignment as log2, write-combined unless the heap is the default one).
@@ -224,8 +223,6 @@
   Closes when: such views are cast through castable formats.
 - Texture change detection hashes memory with FNV-1a; only equality of hashes is used.
   Closes when: a shared content hash is available.
-- Command queues, allocators and command lists are still `E_NOTIMPL` extension points.
-  Closes when: the command list, queue, draw and pipeline parts land.
 - `buffer_copy_to_host` refreshes a whole buffer into its host copy immediately; no title path calls it yet.
   Closes when: title copies are recorded as deferred steps.
 
@@ -265,3 +262,50 @@
   Closes when: the source root is passed in or compiled in.
 - `g6shim-shader` counts a container as translated when at least one of its native programs produced a PC container; the other programs' first errors are counted by reason under `-v`.
   Closes when: every native program's outcome gets its own container count.
+
+# d3d12_xs
+
+## add Silent stubs
+
+- `SetMarkerX`, `BeginEventX` and `EndEventX` return without recording anything: only profilers read them.
+- Queue `Wait` returns `S_OK`; nothing runs asynchronously on a queue, so a fence is never waited for there.
+- List pipeline syncs, driver hints, depth order, shading rate and root signature setters do nothing; host lists order their own work and every submission is waited for.
+- `BeginQuery`, `EndQuery` and the query heaps record nothing; resolved queries report a million occlusion samples, visible binary occlusion, the GPU clock for timestamps and zero pipeline statistics.
+- The bottom-of-pipe 32- and 64-bit value waits do nothing; a value another queue or the CPU has to write first cannot be waited for.
+
+## add Functional
+
+- Bottom-of-pipe value writes and resolved query results are stored when the submission completes, on the CPU's timeline rather than the GPU's.
+- The console flags of `DispatchX`, `CopyTextureRegionX`, `CopyResourceX` and `ResetX` are ignored.
+- Draws, mesh dispatches and dispatches are dropped while the host pipeline of the bound title pipeline cannot be made: a shader that does not translate, a pipeline the host refuses, or a mesh pipeline on a host without mesh shaders.
+  Closes when: every shader a title binds translates and the host accepts every pipeline.
+- Indirect execution is dropped when the clamp shader does not compile or the buffer is not 4-byte aligned.
+  Closes when: a title needs indirect execution without the clamp.
+- The indirect clamp cuts legitimate work past 2^24 vertices, 2^26 vertex instances, 65,535 groups per dimension, 2^20 groups per dispatch and the list budget of 2^27 vertex instances or threads.
+  Closes when: a title needs larger indirect work.
+- Indirect mesh dispatches (a group count in GPU memory) and mesh dispatches with more than one group in y or z are dropped.
+  Closes when: a title uses either.
+- Console triangle fans, line loops, quads and quad strips are drawn as triangle lists; indexed rectangles are not drawn.
+  Closes when: a title depends on the console's winding or on indexed rectangles.
+- A rectangle's fourth vertex is computed from vertex inputs, not from vertex-shader outputs; formats other than float, half and unorm 8/16 keep the first vertex's value, as do components past the end of the vertex.
+  Closes when: a rectangle's shader is not linear in its inputs.
+- Texture-to-buffer copies are dropped (logged once); texture-to-texture and footprint-to-texture copies run.
+  Closes when: a title reads a texture back through a copy.
+- Split barriers run at their second half only, transition whole resources rather than subresources, and a barrier naming a buffer instead becomes one unordered-access barrier for the list.
+  Closes when: subresource states or split barriers matter to a title.
+- Enhanced barrier groups only order shader writes with one unordered-access barrier; their layouts are not applied.
+  Closes when: a title depends on a specific enhanced-barrier layout.
+- `PresentX` shows the first plane's first resource, without scaling or placement, and expects it in the common state.
+  Closes when: a title presents several planes, scales, or presents another state.
+- Page mappings are applied at once, outside the host queue; a failed mapping is logged once and the batch still reports success.
+  Closes when: a title observes a page mapping before an earlier submission has run.
+- `CopyMemoryToMemoryX` copies at submission when both ranges are committed title memory, outside the host GPU.
+  Closes when: a title's copy must be ordered with its GPU work.
+- Root views are taken as 64 KiB constant buffers and 1 MiB shader resources, cut at the buffer's end; constant buffers not 256-byte aligned in their host copy go through scratch memory.
+  Closes when: a root view's real size is needed.
+- A list keeps its upload memory and fresh descriptor tables until it is reset; a title that never resets a list accumulates them.
+  Closes when: a title resets too seldom for the host's memory.
+- A draw or dispatch with no dynamic descriptor slots for a constant-buffer table is dropped rather than reading the title's descriptors as host ones.
+  Closes when: dynamic descriptor slots are not exhausted.
+- Queues and lists log the frame, draws and dispatches only; dropped and indirect counts are not logged.
+  Closes when: the diagnostics build lands.

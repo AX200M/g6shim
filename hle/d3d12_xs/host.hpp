@@ -203,6 +203,13 @@ public:
 
     std::optional<std::pair<std::uint64_t, std::uint8_t*>> upload(std::uint64_t bytes);
     std::optional<std::pair<std::uint64_t, std::uint8_t*>> scratch(std::uint64_t bytes);
+
+    struct Upload {
+        Microsoft::WRL::ComPtr<ID3D12Resource> buffer;
+        std::uint64_t gpu = 0;
+        std::uint8_t* data = nullptr;
+    };
+    std::optional<Upload> upload_with_resource(std::uint64_t bytes);
     std::optional<std::uint64_t> budget();
     void keep(IUnknown* object);
     bool first_use(std::size_t key);

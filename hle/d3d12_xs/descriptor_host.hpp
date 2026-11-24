@@ -22,13 +22,15 @@
 namespace g6shim::d3d12_xs::descriptor_host {
 
 inline constexpr std::uint32_t kPortableViews = 1'000'000;
-inline constexpr std::uint32_t kDynamicSlots = 1 << 16;
+inline constexpr std::uint32_t kDynamicSlots = 1 << 18;
+inline constexpr std::uint32_t kMinDynamicSlots = 1 << 16;
 
 class HostHeap {
 public:
     static std::unique_ptr<HostHeap> create(bool sampler, std::uint32_t count);
 
     std::uint32_t count() const { return count_; }
+    std::uint32_t dynamic_slots() const { return dynamic_; }
     bool samplers() const { return sampler_; }
     std::uint32_t step() const { return step_; }
     std::uint64_t gpu_start() const { return gpu_; }
@@ -44,7 +46,7 @@ public:
 
 private:
     HostHeap(Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap, std::uint64_t cpu, std::uint64_t gpu,
-             std::uint32_t step, std::uint32_t count, bool sampler);
+             std::uint32_t step, std::uint32_t count, std::uint32_t dynamic, bool sampler);
 
     bool fill_null(D3D12_DESCRIPTOR_HEAP_TYPE kind, std::uint32_t total);
     void null_sampler(std::uint32_t index);
@@ -55,6 +57,7 @@ private:
     std::uint64_t gpu_ = 0;
     std::uint32_t step_ = 0;
     std::uint32_t count_ = 0;
+    std::uint32_t dynamic_ = 0;
     bool sampler_ = false;
     std::mutex made_mutex_;
     std::vector<std::uint64_t> made_;

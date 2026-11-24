@@ -9,42 +9,7 @@
 #include "texture.hpp"
 #include "watch.hpp"
 
-#include <g6shim/log.hpp>
-
-#include <atomic>
-
 namespace g6shim::d3d12_xs::later {
-
-namespace {
-
-HRESULT unimplemented(const char* what) {
-    static std::atomic<std::uint32_t> logged{0};
-    if (logged.fetch_add(1, std::memory_order_relaxed) < 8)
-        G6SHIM_WARN("d3d12_xs: %s arrives before the host command lists", what);
-    return E_NOTIMPL;
-}
-
-}  // namespace
-
-HRESULT create_command_queue(Object*, const void*, const Iid*, Object**) {
-    return unimplemented("command queue creation");
-}
-
-HRESULT create_command_queue_x(Object*, const void*, std::uint32_t, const Iid*, Object**) {
-    return unimplemented("console command queue creation");
-}
-
-HRESULT create_command_allocator(Object*, std::uint32_t, const Iid*, Object**) {
-    return unimplemented("command allocator creation");
-}
-
-HRESULT create_command_list(Object*, std::uint32_t, std::uint32_t, Object*, Object*, const Iid*, Object**) {
-    return unimplemented("command list creation");
-}
-
-HRESULT create_command_list_x(Object*, std::uint32_t, std::uint32_t, Object*, Object*, const Iid*, Object**) {
-    return unimplemented("console command list creation");
-}
 
 HRESULT create_graphics_pipeline(Object*, const void* desc, const Iid* iid, Object** out) {
     return pipeline::create_graphics(desc, iid, out);
