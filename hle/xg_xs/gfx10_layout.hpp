@@ -73,6 +73,18 @@ constexpr std::optional<std::uint32_t> block_log2(std::uint32_t swizzle) {
 enum class Dimension { kTex1d, kTex2d, kTex3d };
 enum class Error { kOk, kInvalid, kUnsupported, kTooSmall };
 
+inline constexpr std::uint32_t kDefaultPipes = 16;
+inline constexpr std::uint32_t kDefaultPackers = 8;
+inline constexpr std::uint32_t kDefaultPipeInterleave = 256;
+inline constexpr std::uint32_t kDefaultCompressedFragments = 8;
+
+struct AddressConfig {
+    std::uint32_t pipes = kDefaultPipes;
+    std::uint32_t packers = kDefaultPackers;
+    std::uint32_t pipe_interleave = kDefaultPipeInterleave;
+    std::uint32_t max_compressed_fragments = kDefaultCompressedFragments;
+};
+
 struct Desc {
     Dimension dimension = Dimension::kTex2d;
     std::uint32_t width = 0;
@@ -83,6 +95,7 @@ struct Desc {
     std::uint32_t block = 0;
     std::uint32_t samples = 0;
     std::uint32_t swizzle = kSwizzleLinear;
+    AddressConfig address{};
 };
 
 struct Tail {
@@ -108,6 +121,11 @@ struct OffsetResult {
     std::uint64_t offset = 0;
 };
 
+struct XorMasks {
+    std::uint8_t bits = 0;
+    std::uint16_t mask[4][16]{};
+};
+
 struct Layout {
     Desc desc{};
     std::array<std::uint32_t, 3> block{1, 1, 1};
@@ -119,10 +137,12 @@ struct Layout {
     std::uint32_t first_tail_mip = 0;
     std::vector<Mip> mips;
     std::array<std::vector<std::uint32_t>, 3> pattern;
+    XorMasks xor_masks{};
 
     static std::optional<Layout> create(const Desc& desc);
     bool addressable() const;
-    OffsetResult offset(std::uint32_t mip, std::uint32_t x, std::uint32_t y, std::uint32_t z) const;
+    OffsetResult offset(std::uint32_t mip, std::uint32_t x, std::uint32_t y, std::uint32_t z,
+                        std::uint32_t sample = 0) const;
     std::uint32_t subresource_depth(std::uint32_t mip) const;
     Error detile(std::span<const std::uint8_t> tiled, std::uint32_t mip, std::uint32_t slice,
                  std::span<std::uint8_t> linear, std::size_t row_pitch, std::size_t depth_pitch) const;
@@ -158,6 +178,7 @@ struct TextureDesc {
     std::uint32_t format = 0;
     std::uint32_t samples = 0;
     std::uint32_t swizzle = kSwizzleLinear;
+    AddressConfig address{};
 };
 
 struct Plane {
@@ -188,7 +209,8 @@ Error Layout::walk(std::size_t tiled_len, std::uint32_t mip, std::uint32_t slice
     if (!addressable()) return Error::kUnsupported;
 
     const std::size_t element_bytes = desc.element_bytes;
-    const std::size_t bytes = static_cast<std::size_t>(level.width) * element_bytes;
+    const std::size_t group = element_bytes * desc.samples;
+    const std::size_t bytes = static_cast<std::size_t>(level.width) * group;
     std::size_t need = bytes;
     if (level.depth > 1) {
         const std::size_t steps = static_cast<std::size_t>(level.depth) - 1;
@@ -202,6 +224,25 @@ Error Layout::walk(std::size_t tiled_len, std::uint32_t mip, std::uint32_t slice
     }
     if (tiled_len < static_cast<std::size_t>(size) || linear_len < need || row_pitch < bytes)
         return Error::kTooSmall;
+
+    if (xor_masks.bits != 0) {
+        for (std::uint32_t z = 0; z < level.depth; ++z) {
+            for (std::uint32_t y = 0; y < level.height; ++y) {
+                const std::size_t linear_row =
+                    static_cast<std::size_t>(z) * depth_pitch + static_cast<std::size_t>(y) * row_pitch;
+                for (std::uint32_t x = 0; x < level.width; ++x) {
+                    for (std::uint32_t sample = 0; sample < desc.samples; ++sample) {
+                        const OffsetResult at = offset(mip, x, y, first + z, sample);
+                        if (at.error != Error::kOk) return at.error;
+                        const std::size_t linear_at =
+                            linear_row + (static_cast<std::size_t>(x) * desc.samples + sample) * element_bytes;
+                        copy(static_cast<std::size_t>(at.offset), linear_at, element_bytes);
+                    }
+                }
+            }
+        }
+        return Error::kOk;
+    }
 
     struct Run {
         std::size_t tiled;

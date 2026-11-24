@@ -27,6 +27,8 @@ add_executable(g6shim_tests
   unit/chad_dsp_test.cpp
   unit/xapu_test.cpp
   unit/gfx10_layout_test.cpp
+  unit/gfx10_xor_checks.cpp
+  unit/gfx10_xor_reference.cpp
   unit/xg_xs_test.cpp
   unit/shader_gfx10_test.cpp
   unit/shader_container_test.cpp

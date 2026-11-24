@@ -209,7 +209,7 @@ TEST(gfx10_depth_stencil_is_two_planes) {
     CHECK(texture->planes[0].layout.size == 1920 * 1152 * 4);
     CHECK(texture->planes[1].offset == texture->planes[0].layout.size);
     CHECK(texture->planes[1].layout.size == 2048 * 1280);
-    CHECK(!texture->planes[0].layout.addressable());
+    CHECK(texture->planes[0].layout.addressable());
 }
 
 TEST(gfx10_texture_copies_reject_overflowing_pitches) {
