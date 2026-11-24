@@ -38,11 +38,12 @@ LEGEND_BASELINE = 7
 LEGEND_HEIGHT = 10
 LEGEND_ITEM_GAP = 14
 LEGEND_TEXT_GAP = 4
+AFTER_GAP = 6
 MAX_ROW_SQUARES = 64
 MAX_SHADER_SQUARES = 120
 SHADER_STAGES = ("vs", "ps", "cs", "ms", "gs")
 FUNCTION_LEGEND = ("implemented", "forwarded", "stubbed", "missing")
-HLE_LEGEND = ("implemented", "forwarded", "stubbed")
+HLE_LEGEND = ("implemented", "stubbed")
 SHADER_LEGEND = ("translated", "failed", "not attempted")
 COLOURS = {
     "implemented": "#2ea043",
@@ -55,8 +56,11 @@ COLOURS = {
 }
 COVERAGE_ORDER = {"implemented": 0, "forwarded": 1, "stubbed": 2}
 NO_SHADER_DATA = "no data yet"
+FORWARDED_TEXT = "+{0} forwarded"
+FORWARDED_NOTE = "forwarded exports are counted after the squares"
 LEGEND_SENTENCE = (
     "Each square is one function: green implemented, blue forwarded, amber stubbed, grey missing; "
+    "the replacement DLL map counts forwarded exports after the squares; "
     "in the shader maps green is translated, red failed and grey not attempted."
 )
 
@@ -93,7 +97,8 @@ def hle_rows(known):
     rows = []
     for record in sorted(known.values(), key=lambda record: record["dll"].lower()):
         items = sorted(record["items"], key=lambda item: (COVERAGE_ORDER[item[1]], item[0]))
-        rows.append((record["dll"], items))
+        forwarded = sum(1 for _, status in items if status == "forwarded")
+        rows.append((record["dll"], items, forwarded))
     return rows
 
 
@@ -103,6 +108,18 @@ def count_text(items):
 
 def map_rows(rows):
     return [{"label": label, "count": count_text(items), "items": [status for _, status in items]} for label, items in rows]
+
+
+def hle_map_rows(rows):
+    mapped = []
+    for label, items, forwarded in rows:
+        mapped.append({
+            "label": label,
+            "count": count_text(items),
+            "items": [status for _, status in items if status != "forwarded"],
+            "after": FORWARDED_TEXT.format(forwarded) if forwarded else None,
+        })
+    return mapped
 
 
 def scale_note(scale):
@@ -148,14 +165,29 @@ def legend_width(entries):
     return sum(widths) + LEGEND_ITEM_GAP * max(len(entries) - 1, 0) + 2 * PAD
 
 
+def after_x(row, x_squares):
+    if not row["items"]:
+        return x_squares
+    return x_squares + ((len(row["items"]) - 1) % MAX_ROW_SQUARES) * PITCH + SQUARE + AFTER_GAP
+
+
+def row_extent(row, x_squares, x_count):
+    extent = x_count
+    if row["items"]:
+        squares = min(len(row["items"]), MAX_ROW_SQUARES)
+        extent = max(extent, x_squares + squares * PITCH - (PITCH - SQUARE))
+    if row.get("after"):
+        extent = max(extent, after_x(row, x_squares) + text_width(row["after"]))
+    return extent
+
+
 def render_map(rows, legend, title, note=None):
     label_width = max((text_width(row["label"]) for row in rows), default=0)
     count_width = max((text_width(row["count"]) for row in rows), default=0)
     x_count = PAD + label_width + COLUMN_GAP + count_width
     x_squares = x_count + COLUMN_GAP
     row_lines = [max(1, -(-len(row["items"]) // MAX_ROW_SQUARES)) for row in rows]
-    widest = min(max((len(row["items"]) for row in rows), default=0), MAX_ROW_SQUARES)
-    data_width = (x_squares + widest * PITCH - (PITCH - SQUARE) if widest else x_count) + PAD
+    data_width = max((row_extent(row, x_squares, x_count) for row in rows), default=x_count) + PAD
     entries = legend_entries(legend, note)
     width = max(data_width, legend_width(entries))
     legend_y = PAD + sum(row_lines) * ROW_HEIGHT + LEGEND_GAP
@@ -177,6 +209,10 @@ def render_map(rows, legend, title, note=None):
             svg.append('<g shape-rendering="crispEdges">')
             svg.extend(squares)
             svg.append("</g>")
+        if row.get("after"):
+            svg.append(
+                f'<text x="{after_x(row, x_squares)}" y="{top + (lines - 1) * ROW_HEIGHT + TEXT_BASELINE}">{escape(row["after"])}</text>'
+            )
         top += lines * ROW_HEIGHT
     svg.append('<g shape-rendering="crispEdges">')
     x = PAD
@@ -265,7 +301,9 @@ def generate(root):
             f"{shader_summary}."
         )
         titles.append((title_id, summary))
-    texts[progress / "hle.svg"] = render_map(map_rows(hle_rows(known)), HLE_LEGEND, "Coverage of the replacement DLLs")
+    texts[progress / "hle.svg"] = render_map(
+        hle_map_rows(hle_rows(known)), HLE_LEGEND, "Coverage of the replacement DLLs", note=FORWARDED_NOTE
+    )
     texts[root / README] = render_readme((root / README).read_bytes().decode("utf-8"), titles)
     return texts
 

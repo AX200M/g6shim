@@ -60,7 +60,7 @@ g6shim runs games made for the Xbox One and Xbox Series X|S consoles on Windows 
 </details>
 
 <!-- progress:begin -->
-Each square is one function: green implemented, blue forwarded, amber stubbed, grey missing; in the shader maps green is translated, red failed and grey not attempted.
+Each square is one function: green implemented, blue forwarded, amber stubbed, grey missing; the replacement DLL map counts forwarded exports after the squares; in the shader maps green is translated, red failed and grey not attempted.
 
 ### 7952987A
 
