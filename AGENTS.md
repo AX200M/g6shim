@@ -38,6 +38,7 @@ winrt/             static library: WinRT object kit (kit/) and console stand-ins
 hle/<dll>/         one replacement DLL each; the .def is its coverage record
 tests/unit/        unit tests, one file per area, shared CHECK header
 tests/integration/ the fake-game pipeline
+tests/gfx10/       hand-written GFX10 programs; their words are in tests/unit/gfx10_fixtures.inc (docs/dev/shader_fixtures.md)
 docs/              running.md, abi/<dll>.md, dev/
 tools/             convention, ledger and coverage scripts, their tests (tests/); git hooks
 ```
