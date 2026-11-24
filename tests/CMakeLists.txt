@@ -60,19 +60,25 @@ add_executable(g6shim_tests
   unit/d3d12_xs_descriptor_test.cpp
   unit/d3d12_xs_resource_test.cpp
   unit/d3d12_xs_sampler_test.cpp
+  unit/d3d12_xs_host_test.cpp
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/console.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor_host.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/device.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/dxgi.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/fence.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/frame.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/host.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/later.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/object.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/query.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/resource.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/root.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/sampler.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/shadow.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/signature.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/texture.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/watch.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/graphics_object.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/device.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/objects.cpp"
@@ -102,7 +108,7 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/xcrdapi/bcpack.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xcrdapi/dstorage.cpp")
 target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim_shader g6shim::winrt Opus::opus d3d12 dxgi onecore)
-target_link_options(g6shim_tests PRIVATE "/EXPORT:__XMemAllocationHooks__,DATA")
+target_link_options(g6shim_tests PRIVATE "/EXPORT:__XMemAllocationHooks__,DATA" "/EXPORT:g6shim_xmem_map_alias")
 target_include_directories(g6shim_tests PRIVATE
   "${PROJECT_SOURCE_DIR}/hle/acphal"
   "${PROJECT_SOURCE_DIR}/hle/kernelx"

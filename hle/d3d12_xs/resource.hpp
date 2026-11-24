@@ -34,6 +34,19 @@ inline constexpr std::uint64_t kMib4 = 4 << 20;
 inline constexpr std::uint32_t kBuffer = 1;
 inline constexpr std::uint32_t kTexture3d = 4;
 
+inline constexpr std::array<std::pair<std::uint32_t, std::uint32_t>, 4> kDepthFormats{{
+    {20, 19},
+    {40, 39},
+    {45, 44},
+    {55, 53},
+}};
+
+inline constexpr std::array<std::pair<std::uint32_t, std::uint32_t>, 3> kSrgbFormats{{
+    {29, 28},
+    {91, 87},
+    {93, 88},
+}};
+
 struct HeapProperties {
     std::uint32_t kind;
     std::uint32_t cpu_pages;

@@ -143,3 +143,74 @@ Every device child also answers for `63ee58fb-1268-4835-86da-f008ce62f0d6` (`ID3
 | 2 | flip |
 
 Wait flag 2 makes a token when the wait times out. The token counts frames; ticks count intervals.
+
+## Host GPU
+
+| Piece | Value |
+|---|---|
+| device | one `ID3D12Device`, feature level 12_0, the default adapter or WARP with `G6SHIM_D3D_WARP` |
+| debug layer | enabled when `G6SHIM_D3D_DEBUG` is set |
+| queue | one direct queue, submissions waited for on a fence and an event |
+| render target ring | 1024 descriptors of the RTV heap |
+| depth ring | 1024 descriptors of the DSV heap |
+| swap chain | 2 buffers, flip discard, `Present(0, 0)` |
+| drawable formats | 27-32, 87, 90, 91, 23-25, 9-14; other formats are not shown |
+
+## Host lists
+
+| Piece | Bytes |
+|---|---|
+| scratch chunk | 4 MiB, allocations rounded to 256 |
+| scratch chunk over the limit | its own upload buffer |
+| indirect-work budget | one 256-byte shared buffer, zeroed at each submission |
+| snapshot pool | at most 8 buffers, the largest kept |
+
+| Step | Meaning |
+|---|---|
+| copy | title memory to host memory at submission, clearing refresh state |
+| fill | title memory into the list's upload memory at submission |
+| refresh | host copy range brought up to date once per submission until a title write |
+| work | a function run at submission, optionally counted as a title write |
+| GPU write | shaders may write a host copy range; snapshot before, copy back after |
+| texture | a texture's staging buffer detiled once per submission |
+
+## Host descriptors
+
+| Piece | Value |
+|---|---|
+| host slots behind title slots | same index; views get 65536 extra dynamic slots |
+| host heap creation | made on the first draw that uses the title heap; title writes before wait in a pending list |
+| portable view heap limit | 1000000 descriptors; larger title heaps are capped |
+| dynamic search | from the slot after the last allocation, runs never wrap |
+| null fill | one null slot, doubled by descriptor copies to a 65536-slot block |
+| null depth, unordered views | texture 1D, 1D array, 2D, 2D array according to the title's dimension, WSize `UINT_MAX` for 3D |
+
+## Title memory copies
+
+| Piece | Bytes |
+|---|---|
+| tracked and copied unit | 64 KiB |
+| kernel write-watch unit | 4 KiB |
+| loose memory window | 4 MiB aligned, length rounded to the window |
+| shadow buffer rounding | 64 KiB, so views ending in the last 256 bytes fit |
+
+| State | Meaning |
+|---|---|
+| watch 0 | not asked yet |
+| watch 1 | write-watched through the kernel |
+| watch 2 | not write-watched; whole ranges are copied or hashed |
+
+## Texture staging
+
+| Piece | Meaning |
+|---|---|
+| footprints | the host's copyable footprints for every mip and array slice |
+| description | console plane 0 layout, subresource index `slice * mips + mip` |
+| refresh | written pages since the last asking detile the whole texture; unwatched memory hashed |
+| upload | one `CopyTextureRegion` per subresource, from the staging buffer |
+
+## Xmem private exports
+
+| Export | Signature |
+|---|---|
+| `g6shim_xmem_map_alias` | `BOOL (uintptr_t to, uintptr_t from, size_t bytes)`; maps title physical pages at `from` (zero: unmaps) |

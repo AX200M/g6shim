@@ -5,6 +5,8 @@
 #include "resource.hpp"
 #include "root.hpp"
 
+#include "../xmem/private.hpp"
+
 #include <g6shim/log.hpp>
 #include <g6shim/title_memory.hpp>
 
@@ -34,8 +36,29 @@ bool install_title_allocator() {
     return true;
 }
 
+g6shim::xmem::private_api::MapAlias g_map_alias = nullptr;
+
+bool map_title_alias(std::uint64_t to, std::uint64_t from, std::uint64_t bytes) {
+    if (g_map_alias == nullptr) return false;
+    return g_map_alias(static_cast<std::uintptr_t>(to), static_cast<std::uintptr_t>(from),
+                       static_cast<std::size_t>(bytes)) != 0;
+}
+
+bool install_page_mapper() {
+    const g6shim::xmem::private_api::Exports exports = g6shim::xmem::private_api::resolve();
+    if (!exports.map_alias) {
+        G6SHIM_WARN("d3d12_xs: xmem.dll has no page mapper; page mappings stay as the title made them");
+        return false;
+    }
+    g_map_alias = exports.map_alias;
+    resource::use_page_mapper(&map_title_alias);
+    G6SHIM_INFO("d3d12_xs: page mappings come from xmem.dll");
+    return true;
+}
+
 void prepare_device() {
     install_title_allocator();
+    install_page_mapper();
     g6shim::set_title_memory_remap_observer(&later::title_memory_remapped);
 }
 

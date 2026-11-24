@@ -199,3 +199,34 @@
 - The title's allocation hooks are used only when `xmem.dll` is loaded with `XMemAlloc`/`XMemFree`; otherwise resource memory comes from g6shim's own allocator.
 - Host GPU failure reporting is not installed: there is no host device in this part.
 - The resource area's host-upload test is not ported: it needs command lists, queues and the host GPU from later parts.
+
+# d3d12_xs
+
+## add Functional
+
+- The host GPU waits for every submission, so CPU and GPU never overlap.
+  Closes when: submissions are tracked per list with fences.
+- Host diagnostics (removed-device data, GPU timestamps, per-list notes, descriptor slot descriptions, slow-list and copy reports) are not ported: a removed device logs its reason and the debug layer's first message, then ends the process.
+  Closes when: a diagnostics build with the same switches is added.
+- Presentation logs frames per second and milliseconds per frame only; draw counts, dropped commands and indirect counts wait for the command list and draw parts.
+  Closes when: the draw and queue parts land.
+- Frames shown on the host are not saved through the runtime's capture hook.
+  Closes when: presentation is wired to the capture API.
+- Buffer copies cover only the ranges draws are known to read; a buffer read through a directly indexed heap keeps what its first use copied.
+  Closes when: descriptor tables name the ranges they read.
+- Shader writes to a buffer's host copy are found by keeping the range's bytes before the submission and comparing them after it.
+  Closes when: a host-side dirty mask makes the snapshot unnecessary.
+- Physical-page views are guarded one 64 KiB block at a time; writes through another view of the same pages are not seen.
+  Closes when: page-pool writes notify the watcher.
+- A texture change detiles the whole texture; only plane 0 is uploaded; only textures read through descriptor tables are brought up to date; XOR layouts are not uploaded.
+  Closes when: per-page detiling and directly indexed textures are handled.
+- View heaps larger than the host's portable limit are capped, so title slots past the cap have no host descriptor.
+  Closes when: a title is seen reaching the cap.
+- A view of a typed texture in another format of its family reads without the conversion (sRGB of UNORM); placed unordered texture views are not mirrored.
+  Closes when: such views are cast through castable formats.
+- Texture change detection hashes memory with FNV-1a; only equality of hashes is used.
+  Closes when: a shared content hash is available.
+- Command queues, allocators, command lists, graphics, compute and stream pipelines are still `E_NOTIMPL` extension points.
+  Closes when: the command list, queue, draw and pipeline parts land.
+- `buffer_copy_to_host` refreshes a whole buffer into its host copy immediately; no title path calls it yet.
+  Closes when: title copies are recorded as deferred steps.

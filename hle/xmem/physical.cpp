@@ -437,3 +437,7 @@ extern "C" BOOL WINAPI g6shim_XMemMapPhysicalPagesScatter(void* const* addresses
                                                           const SIZE_T* pages) {
     return map_physical_pages_scatter(addresses, n, pages);
 }
+
+extern "C" BOOL WINAPI g6shim_xmem_map_alias(std::uintptr_t to, std::uintptr_t from, std::size_t bytes) {
+    return map_alias(to, from, bytes) ? TRUE : FALSE;
+}

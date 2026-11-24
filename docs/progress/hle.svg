@@ -238,7 +238,7 @@
 <rect x="236" y="280" width="8" height="8" fill="#2ea043"/>
 </g>
 <text x="14" y="299">xmem.dll</text>
-<text x="217" y="299" text-anchor="end">13/13</text>
+<text x="217" y="299" text-anchor="end">14/14</text>
 <g shape-rendering="crispEdges">
 <rect x="227" y="292" width="8" height="8" fill="#2ea043"/>
 <rect x="236" y="292" width="8" height="8" fill="#2ea043"/>
@@ -253,6 +253,7 @@
 <rect x="317" y="292" width="8" height="8" fill="#2ea043"/>
 <rect x="326" y="292" width="8" height="8" fill="#2ea043"/>
 <rect x="335" y="292" width="8" height="8" fill="#2ea043"/>
+<rect x="344" y="292" width="8" height="8" fill="#2ea043"/>
 </g>
 <g shape-rendering="crispEdges">
 <rect x="14" y="314" width="8" height="8" fill="#2ea043"/>
