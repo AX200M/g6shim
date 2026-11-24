@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <optional>
@@ -55,6 +56,7 @@ TEST(validator_signs_a_constant_colour) {
         reason = error.what();
     }
     if (!validator) {
+        CHECK(std::getenv("G6SHIM_DXIL") == nullptr);
         std::printf("no dxil.dll; skipped: %s\n", reason.c_str());
         return;
     }

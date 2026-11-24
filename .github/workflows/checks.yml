@@ -41,6 +41,14 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: DXIL validator
+        shell: pwsh
+        run: |
+          $dxil = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\dxil.dll" |
+            Sort-Object { [version]$_.Directory.Parent.Name } | Select-Object -Last 1
+          if (-not $dxil) { throw "no dxil.dll in the Windows SDK" }
+          Write-Output "validator: $($dxil.FullName)"
+          "G6SHIM_DXIL=$($dxil.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Configure
         run: cmake --preset release
       - name: Build
