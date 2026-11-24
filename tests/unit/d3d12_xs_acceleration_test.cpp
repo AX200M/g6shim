@@ -97,8 +97,10 @@ TEST(d3d12_xs_command_list_builds_copies_and_queries_an_acceleration_structure) 
     Object* commands = nullptr;
     CHECK(list::create_list(nullptr, 0, 0, allocator, nullptr, &list::kListIids[0], &commands) == S_OK);
     if (commands == nullptr) return;
-    slot<void (*)(Object*, const void*, std::uint32_t, const void*)>(commands, kBuildSlot * 8)(commands, nullptr, 0,
-                                                                                                nullptr);
+    const auto& earlier = list::functions(false);
+    const std::size_t shift = commands->functions[kBuildSlot] == earlier[kBuildSlot] ? 0 : kNewerShift;
+    slot<void (*)(Object*, const void*, std::uint32_t, const void*)>(commands, (kBuildSlot + shift) * 8)(
+        commands, nullptr, 0, nullptr);
 
     const float vertices[9] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
     constexpr std::uint32_t kVertices = 256;
@@ -139,18 +141,18 @@ TEST(d3d12_xs_command_list_builds_copies_and_queries_an_acceleration_structure) 
     build.desc.DestAccelerationStructureData = blas;
     build.desc.ScratchAccelerationStructureData = kScratch;
     build.desc.Inputs = inputs;
-    slot<void (*)(Object*, const void*, std::uint32_t, const void*)>(commands, kBuildSlot * 8)(commands, &build, 0,
-                                                                                                nullptr);
+    slot<void (*)(Object*, const void*, std::uint32_t, const void*)>(commands, (kBuildSlot + shift) * 8)(
+        commands, &build, 0, nullptr);
 
-    slot<void (*)(Object*, std::uint64_t, std::uint64_t, std::uint32_t)>(commands, kCopySlot * 8)(
+    slot<void (*)(Object*, std::uint64_t, std::uint64_t, std::uint32_t)>(commands, (kCopySlot + shift) * 8)(
         commands, clone, blas, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_CLONE);
     D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC post{};
     post.DestBuffer = info;
     post.InfoType = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE;
     const std::uint64_t source = blas;
     slot<void (*)(Object*, const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC*, std::uint32_t,
-                  const std::uint64_t*)>(commands, kEmitSlot * 8)(commands, &post, 1, &source);
-    slot<void (*)(Object*, std::uint64_t, std::uint64_t, std::uint32_t)>(commands, kCopySlot * 8)(
+                  const std::uint64_t*)>(commands, (kEmitSlot + shift) * 8)(commands, &post, 1, &source);
+    slot<void (*)(Object*, std::uint64_t, std::uint64_t, std::uint32_t)>(commands, (kCopySlot + shift) * 8)(
         commands, packed, blas, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT);
 
 
@@ -169,7 +171,7 @@ TEST(d3d12_xs_command_list_builds_copies_and_queries_an_acceleration_structure) 
     batched.desc.Inputs.InstanceDescs = kInstances;
     batched.postbuild_count = 1;
     batched.postbuild = &current;
-    slot<void (*)(Object*, std::uint32_t, const void*)>(commands, kBatchedSlot * 8)(commands, 1, &batched);
+    slot<void (*)(Object*, std::uint32_t, const void*)>(commands, (kBatchedSlot + shift) * 8)(commands, 1, &batched);
 
     CHECK(slot<HRESULT (*)(Object*)>(commands, 0x48)(commands) == S_OK);
     queue::Desc queue_desc{};
