@@ -5,3 +5,5 @@ g6shim_add_hle_module(hle_xapu
     DLL "xapu.dll"
     DEF "${CMAKE_CURRENT_SOURCE_DIR}/xapu.def"
     SOURCES ${sources})
+g6shim_require_opus()
+target_link_libraries(hle_xapu PRIVATE Opus::opus)
