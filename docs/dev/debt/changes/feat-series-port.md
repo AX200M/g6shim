@@ -355,3 +355,10 @@
   Closes when: a title's frame has to keep its aspect ratio in fullscreen.
 - `G6SHIM_WINDOW` forces the window's client size without fitting it; a size larger than the monitor puts part of the window off screen.
   Closes when: a window has to be larger than the monitor.
+
+# project
+
+## add Functional
+
+- The Series S title-memory budget is the published 7,776 MiB standard configuration with no GPU-optimal range; later system updates gave those titles more, so a title that sizes from this figure sees a smaller budget than a current console.
+  Closes when: the console's later Series S title-memory size is known.
