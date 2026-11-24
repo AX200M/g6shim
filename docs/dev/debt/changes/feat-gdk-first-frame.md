@@ -50,13 +50,6 @@
   Closes when: a title asks for another tile mode.
   Title IDs: 1738CA2A
 
-# xmem
-
-## add Unknown function info
-
-- `XMemAlloc` and `XMemFree` ignore their attribute argument; blocks are aligned to 64 bytes, or to 4 KiB from 4 KiB on.
-  Closes when: the attribute bits are decoded.
-
 # xg_x
 
 ## add Functional

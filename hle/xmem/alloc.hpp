@@ -7,11 +7,11 @@
 
 namespace g6shim::xmem {
 
-inline constexpr std::size_t kPageBytes = 4096;
-inline constexpr std::size_t kSmallAlignment = 64;
+inline constexpr std::uint64_t kAllocationFieldShift = 24;
+inline constexpr std::uint64_t kAllocationFieldMask = 0x1f;
+inline constexpr std::uint64_t kMinimumAllocationField = 4;
+inline constexpr std::uint64_t k32BitAllocation = std::uint64_t{1} << 33;
 
-std::size_t allocation_alignment(std::size_t bytes);
-void* allocate(std::size_t bytes);
-void release(void* block);
+std::size_t allocation_alignment(std::uint64_t attributes);
 
 }  // namespace g6shim::xmem

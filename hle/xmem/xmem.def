@@ -2,14 +2,14 @@ LIBRARY "xmem.dll"
 EXPORTS
     XMemAlloc=g6shim_XMemAlloc
     XMemFree=g6shim_XMemFree
-    XMemAllocatePhysicalPages=g6shim_stub_0
-    XMemFreePhysicalPages=g6shim_stub_1
-    XMemGetWorkingSetStatistics=g6shim_stub_2
-    XMemMapPhysicalPages=g6shim_stub_3
-    XMemVirtualAlloc=g6shim_stub_4
-    XMemAllocDefault=g6shim_stub_5
-    XMemFreeDefault=g6shim_stub_6
-    XMemIsToolsMemAvailable=g6shim_stub_7
-    XMemMapPhysicalPagesScatter=g6shim_stub_8
-    XMemTransferMemory=g6shim_stub_9
-    XMemVirtualQuery=g6shim_stub_10
+    XMemAllocDefault=g6shim_XMemAllocDefault
+    XMemFreeDefault=g6shim_XMemFreeDefault
+    XMemIsToolsMemAvailable=g6shim_XMemIsToolsMemAvailable
+    XMemAllocatePhysicalPages=g6shim_XMemAllocatePhysicalPages
+    XMemFreePhysicalPages=g6shim_XMemFreePhysicalPages
+    XMemMapPhysicalPages=g6shim_XMemMapPhysicalPages
+    XMemMapPhysicalPagesScatter=g6shim_XMemMapPhysicalPagesScatter
+    XMemVirtualAlloc=g6shim_XMemVirtualAlloc
+    XMemVirtualQuery=g6shim_XMemVirtualQuery
+    XMemGetWorkingSetStatistics=g6shim_XMemGetWorkingSetStatistics
+    XMemTransferMemory=g6shim_XMemTransferMemory

@@ -5,3 +5,4 @@ g6shim_add_hle_module(hle_xmem
     DLL "xmem.dll"
     DEF "${CMAKE_CURRENT_SOURCE_DIR}/xmem.def"
     SOURCES ${sources})
+target_link_libraries(hle_xmem PRIVATE onecore)

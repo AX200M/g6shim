@@ -29,6 +29,9 @@ add_executable(g6shim_tests
   unit/shader_gfx10_test.cpp
   unit/shader_container_test.cpp
   unit/title_memory_test.cpp
+  unit/xmem_virtual_test.cpp
+  unit/xmem_physical_test.cpp
+  unit/xmem_statistics_test.cpp
   unit/log_format_test.cpp
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/graphics_object.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/device.cpp"
@@ -43,11 +46,15 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/xg_x/computer.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xg_x/console_xg.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xmem/alloc.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xmem/virtual_memory.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xmem/physical.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xmem/statistics.cpp"
   "${PROJECT_SOURCE_DIR}/hle/chad/dsp.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xapu/apu.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xg_xs/gfx10_layout.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xg_xs/texture_computer.cpp")
-target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim_shader g6shim::winrt d3d12 dxgi)
+target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim_shader g6shim::winrt d3d12 dxgi onecore)
+target_link_options(g6shim_tests PRIVATE "/EXPORT:__XMemAllocationHooks__,DATA")
 target_include_directories(g6shim_tests PRIVATE
   "${PROJECT_SOURCE_DIR}/hle/acphal"
   "${PROJECT_SOURCE_DIR}/hle/kernelx"
