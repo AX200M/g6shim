@@ -210,7 +210,7 @@ void save(bool now) {
         std::lock_guard<std::mutex> lock(last_mutex);
         const auto point = std::chrono::steady_clock::now();
         if (!now && last && point - *last < kSaveEvery) return;
-        *last = point;
+        last = point;
     }
     std::vector<std::uint8_t> blob;
     {
