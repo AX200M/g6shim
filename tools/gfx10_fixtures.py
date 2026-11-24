@@ -13,6 +13,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SOURCES = Path("tests") / "gfx10"
 OUTPUT = Path("tests") / "unit" / "gfx10_fixtures.inc"
+IMAGE64_SOURCES = Path("tests") / "gfx10" / "image64"
+IMAGE64_OUTPUT = Path("tests") / "unit" / "image64_fixtures.inc"
 TRIPLE = "amdgcn-amd-amdpal"
 CPU = "gfx1030"
 HEADER = (
@@ -89,11 +91,15 @@ def assemble(llvm_mc, source):
         return target.read_bytes()
 
 
+def generate_from(root, llvm_mc, sources):
+    paths = sorted((root / sources).glob("*.s"))
+    if not paths:
+        raise FixtureError(f"no programs in {sources.as_posix()}")
+    return render([(path.stem, words_of(text_section(assemble(llvm_mc, path)))) for path in paths])
+
+
 def generate(root, llvm_mc):
-    sources = sorted((root / SOURCES).glob("*.s"))
-    if not sources:
-        raise FixtureError(f"no programs in {SOURCES.as_posix()}")
-    return render([(path.stem, words_of(text_section(assemble(llvm_mc, path)))) for path in sources])
+    return generate_from(root, llvm_mc, SOURCES)
 
 
 def find_llvm_mc(given):
@@ -109,20 +115,28 @@ def main(argv=None):
     parser.add_argument("--check", action="store_true", help="exit 1 when the committed words are stale")
     parser.add_argument("--root", type=Path, default=ROOT)
     args = parser.parse_args(argv)
+    sets = [(SOURCES, OUTPUT)]
+    if (args.root / IMAGE64_SOURCES).is_dir():
+        sets.append((IMAGE64_SOURCES, IMAGE64_OUTPUT))
     try:
-        text = generate(args.root, find_llvm_mc(args.llvm_mc))
+        llvm_mc = find_llvm_mc(args.llvm_mc)
+        rendered = [(sources, output, generate_from(args.root, llvm_mc, sources)) for sources, output in sets]
     except FixtureError as error:
         print(error, file=sys.stderr)
         return 2
-    output = args.root / OUTPUT
-    if args.check:
-        current = output.read_bytes().decode("utf-8").replace("\r\n", "\n") if output.is_file() else None
-        if current != text:
-            print(f"stale: {OUTPUT.as_posix()}; run: python tools/gfx10_fixtures.py")
-            return 1
-        return 0
-    output.write_bytes(text.encode("utf-8"))
-    print(f"wrote {OUTPUT.as_posix()}")
+    stale = []
+    for _, output, text in rendered:
+        path = args.root / output
+        if args.check:
+            current = path.read_bytes().decode("utf-8").replace("\r\n", "\n") if path.is_file() else None
+            if current != text:
+                stale.append(output.as_posix())
+            continue
+        path.write_bytes(text.encode("utf-8"))
+        print(f"wrote {output.as_posix()}")
+    if stale:
+        print("stale: " + ", ".join(stale) + "; run: python tools/gfx10_fixtures.py")
+        return 1
     return 0
 
 

@@ -120,7 +120,7 @@ Unabbreviated records only; each block's abbreviation width is fixed.
 | `HASH` | twenty zero bytes |
 | `DXIL` | program |
 
-SFI0 feature bits used here: 0x200 stencil reference, 0x800 typed UAV loads, 0x4000 wave operations, 0x8000 64-bit integers, 0x2000000 resource heap, 0x4000000 sampler heap.
+SFI0 feature bits used here: 0x200 stencil reference, 0x800 typed UAV loads, 0x4000 wave operations, 0x8000 64-bit integers, 0x400000 64-bit atomics on typed resources, 0x2000000 resource heap, 0x4000000 sampler heap, 0x10000000 64-bit atomics on heap resources.
 
 DXIL part header: program kind shifted left 16 and or 0x66, size in dwords, `DXIL`, validator version 1.6, bitcode offset 16, bitcode size.
 
@@ -149,6 +149,16 @@ A pixel shader writing SV_DepthLessEqual (18) or SV_DepthGreaterEqual (19) inter
 ## Image instructions
 
 Sampling offsets are 6-bit signed per coordinate in the console encoding, and DXIL's immediate offsets are -8 to 7, so a computed offset word must be constant and in range.
+
+## 64-bit image atomics
+
+An image atomic whose `dmask` is 0x3, or 0xF for compare-and-swap, is a 64-bit atomic. It lowers to `dx.op.atomicBinOp.i64` or `dx.op.atomicCompareExchange.i64` on a UAV handle annotated as one U32 component (`0x105`), the annotation DXC emits for `RWTexture2D<uint64_t>`. Subtract is an add of the negated value. The return, when `glc` is set, is the previous 64-bit texel, split back into two VGPRs.
+
+The container sets SFI0 bits 0x8000, 0x400000 and 0x10000000, and the module shader flags at bits 20, 27 and 32. Bit 0x10000000 is set because the handle comes from the descriptor heap. The host resource view for the operation is `R32G32_UINT`.
+
+A host that reports false from `D3D12_FEATURE_DATA_D3D12_OPTIONS9::AtomicInt64OnTypedResourceSupported`, or from `D3D12_FEATURE_DATA_D3D12_OPTIONS11::AtomicInt64OnDescriptorHeapResourceSupported`, still receives the translated shader. `CreateComputePipelineState` or `CreatePipelineState` then fails, pipeline creation logs `host pipeline refused`, and the title gets no pipeline.
+
+`image_atomic_inc` and `image_atomic_dec` have no shader model 6.6 atomic, at either width, and stop the translation.
 
 ## Predicates
 

@@ -88,38 +88,82 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
         else if (op == "swap") code = 8;
         else if (op == "cmpswap") code = UINT32_MAX;
         else fail(name);
+        const bool cmpswap = code == UINT32_MAX;
+        constexpr std::uint8_t kNarrowMask = 1;
+        constexpr std::uint8_t kNarrowCmpMask = 3;
+        constexpr std::uint8_t kWideMask = 3;
+        constexpr std::uint8_t kWideCmpMask = 0xF;
+        constexpr std::uint32_t kTypedU32 = 0x105;
+        constexpr std::uint8_t kWideDwords = 2;
+        constexpr std::uint8_t kWideCmpDwords = 4;
+        const std::uint8_t narrow = cmpswap ? kNarrowCmpMask : kNarrowMask;
+        const bool wide = dmask != narrow;
         const bool glc = fields->cache.glc;
         if (d16 || a16) fail("a 16-bit image atomic");
-        if (dmask != (code == UINT32_MAX ? 3 : 1)) fail("a 64-bit image atomic");
+        if (wide && dmask != (cmpswap ? kWideCmpMask : kWideMask)) fail("a 64-bit image atomic");
         const V iu = s_.m.undef(s_.t.i32);
         std::array<V, 3> cs{iu, iu, iu};
         for (std::size_t k = 0; k < coords; ++k) cs[k] = addr_val(k);
-            const auto* data = std::get_if<VectorOperand>(&fields->data);
+        const auto* data = std::get_if<VectorOperand>(&fields->data);
         if (data == nullptr) fail("image atomic data");
-        const std::vector<V> vals =
-            vgprs(inst, fields->data, static_cast<std::uint8_t>(code == UINT32_MAX ? 2 : 1));
+        const std::uint8_t dwords =
+            cmpswap ? (wide ? kWideCmpDwords : kNarrowCmpMask) : (wide ? kWideDwords : kNarrowMask);
+        const std::vector<V> vals = vgprs(inst, fields->data, dwords);
+        Ty i64t = s_.t.i32;
+        if (wide) i64t = s_.m.int_type(64);
+        const auto pack64 = [&](V lo, V hi) {
+            const V lo64 = s_.m.cast(c, Cast::ZExt, lo, i64t);
+            const V hi64 = s_.m.cast(c, Cast::ZExt, hi, i64t);
+            const V shifted = s_.m.int_const(i64t, 32);
+            return s_.m.bin(c, Bin::Or, lo64, s_.m.bin(c, Bin::Shl, hi64, shifted));
+        };
         V value = vals[0];
+        V compare = vals.size() > 1 ? vals[1] : s_.m.i32(0);
+        if (wide) {
+            value = pack64(vals[0], vals[1]);
+            compare = cmpswap ? pack64(vals[2], vals[3]) : s_.m.int_const(i64t, 0);
+        }
         if (op == "sub") {
-            const V z = s_.m.i32(0);
-            value = s_.m.bin(c, Bin::Sub, z, value);
+            value = wide ? s_.m.bin(c, Bin::Sub, s_.m.int_const(i64t, 0), value)
+                         : s_.m.bin(c, Bin::Sub, s_.m.i32(0), value);
         }
-        V old = s_.m.i32(0);
+        V old = wide ? s_.m.int_const(i64t, 0) : s_.m.i32(0);
         if (glc) {
-            if (const std::optional<Value> read = inst.read(Reg::v(data->reg))) old = i32_of(*read);
+            const std::optional<Value> lo = inst.read(Reg::v(data->reg));
+            if (wide) {
+                const std::optional<Value> hi = inst.read(Reg::v(static_cast<std::uint8_t>(data->reg + 1)));
+                if (lo && hi) old = pack64(i32_of(*lo), i32_of(*hi));
+            } else if (lo) {
+                old = i32_of(*lo);
+            }
         }
-        const V h = handle(site, src, false, {kind | 0x1000u, 0x105});
+        if (wide) {
+            s_.flags |= feature::kInt64 | feature::kAtomicInt64OnTypedResource |
+                        feature::kAtomicInt64OnHeapResource;
+        }
+        const V h = handle(site, src, false, {kind | 0x1000u, kTypedU32});
         const auto at = begin_guarded(guard_value);
-        const Ty i32t = s_.t.i32;
+        const Ty result_type = wide ? i64t : s_.t.i32;
         V r;
-        if (code == UINT32_MAX) {
-            const std::vector<V> args = {h, cs[0], cs[1], cs[2], vals[1], vals[0]};
-            r = s_.op(cur_, "atomicCompareExchange.i32", Attr::NoUnwind, i32t, 79, args);
+        if (cmpswap) {
+            const std::vector<V> args = {h, cs[0], cs[1], cs[2], compare, wide ? value : vals[0]};
+            r = s_.op(cur_, wide ? "atomicCompareExchange.i64" : "atomicCompareExchange.i32",
+                      Attr::NoUnwind, result_type, 79, args);
         } else {
-            std::vector<V> args = {h, s_.m.i32(code), cs[0], cs[1], cs[2], value};
-            r = s_.op(cur_, "atomicBinOp.i32", Attr::NoUnwind, i32t, 78, args);
+            const std::vector<V> args = {h, s_.m.i32(code), cs[0], cs[1], cs[2], value};
+            r = s_.op(cur_, wide ? "atomicBinOp.i64" : "atomicBinOp.i32", Attr::NoUnwind, result_type,
+                      78, args);
         }
         const V result = end_guarded(at, {{r, old}})[0];
-        if (glc) write(inst, Reg::v(data->reg), result, std::nullopt);
+        if (glc) {
+            if (wide) {
+                const auto [lo, hi] = split64(result);
+                write(inst, Reg::v(data->reg), lo, std::nullopt);
+                write(inst, Reg::v(static_cast<std::uint8_t>(data->reg + 1)), hi, std::nullopt);
+            } else {
+                write(inst, Reg::v(data->reg), result, std::nullopt);
+            }
+        }
         return;
     }
     if (store) {
