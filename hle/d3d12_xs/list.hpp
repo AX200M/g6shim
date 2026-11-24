@@ -68,5 +68,6 @@ void* allocate_upload(Object* title_list, std::uint64_t size, std::uint64_t alig
 std::size_t upload_count(Object* title_list);
 host::HostList* host_list(Object* title_list);
 std::pair<std::uint64_t, std::uint64_t> take_counts();
+const std::array<const void*, kMaxSlots>& functions(bool newer);
 
 }  // namespace g6shim::d3d12_xs::list

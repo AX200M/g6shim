@@ -688,6 +688,11 @@ void execute_indirect(Object* object, Object* signature, std::uint32_t max, Obje
                 static_cast<unsigned>(layout->arguments != nullptr ? layout->arguments->size() : 0), max);
 }
 
+constexpr std::size_t kFirstShiftedSlot = 59;
+constexpr std::size_t kNewerSlotShift = 2;
+
+std::size_t newer_slot(std::size_t slot) { return slot >= kFirstShiftedSlot ? slot + kNewerSlotShift : slot; }
+
 std::array<const void*, kMaxSlots> make_list_table(bool newer) {
     std::array<const void*, kMaxSlots> functions = d3d12_object(missing_table<kList, kMaxSlots>());
     const std::array<std::pair<std::size_t, const void*>, 52> methods{{
@@ -755,8 +760,8 @@ std::array<const void*, kMaxSlots> make_list_table(bool newer) {
         {130, reinterpret_cast<const void*>(&sync)},
         {137, reinterpret_cast<const void*>(&reset_x)},
     }};
-    for (const auto& [slot, method] : methods) functions[slot] = method;
-    for (const auto& [slot, method] : more) functions[slot] = method;
+    for (const auto& [slot, method] : methods) functions[newer ? newer_slot(slot) : slot] = method;
+    for (const auto& [slot, method] : more) functions[newer ? newer_slot(slot) : slot] = method;
     if (newer) {
         functions[142] = reinterpret_cast<const void*>(&ignored_state);
         functions[146] = reinterpret_cast<const void*>(&barrier_groups);

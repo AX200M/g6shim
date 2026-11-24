@@ -20,6 +20,17 @@ std::uint64_t read_word(const Object* object, std::size_t offset) {
 
 }  // namespace
 
+TEST(d3d12_xs_newer_lists_have_their_later_methods_two_slots_on) {
+    const auto& earlier = list::functions(false);
+    const auto& newer = list::functions(true);
+    CHECK(newer[52] == earlier[52]);
+    CHECK(newer[61] == earlier[59]);
+    CHECK(newer[131] == earlier[129]);
+    CHECK(newer[132] == earlier[130]);
+    CHECK(newer[139] == earlier[137]);
+    CHECK(newer[59] != earlier[59]);
+}
+
 TEST(d3d12_xs_every_inline_command_falls_back_to_the_table) {
     Object* allocator = nullptr;
     CHECK(list::create_allocator(nullptr, 0, &list::kAllocatorIids[0], &allocator) == S_OK);
