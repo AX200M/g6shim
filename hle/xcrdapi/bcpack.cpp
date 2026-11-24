@@ -3,7 +3,6 @@
 #include "bcpack.hpp"
 
 #include <algorithm>
-#include <bit>
 #include <cstring>
 #include <new>
 #include <utility>
@@ -695,100 +694,85 @@ std::optional<BcpackError> decode_bc7(const Tables& t, std::span<const std::uint
     return std::nullopt;
 }
 
-struct Lane {
-    std::uint8_t width = 0;
-    std::uint8_t phase = 0;
-    bool long_fragment = false;
-    bool reset = false;
-    std::uint8_t model = 0;
-    bool need = false;
-    std::optional<std::uint8_t> latch;
-    std::optional<std::uint8_t> out;
-    bool stalled = false;
-    std::uint32_t x = 0;
-    std::uint32_t left = 0;
+}  // namespace
 
-    std::optional<BcpackError> step(const Tables& t) {
-        if (phase != 3) {
-            if (!latch) return std::nullopt;
-            const std::uint8_t b = *latch;
-            latch.reset();
-            need = true;
-            switch (phase) {
-                case 0: {
-                    const std::uint8_t group = static_cast<std::uint8_t>(width - (b >> 6));
-                    model = static_cast<std::uint8_t>(group * 16 + (b & 15u));
-                    reset = (b & 0x10u) != 0;
-                    long_fragment = (b & 0x20u) != 0;
-                    left = 0;
-                    phase = 1;
-                    break;
-                }
-                case 1:
-                    if (long_fragment) {
-                        left = b;
-                        phase = 2;
-                    } else {
-                        left = static_cast<std::uint32_t>(b) + 1;
-                        phase = 3;
-                    }
-                    break;
-                default:
-                    left = ((static_cast<std::uint32_t>(b) << 8) | left) + 257;
+std::size_t bucket_of(const Tables& tables, std::uint8_t model, std::uint32_t slot) {
+    const auto& start = tables.start[model];
+    std::size_t bucket = tables.bucket[model][slot >> 8];
+    while (start[bucket + 1] <= slot) ++bucket;
+    return bucket;
+}
+
+std::optional<BcpackError> BcpackLane::step(const Tables& t) {
+    if (phase != 3) {
+        if (!latch) return std::nullopt;
+        const std::uint8_t b = *latch;
+        latch.reset();
+        need = true;
+        switch (phase) {
+            case 0: {
+                const std::uint8_t group = static_cast<std::uint8_t>(width - (b >> 6));
+                model = static_cast<std::uint8_t>(group * 16 + (b & 15u));
+                reset = (b & 0x10u) != 0;
+                long_fragment = (b & 0x20u) != 0;
+                left = 0;
+                phase = 1;
+                break;
+            }
+            case 1:
+                if (long_fragment) {
+                    left = b;
+                    phase = 2;
+                } else {
+                    left = static_cast<std::uint32_t>(b) + 1;
                     phase = 3;
-                    break;
-            }
-            return std::nullopt;
-        }
-        std::uint32_t state = this->x;
-        if (state < kBcpackLow && latch) {
-            left -= 1;
-            state = state << 8 | *latch;
-            latch.reset();
-        }
-        need = left != 0 && !latch;
-        if (state > kBcpackLow) {
-            const auto& freq = t.freq[model];
-            const auto& start = t.start[model];
-            const std::uint32_t slot = state & 0xffffu;
-            std::size_t bucket = 0;
-            for (std::size_t b = 1; b < kBcpackBuckets; ++b)
-                if (start[b] <= slot) ++bucket;
-            std::uint8_t sym = 0;
-            if (bucket == 0) {
-                sym = 0;
-            } else if (bucket == 1) {
-                sym = 1;
-            } else {
-                const std::uint64_t rec = t.recip[model][bucket];
-                sym = static_cast<std::uint8_t>(
-                    (std::uint64_t{1} << (bucket - 1)) +
-                    (static_cast<std::uint64_t>(slot - start[bucket]) * rec >> 32));
-            }
-            std::uint32_t f = 0;
-            std::uint32_t c = 0;
-            if (sym == 0) {
-                f = freq[0] - 1;
-                c = 1;
-            } else {
-                const unsigned k = std::bit_width(static_cast<unsigned>(sym));
-                f = freq[k];
-                c = ((static_cast<std::uint32_t>(sym) - (1u << (k - 1))) * f + start[k]) & 0xffffu;
-            }
-            this->x = (state >> 16) * f - c + slot;
-            this->out = sym;
-        } else if (left != 0) {
-            this->x = state;
-        } else {
-            phase = 0;
-            need = !latch;
-            if (reset) this->x = 0;
+                }
+                break;
+            default:
+                left = ((static_cast<std::uint32_t>(b) << 8) | left) + 257;
+                phase = 3;
+                break;
         }
         return std::nullopt;
     }
-};
-
-}  // namespace
+    std::uint32_t state = this->x;
+    if (state < kBcpackLow && latch) {
+        left -= 1;
+        state = state << 8 | *latch;
+        latch.reset();
+    }
+    need = left != 0 && !latch;
+    if (state > kBcpackLow) {
+        const auto& freq = t.freq[model];
+        const auto& start = t.start[model];
+        const std::uint32_t slot = state & 0xffffu;
+        const std::size_t bucket = bucket_of(t, model, slot);
+        std::uint8_t sym = 0;
+        std::uint32_t f = 0;
+        std::uint32_t rem = 0;
+        if (bucket == 0) {
+            sym = 0;
+            f = freq[0] - 1;
+            rem = slot - 1;
+        } else {
+            const std::uint32_t offset = slot - start[bucket];
+            const std::uint32_t q = static_cast<std::uint32_t>(
+                static_cast<std::uint64_t>(offset) * t.recip[model][bucket] >> 32);
+            sym = static_cast<std::uint8_t>((std::uint32_t{1} << (bucket - 1)) + q);
+            f = freq[bucket];
+            rem = offset - q * freq[bucket];
+        }
+        this->x = (state >> 16) * f + rem;
+        this->out = sym;
+    } else if (left != 0) {
+        this->x = state;
+    } else {
+        phase = 0;
+        need = !latch;
+        if (reset) this->x = 0;
+    }
+    return std::nullopt;
+}
 
 std::optional<Tables> Tables::parse(std::span<const std::uint8_t> bytes, BcpackError* error) {
     const auto fail = [error](const char* why) -> std::optional<Tables> {
@@ -814,7 +798,14 @@ std::optional<Tables> Tables::parse(std::span<const std::uint8_t> bytes, BcpackE
             at += f << (b > 0 ? b - 1 : 0);
         }
         if (at != 1u << 16) return fail("a model does not tile 65536");
-        for (std::size_t b = used; b < kBcpackBuckets; ++b) t.start[m][b] = 1u << 16;
+        for (std::size_t b = used; b <= kBcpackBuckets; ++b) t.start[m][b] = 1u << 16;
+        for (std::size_t window = 0; window < 256; ++window) {
+            const std::uint32_t first = static_cast<std::uint32_t>(window) << 8;
+            std::uint8_t count = 0;
+            for (std::size_t b = 1; b <= kBcpackBuckets; ++b)
+                if (t.start[m][b] <= first) ++count;
+            t.bucket[m][window] = count;
+        }
     }
     if (!r.bytes(t.rank1.data(), t.rank1.size())) return fail("table file is truncated");
     if (!r.bytes(t.rank3a.data(), t.rank3a.size())) return fail("table file is truncated");
@@ -867,7 +858,7 @@ std::optional<BcpackError> lanes(const Tables& tables, std::span<const std::uint
     const std::size_t stride = count * per;
     if (stride == 0) return BcpackError{"no lanes"};
     if (blocks > records.size() / stride) return BcpackError{"record buffer is too small"};
-    std::array<Lane, 16> lanes{};
+    std::array<BcpackLane, 16> lanes{};
     for (std::size_t j = 0; j < count; ++j) {
         lanes[j].width = widths[j];
         lanes[j].need = true;
@@ -876,11 +867,12 @@ std::optional<BcpackError> lanes(const Tables& tables, std::span<const std::uint
     std::size_t pos = 0;
     std::uint32_t done = 0;
     unsigned idle = 0;
+    std::size_t at = 0;
     while (pos < blocks * per) {
         std::size_t taken = 0;
         bool moved = false;
         for (std::size_t j = 0; j < count; ++j) {
-            Lane& lane = lanes[j];
+            BcpackLane& lane = lanes[j];
             const std::uint32_t bit = 1u << j;
             const std::size_t before = taken;
             if (!lane.stalled) {
@@ -897,13 +889,14 @@ std::optional<BcpackError> lanes(const Tables& tables, std::span<const std::uint
             if (!lane.stalled && lane.out) {
                 const std::uint8_t sym = *lane.out;
                 lane.out.reset();
-                records[pos / per * stride + j * per + pos % per] = sym;
+                records[at + j * per] = sym;
                 done |= bit;
                 moved = true;
             }
         }
         if (done == full) {
             ++pos;
+            at += pos % per == 0 ? stride - per + 1 : 1;
             done = 0;
             moved = true;
         }
