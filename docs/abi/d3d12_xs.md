@@ -146,7 +146,7 @@ Every device child also answers for `63ee58fb-1268-4835-86da-f008ce62f0d6` (`ID3
 | architecture query | 0x10 | node in, tile-based, unified memory, cache-coherent out |
 | format-support query | 0x0C | format in, support 1 out, support 2 out |
 | multisample query | 0x10 | format, sample count in, quality levels out |
-| `DXGI_ADAPTER_DESC` as listed | 0x130 | name 128 UTF-16, vendor, device, subsystem, revision, three `SIZE_T` memory sizes, LUID |
+| `DXGI_ADAPTER_DESC` as listed | 0x130 | name 128 UTF-16, vendor, device, subsystem, revision, three `SIZE_T` memory sizes, LUID; the memory sizes are the selected console model's title split |
 | display mode | 0x20 | width, height, refresh numerator/denominator, format, scanline order, scaling, flags |
 | heap properties | 0x14 | kind, CPU page property, memory pool, creation node mask, visible node mask |
 | heap description | 0x30 | size, properties, alignment, flags |

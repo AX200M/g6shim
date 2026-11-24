@@ -78,7 +78,7 @@ Provider operations: 0 begin, 1 do work, 2 get result, 3 cancel, 4 cleanup.
 | Device id | `VkljdG9yeSBvZmZsaW5lIGRldmljZSBpZGVudGl0eSE=` (44 characters) |
 | OS and hosting OS | 10.0.22000.0 |
 | Analytics family | `Xbox` |
-| Analytics form | `Xbox Series X` |
+| Analytics form | `Xbox Series X`, or `Xbox Series S` when the console model is Series S |
 | `Version` | four `uint16`: major, minor, build, revision (8 bytes) |
 | `AnalyticsInfo` | `Version` os at `0x00`, hosting OS at `0x08`, family at `0x10`, form at `0x50`; 0x90 bytes |
 

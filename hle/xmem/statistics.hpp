@@ -22,6 +22,7 @@ inline constexpr TitleMemory kSmallTitleMemory{0, 7776 * kMebibyte};
 
 TitleMemory title_memory();
 void set_title_memory(TitleMemory memory);
+void reset_title_memory();
 
 struct WorkingSet {
     std::size_t title_limit;

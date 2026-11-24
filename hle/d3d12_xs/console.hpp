@@ -17,7 +17,7 @@ constexpr std::pair<std::size_t, std::size_t> title_memory(Console console) {
 }
 
 constexpr const char* console_name(Console console) {
-    return console == Console::kSeriesS ? "Series S console" : "Series X console";
+    return console == Console::kSeriesS ? "Xbox Series S" : "Xbox Series X";
 }
 
 void set_console(Console console);

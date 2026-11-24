@@ -22,7 +22,6 @@ inline constexpr char kConsoleId[] = "00000000000000000000000000000000000001";
 inline constexpr char kSandbox[] = "RETAIL";
 inline constexpr char kDeviceId[] = "VkljdG9yeSBvZmZsaW5lIGRldmljZSBpZGVudGl0eSE=";
 inline constexpr char kFamily[] = "Xbox";
-inline constexpr char kForm[] = "Xbox Series X";
 
 struct Version {
     std::uint16_t major;

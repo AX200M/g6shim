@@ -63,6 +63,7 @@ The two library-loader forwarders make `LoadLibraryExW`/`LoadLibraryW` of `xgame
 | `G6SHIM_LOG=<path>` | Log file. Default `g6shim.log` in the working directory (the game folder under `g6shim-run`). |
 | `G6SHIM_LOG_STDERR=0` | Stop copying the log to stderr. The log always goes to the debugger output too. |
 | `G6SHIM_TRACE=1` | Verbose diagnostics: repeated activations and queries, first calls of fast-table entries and draws, packet kinds, topology values. Graphics objects also remember their last 32 calls, and a command list that fails to close logs them. |
+| `G6SHIM_CONSOLE=series-s` | Console model the title sees: `series-s` for the lighter console (7,776 MiB of title memory, Series S adapter memory and analytics), or `series-x` (default). An unknown value is logged and the default used. |
 | `G6SHIM_CAPTURE_FRAMES=300,600` | Save the back buffer of those presented frames (counted from 1) as `g6shim_frame_<n>.bmp` next to the executable. Works with the window hidden or the desktop locked. |
 | `G6SHIM_D3D_DEBUG=1` | Create the device with the Direct3D debug layer; invalid calls appear as debug output. |
 | `G6SHIM_D3D_DRED=1` | Record GPU progress and page faults, so the log says where the GPU stopped when the device is removed. The reason for a removal is logged without it. |

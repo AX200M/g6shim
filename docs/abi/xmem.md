@@ -55,10 +55,10 @@ The host's `MEMORY_BASIC_INFORMATION` (0x30 bytes), then the XMem flags (`UINT64
 
 ## Title memory
 
-| Configuration | GPU-optimal | Standard |
-|---|---|---|
-| default | 10 GiB | 3.5 GiB |
-| small | 0 | 7,776 MiB |
+| Configuration | Console | GPU-optimal | Standard |
+|---|---|---|---|
+| default | Series X | 10 GiB | 3.5 GiB |
+| small | Series S | 0 | 7,776 MiB |
 
 ## Physical pages
 

@@ -57,7 +57,7 @@ TEST(xma_decoder_waits_finer_than_the_system_tick) {
     SetEvent(wake);
     const auto woken = std::chrono::steady_clock::now();
     g6shim::acphal::decoder_wait(timer, wake);
-    CHECK(std::chrono::steady_clock::now() - woken < std::chrono::milliseconds(2));
+    CHECK(std::chrono::steady_clock::now() - woken < kSystemTick);
     CloseHandle(wake);
     CloseHandle(timer);
 }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "xsystem.hpp"
 
+#include <g6shim/console_model.hpp>
 #include <g6shim/log.hpp>
 
 #include <algorithm>
@@ -38,7 +39,8 @@ AnalyticsInfo* analytics_info(This, AnalyticsInfo* out) {
         G6SHIM_WARN("xgameruntime: analytics information requested without a buffer");
         return nullptr;
     }
-    const AnalyticsInfo info{kOsVersion, kOsVersion, fixed_text(kFamily), fixed_text(kForm)};
+    const AnalyticsInfo info{kOsVersion, kOsVersion, fixed_text(kFamily),
+                             fixed_text(console_model_name(console_model()))};
     *out = info;
     return out;
 }
