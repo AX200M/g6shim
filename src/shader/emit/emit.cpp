@@ -7,6 +7,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <optional>
 #include <span>
 #include <string>
@@ -171,10 +172,18 @@ HostShader translate(std::span<const std::uint8_t> container) {
     if (native == nullptr)
         detail::fail_unsupported(0, "a container without a vertex, pixel, compute or mesh program");
     const Program program = ::g6shim::shader::build(native->patched_code(), native->wave64, native->vgprs);
-    const Resources resources = track(program, native->layout, native->stage);
+    std::exception_ptr structure_failure;
+    std::optional<Structured> structured;
+    try {
+        structured = structure(program);
+    } catch (...) {
+        structure_failure = std::current_exception();
+    }
+    const Resources resources =
+        track(program, native->layout, native->stage, structured ? &*structured : nullptr);
     const Io io = raise(program, *native);
-    const Structured structured = structure(program);
-    return emit(parsed, *native, program, structured, io, resources);
+    if (!structured) std::rethrow_exception(structure_failure);
+    return emit(parsed, *native, program, *structured, io, resources);
 }
 
 HostShader emit(const Container& container, const NativeProgram& native, const Program& program,
@@ -196,6 +205,11 @@ HostShader emit(const Container& container, const NativeProgram& native, const P
         else if ((kind == 0 || kind == 6 || kind == 7) && comp == 9) e.interp = 2;
         else if (kind == 0) e.interp = 1;
         else e.interp = 0;
+    }
+    if (pixel && std::any_of(outputs.begin(), outputs.end(),
+                             [](const SigElement& e) { return e.kind == 18 || e.kind == 19; })) {
+        for (SigElement& e : inputs)
+            if (e.kind == 3) e.interp = 5;
     }
     std::vector<SigElement> prims = sig(kPsg1);
     prims.erase(std::remove_if(prims.begin(), prims.end(),

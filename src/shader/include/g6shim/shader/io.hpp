@@ -127,6 +127,9 @@ struct Io {
     std::vector<std::pair<Value, Input>> inputs;
     std::vector<std::pair<Site, Interp>> interps;
     std::vector<Export> exports;
+    std::optional<std::uint8_t> initialized_sgprs;
+
+    friend bool operator==(const Io&, const Io&) = default;
 };
 
 std::vector<std::pair<std::uint8_t, Input>> pixel_input_vgprs(std::uint32_t input_addr);

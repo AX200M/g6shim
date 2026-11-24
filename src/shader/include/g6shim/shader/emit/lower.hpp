@@ -39,6 +39,8 @@ struct Lowered {
     std::vector<std::uint8_t> root_srvs;
     std::vector<UserData> user_data;
     std::vector<std::array<std::uint32_t, 4>> samplers;
+    std::uint32_t nonuniform_handles = 0;
+    bool wave_ops = false;
 };
 
 struct Parts {

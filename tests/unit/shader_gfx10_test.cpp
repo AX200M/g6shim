@@ -5,6 +5,7 @@
 #include "g6shim/shader/gfx10.hpp"
 #include "g6shim/shader/gfx10_fields.hpp"
 #include "g6shim/shader/error.hpp"
+#include "g6shim/shader/ir.hpp"
 
 #include <cstdint>
 #include <string>
@@ -206,6 +207,16 @@ TEST(shader_gfx10_memory_and_export) {
           "buffer_load_dwordx2 v[4:5], v[2:3], s[8:11], s1 idxen offen offset:16 glc");
     CHECK(one({0xD8DC'0302, 0x0600'0001}, true) == "ds_read2_b32 v[6:7], v1 offset0:2 offset1:3");
     CHECK(one({0xF800'1C0F, 0x0000'0302}, true) == "exp mrt0, v2, v2, v3, v3 done compr vm");
+}
+
+TEST(shader_gfx10_thread_trace_immediate_is_sopp_28) {
+    const std::vector<std::uint32_t> code = {0xBFA8'1234, kEndpgm};
+    const auto instructions = decode(bytes(code));
+    CHECK(instructions.size() == 2);
+    if (instructions.size() != 2) return;
+    CHECK(instructions[0].name() == std::optional<std::string_view>{"s_ttracedata_imm"});
+    const Program p = build(bytes(code), false, 1);
+    CHECK(p.blocks.size() == 1);
 }
 
 TEST(shader_gfx10_image_d16_data_is_packed) {

@@ -358,6 +358,7 @@ public:
     V f32(std::uint32_t bits);
     V undef(Ty type);
     V aggregate(Ty type, std::span<const V> fields);
+    std::optional<std::int64_t> int_value(V value) const;
     void replace_const(V old_value, V new_value);
 
     V function(const std::string& name, Ty type, std::optional<Attr> attr, bool body);

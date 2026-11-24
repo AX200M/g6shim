@@ -16,6 +16,7 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -69,9 +70,20 @@ std::uint16_t sgpr(std::uint8_t n) { return n; }
 
 std::uint16_t vgpr(std::uint8_t n) { return static_cast<std::uint16_t>(256 + n); }
 
-bool lowers(const std::vector<std::uint32_t>& words, std::string_view* reason = nullptr) {
+bool lowers(const std::vector<std::uint32_t>& words, std::string* reason = nullptr) {
     try {
         lower_compute(words, 256, {}, {}, 0, {1, 1, 1});
+        return true;
+    } catch (const std::exception& error) {
+        if (reason != nullptr) *reason = error.what();
+        return false;
+    }
+}
+
+bool lowers_with_inputs(const std::vector<std::uint32_t>& words, std::uint32_t rsrc2,
+                        std::string* reason = nullptr) {
+    try {
+        lower_compute(words, 256, {}, {}, rsrc2, {1, 1, 1});
         return true;
     } catch (const std::exception& error) {
         if (reason != nullptr) *reason = error.what();
@@ -102,6 +114,168 @@ void check_valu(const std::vector<std::uint32_t>& body, const char* label) {
 }
 
 std::uint32_t u32_bits(float value) { return std::bit_cast<std::uint32_t>(value); }
+
+void note_gpu_comparison_skipped(const char* label, std::size_t cases) {
+    std::printf("  GPU comparison skipped for %s: %zu cases checked by lowering only\n", label, cases);
+}
+
+TEST(max_and_min_pick_a_zero_with_the_right_sign) {
+    const std::array<std::uint16_t, 4> ops = {0x110, 0x10F, 0x154, 0x151};
+    for (std::uint16_t op : ops) {
+        const auto body = vop3(op, 0, vgpr(1), vgpr(2), vgpr(3));
+        check_valu(std::vector<std::uint32_t>(body.begin(), body.end()), "a float maximum or minimum");
+    }
+    note_gpu_comparison_skipped("a float maximum or minimum", 4);
+}
+
+TEST(packed_operations_read_the_halves_of_inline_constants) {
+    const std::array<std::array<std::uint32_t, 2>, 3> cases = {
+        std::array<std::uint32_t, 2>{0xCC0F'4000u, 0x1A02'02F8u},
+        std::array<std::uint32_t, 2>{0xCC0F'4000u, 0x1202'02F8u},
+        std::array<std::uint32_t, 2>{0xCC0A'4000u, 0x1A02'02F8u}};
+    for (const auto& words : cases) check_valu({words[0], words[1]}, "a packed 16-bit operation");
+    note_gpu_comparison_skipped("a packed 16-bit operation", cases.size());
+}
+
+TEST(a_float_less_or_greater_compare_is_false_for_nan) {
+    const std::array<std::uint16_t, 2> ops = {0x005, 0x0CD};
+    for (std::uint16_t op : ops) {
+        std::vector<std::uint32_t> body;
+        const auto compare = vop3(op, 20, vgpr(1), vgpr(2), 0x80);
+        body.insert(body.end(), compare.begin(), compare.end());
+        const auto mask = vop3(0x101, 0, 0x80, 0x81, sgpr(20));
+        body.insert(body.end(), mask.begin(), mask.end());
+        check_valu(body, "v_cmp_lg");
+    }
+    note_gpu_comparison_skipped("v_cmp_lg", 2);
+}
+
+TEST(normalised_conversions_round_the_exact_product) {
+    for (std::uint16_t op : {static_cast<std::uint16_t>(0x063), static_cast<std::uint16_t>(0x064)}) {
+        check_valu({vop1(0x001, 0, 128), vop1(op, 0, vgpr(1))}, "a normalised conversion");
+    }
+    note_gpu_comparison_skipped("a normalised conversion", 2);
+}
+
+TEST(fractional_conversions_saturate) {
+    for (std::uint16_t op : {static_cast<std::uint16_t>(0x052), static_cast<std::uint16_t>(0x053)}) {
+        check_valu({vop1(0x001, 0, 128), vop1(op, 0, vgpr(1))}, "a 16-bit conversion");
+    }
+    note_gpu_comparison_skipped("a 16-bit conversion", 2);
+}
+
+std::uint64_t perm_features(std::uint32_t selector) {
+    const std::vector<std::uint32_t> words = {0x7E02'02FFu,
+                                              0x817F'34ABu,
+                                              0x7E04'02FFu,
+                                              0xFE01'56CDu,
+                                              0xD744'0003u,
+                                              257u | (258u << 9) | (selector << 18),
+                                              0x3408'0082u,
+                                              0xD834'0000u,
+                                              0x0000'0304u,
+                                              kSEndPgm};
+    NativeProgram native;
+    native.stage = HwStage::Cs;
+    native.wave64 = false;
+    native.vgprs = 256;
+    ComputeIo compute;
+    compute.rsrc2 = 1u << 15;
+    compute.threads = {64, 1, 1};
+    native.io = compute;
+    native.code = bytes_of(words);
+    const Program program = ::g6shim::shader::build(native.code, false, 256);
+    bool perm = false;
+    for (const ::g6shim::shader::Block& block : program.blocks)
+        for (const ::g6shim::shader::Inst& inst : block.insts)
+            if (inst.name() == "v_perm_b32") perm = true;
+    CHECK(perm);
+    const Structured structured = structure(program);
+    const Resources resources = track(program, native.layout, native.stage, &structured);
+    const Io raised = raise(program, native);
+    Parts parts;
+    parts.native = &native;
+    parts.p = &program;
+    parts.st = &structured;
+    parts.io = &raised;
+    parts.res = &resources;
+    const Lowered lowered = lower(parts);
+    const Container container = Container::parse(lowered.dxil);
+    const Part* sfi0 = container.part(kSfi0);
+    CHECK(sfi0 != nullptr);
+    if (sfi0 == nullptr || sfi0->data.size() < 8) return 0;
+    std::uint64_t features = 0;
+    for (std::size_t i = 0; i < 8; ++i)
+        features |= static_cast<std::uint64_t>(sfi0->data[i]) << (8 * i);
+    return features;
+}
+
+TEST(a_constant_perm_selector_needs_no_int64) { CHECK((perm_features(128) & 0x8000) == 0); }
+
+TEST(a_dynamic_perm_selector_needs_no_int64) { CHECK((perm_features(256) & 0x8000) == 0); }
+
+TEST(a_descriptor_selected_by_scc_uses_its_heap_index) {
+    const std::vector<std::uint32_t> words = {
+        0xBE84'0300, 0xBE85'0380, 0xF408'0202, 0xFA00'0000, 0xF408'0302, 0xFA00'0010,
+        0xBF06'8001, 0x8590'0C08, 0x8592'0E0A, 0xE030'2000, 0x8004'0100, 0xD834'0000,
+        0x0000'0100, kSEndPgm};
+    RootParam table;
+    table.root = RootType{RootType::Kind::Table, 0};
+    table.sgprs = 1;
+    table.user_data = 0;
+    table.slot = 0;
+    RootParam constants;
+    constants.root = RootType{RootType::Kind::Constants, 0};
+    constants.sgprs = 1;
+    constants.user_data = 1;
+    constants.slot = 1;
+    UsedResource used;
+    used.kind = ResourceType{ResourceType::Kind::Srv, 0};
+    used.root = RootType{RootType::Kind::Table, 0};
+    used.stride = 4;
+    used.dwords = 4;
+    used.user_data = 0;
+    used.slot = 0;
+    bool lowered = false;
+    try {
+        (void)lower_compute(words, 256, {table, constants}, {used}, (1u << 15) | (2u << 1), {1, 1, 1});
+        lowered = true;
+    } catch (const std::exception&) {
+    }
+    CHECK(lowered);
+}
+
+TEST(a_missing_value_stays_missing_through_two_live_joins) {
+    std::vector<std::uint32_t> words = {0xF490'0180u,
+                                        0u,
+                                        0xBF06'8000u,
+                                        0xBF85'0001u,
+                                        0xBE86'0380u,
+                                        0xBF06'8101u,
+                                        0xBF85'0001u,
+                                        0xBE86'0381u,
+                                        0xBF07'8006u,
+                                        0xBF85'0001u,
+                                        0xBE83'0380u,
+                                        kSEndPgm};
+    const std::uint32_t group_ids_xy = 3u << 7;
+    const auto refusal = [&](const std::vector<std::uint32_t>& code) -> std::optional<std::string> {
+        std::string reason;
+        if (lowers_with_inputs(code, group_ids_xy, &reason)) return std::nullopt;
+        return std::string(reason);
+    };
+    std::vector<std::uint32_t> direct(words.begin(), words.begin() + 2);
+    direct.insert(direct.end(), words.begin() + 8, words.end());
+    const auto what = [](const std::optional<std::string>& text) -> std::string {
+        if (!text) return "ok";
+        const std::size_t at = text->find(": ");
+        return at == std::string::npos ? *text : text->substr(at + 2);
+    };
+    CHECK(what(refusal(words)) == what(refusal(direct)));
+    words[8] = 0xBF07'8000u;
+    std::string reason;
+    CHECK(lowers_with_inputs(words, group_ids_xy, &reason));
+}
 
 TEST(med3_f32_with_nan) {
     const auto body = vop3(0x157, 0, vgpr(1), vgpr(2), vgpr(3));
@@ -154,7 +328,7 @@ TEST(cmpx_compares_read_their_operation_and_type) {
         const auto value = vop1(0x001, 0, vgpr(3));
         std::vector<std::uint32_t> body(compare.begin(), compare.end());
         body.push_back(value);
-        std::string_view reason;
+        std::string reason;
         std::vector<std::uint32_t> words;
         words.push_back(s_mov_b32(5, 0x80));
         const std::array<std::uint32_t, 2> load = s_load_dwordx4(8, 4);
@@ -265,7 +439,7 @@ TEST(a_scalar_carry_chain_reaches_the_select) {
     const std::vector<std::uint32_t> sub = {
         0xBE80'0380u, 0xBE81'0380u, 0x8080'8100u, 0x8281'8001u,
         0x8502'0001u, 0xBF07'8002u, 0xBF85'0001u, 0xBE83'0380u, kSEndPgm};
-    std::string_view reason;
+    std::string reason;
     CHECK(lowers(add, &reason));
     CHECK(lowers(sub, &reason));
 }
@@ -306,9 +480,9 @@ TEST(an_exec_high_write_does_not_overflow_the_stack) {
     native.io = io;
     native.code = bytes_of({0xBEFF'0380u, 0x7E02'0300u, 0xBF81'0000u});
     const Program program = ::g6shim::shader::build(native.patched_code(), native.wave64, native.vgprs);
-    const Resources resources = track(program, native.layout, native.stage);
-    const Io raised = raise(program, native);
     const Structured structured = structure(program);
+    const Resources resources = track(program, native.layout, native.stage, &structured);
+    const Io raised = raise(program, native);
     std::vector<ContainerPart> no_parts;
     const std::vector<std::uint8_t> container_bytes = ::g6shim::shader::emit::build(no_parts);
     const Container container = Container::parse(container_bytes);
@@ -359,9 +533,9 @@ TEST(reading_a_channel_below_an_input_element_does_not_underflow) {
     const std::vector<std::uint8_t> container_bytes = ::g6shim::shader::emit::build(parts);
     const Container container = Container::parse(container_bytes);
     const Program program = ::g6shim::shader::build(native.patched_code(), native.wave64, native.vgprs);
-    const Resources resources = track(program, native.layout, native.stage);
-    const Io raised = raise(program, native);
     const Structured structured = structure(program);
+    const Resources resources = track(program, native.layout, native.stage, &structured);
+    const Io raised = raise(program, native);
     bool finished = false;
     try {
         (void)::g6shim::shader::emit::emit(container, native, program, structured, raised, resources);

@@ -82,6 +82,7 @@ struct ComputeIo {
 
     std::uint8_t user_sgprs() const;
     std::pair<std::array<std::optional<std::uint8_t>, 3>, std::optional<std::uint8_t>> system_sgprs() const;
+    std::uint8_t initialized_sgprs() const;
     std::uint8_t thread_id_vgprs() const;
     std::uint32_t lds_bytes() const;
 

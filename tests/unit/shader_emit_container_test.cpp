@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "g6shim/shader/dxbc.hpp"
 #include "g6shim/shader/emit/container.hpp"
 #include "g6shim/shader/emit/shader.hpp"
 
@@ -128,6 +129,38 @@ std::vector<std::uint8_t> constant_colour() {
     }
     shader.m.terminate(shader.entry, Term::ret());
     return shader.finish();
+}
+
+TEST(container_psv_sample_frequency_follows_sample_interpolated_inputs) {
+    const auto psv_of = [](std::uint8_t interp, std::uint8_t kind) {
+        const std::vector<SigElement> inputs = {element("TEXCOORD", 0, kind, 9, interp, 0, 0, 4, 0)};
+        const std::vector<SigElement> outputs = {element("SV_Target", 0, 16, 9, 0, 0, 0, 4, 15)};
+        Psv description;
+        description.stage = 0;
+        description.inputs = inputs;
+        description.outputs = outputs;
+        return psv(description);
+    };
+    CHECK(psv_of(6, 0)[4 + 1] == 1);
+    CHECK(psv_of(7, 0)[4 + 1] == 1);
+    CHECK(psv_of(2, 12)[4 + 1] == 1);
+    CHECK(psv_of(2, 0)[4 + 1] == 0);
+}
+
+TEST(container_stencil_export_declares_the_stencil_ref_feature) {
+    Shader shader(true);
+    shader.outputs.push_back(element("SV_Depth", 0, 17, 9, 0, 0, 0, 1, 1));
+    shader.outputs.push_back(element("SV_StencilRef", 0, 20, 5, 0, 0, 0, 1, 0));
+    shader.m.terminate(shader.entry, Term::ret());
+    const std::vector<std::uint8_t> bytes = shader.finish();
+    const ::g6shim::shader::Container container = ::g6shim::shader::Container::parse(bytes);
+    const ::g6shim::shader::Part* sfi0 = container.part(::g6shim::shader::kSfi0);
+    CHECK(sfi0 != nullptr);
+    if (sfi0 == nullptr || sfi0->data.size() < 8) return;
+    std::uint64_t features = 0;
+    for (std::size_t i = 0; i < 8; ++i)
+        features |= static_cast<std::uint64_t>(sfi0->data[i]) << (8 * i);
+    CHECK((features & 0x200) != 0);
 }
 
 TEST(container_emitted_shader_is_stable) {

@@ -730,9 +730,16 @@ std::pair<std::uint32_t, std::optional<V>> Lower::built_offset(const Source& src
 }
 
 const UsedResource* Lower::used_kind(const Source& src) const {
-    if (src.kind == Source::Kind::Phi) {
+    if (src.kind == Source::Kind::Phi || src.kind == Source::Kind::Select ||
+        src.kind == Source::Kind::Lanes) {
         if (src.args.empty()) return nullptr;
         return used_kind(src.args.front());
+    }
+    if (src.kind == Source::Kind::LanePhi) {
+        for (const std::optional<Source>& arg : src.options)
+            if (arg)
+                if (const UsedResource* found = used_kind(*arg)) return found;
+        return nullptr;
     }
     if (src.kind == Source::Kind::Built) {
         if (src.address.param >= x_->native->layout.size()) return nullptr;
@@ -743,7 +750,7 @@ const UsedResource* Lower::used_kind(const Source& src) const {
         }
         return nullptr;
     }
-    if (src.kind != Source::Kind::Loaded) return nullptr;
+    if (src.kind != Source::Kind::Loaded && src.kind != Source::Kind::Fetched) return nullptr;
     const auto scalar = scalar_.find(src.load);
     if (scalar == scalar_.end()) return nullptr;
     if (scalar->second.param >= x_->native->layout.size()) return nullptr;
@@ -770,7 +777,9 @@ V Lower::handle(Site site, const Source& src, bool sampler,
         const auto found = handles_.find(key);
         if (found != handles_.end()) return found->second;
         const V index = heap_index(src.load, src.first, sampler);
-        const V h = s_.heap_handle(cur_, index, sampler, props);
+        const std::vector<Site>& loads = x_->res->waterfall.loads;
+        const bool per_lane = std::find(loads.begin(), loads.end(), src.load) != loads.end();
+        const V h = s_.heap_handle(cur_, index, sampler, per_lane, props);
         handles_[key] = h;
         return h;
     }
@@ -812,34 +821,135 @@ V Lower::handle(Site site, const Source& src, bool sampler,
             return s_.root_srv_handle(rp.slot);
         fail("a root UAV or typed root view");
     }
-    const std::size_t block = src.block;
-    std::vector<std::pair<V, std::size_t>> incoming;
-    const std::vector<std::size_t>& preds = x_->p->blocks[block].preds;
-    const std::size_t count = std::min(preds.size(), src.args.size());
-    for (std::size_t n = 0; n < count; ++n) {
-        const std::size_t q = preds[n];
-        const Source& arg = src.args[n];
-        if (!block_[q]) continue;
-        if (!tail_[q] || arg.kind != Source::Kind::Loaded)
-            fail("a descriptor chosen by control flow");
-        const std::size_t at =
-            edges_.contains({q, block}) ? edges_.at({q, block}) : *tail_[q];
-        const std::size_t here = cur_;
-        cur_ = at;
-        V index;
-        try {
-            index = heap_index(arg.load, arg.first, sampler);
-        } catch (...) {
+    if (src.kind == Source::Kind::Phi) {
+        const std::size_t block = src.block;
+        std::vector<std::pair<V, std::size_t>> incoming;
+        const std::vector<std::size_t>& preds = x_->p->blocks[block].preds;
+        const std::size_t count = std::min(preds.size(), src.args.size());
+        for (std::size_t n = 0; n < count; ++n) {
+            const std::size_t q = preds[n];
+            const Source& arg = src.args[n];
+            if (!block_[q]) continue;
+            if (!tail_[q] || arg.kind != Source::Kind::Loaded)
+                fail("a descriptor chosen by control flow");
+            const std::size_t at =
+                edges_.contains({q, block}) ? edges_.at({q, block}) : *tail_[q];
+            const std::size_t here = cur_;
+            cur_ = at;
+            V index;
+            try {
+                index = heap_index(arg.load, arg.first, sampler);
+            } catch (...) {
+                cur_ = here;
+                throw;
+            }
             cur_ = here;
-            throw;
+            incoming.emplace_back(index, at);
         }
-        cur_ = here;
-        incoming.emplace_back(index, at);
+        if (!block_[block]) fail("a descriptor chosen by control flow");
+        const V phi = s_.m.phi(*block_[block], s_.t.i32);
+        s_.m.set_phi(phi, incoming);
+        return s_.heap_handle(cur_, phi, sampler, false, props);
     }
-    if (!block_[block]) fail("a descriptor chosen by control flow");
-    const V phi = s_.m.phi(*block_[block], s_.t.i32);
-    s_.m.set_phi(phi, incoming);
-    return s_.heap_handle(cur_, phi, sampler, props);
+    if (src.kind == Source::Kind::Select) {
+        if (src.args.size() != 2 || src.args[0].kind != Source::Kind::Loaded ||
+            src.args[1].kind != Source::Kind::Loaded)
+            fail("a descriptor chosen by a condition");
+        const Val cond = get(src.key);
+        if (cond.kind != Val::Kind::Bit) fail("SCC without a value");
+        const V set = heap_index(src.args[0].load, src.args[0].first, sampler);
+        const V clear = heap_index(src.args[1].load, src.args[1].first, sampler);
+        const V index = s_.m.select(cur_, cond.value, set, clear);
+        return s_.heap_handle(cur_, index, sampler, false, props);
+    }
+    const V index = lane_heap_index(src, sampler);
+    return s_.heap_handle(cur_, index, sampler, true, props);
+}
+
+V Lower::lane_heap_index(const Source& src, bool sampler) {
+    if (src.kind == Source::Kind::Loaded) return heap_index(src.load, src.first, sampler);
+    if (src.kind == Source::Kind::Fetched) return fetched_index(src.load, src.first, sampler);
+    if (src.kind == Source::Kind::Lanes || src.kind == Source::Kind::Select) {
+        if (src.args.size() != 2) fail("a descriptor chosen per lane");
+        V cond;
+        if (src.kind == Source::Kind::Lanes) {
+            const auto found = x_->st->masks.find(src.key);
+            if (found == x_->st->masks.end()) fail("a descriptor chosen per lane by an untracked mask");
+            cond = boolean(found->second, cur_);
+        } else {
+            const Val value = get(src.key);
+            if (value.kind != Val::Kind::Bit) fail("SCC without a value");
+            cond = value.value;
+        }
+        const V set = lane_heap_index(src.args[0], sampler);
+        const V clear = lane_heap_index(src.args[1], sampler);
+        return s_.m.select(cur_, cond, set, clear);
+    }
+    if (src.kind == Source::Kind::LanePhi) {
+        if (!block_[src.block]) fail("a per-lane descriptor chosen by control flow");
+        std::vector<std::pair<V, std::size_t>> incoming;
+        const std::vector<std::size_t>& preds = x_->p->blocks[src.block].preds;
+        const std::size_t count = std::min(preds.size(), src.options.size());
+        for (std::size_t n = 0; n < count; ++n) {
+            const std::size_t q = preds[n];
+            if (!block_[q]) continue;
+            if (!tail_[q]) fail("a per-lane descriptor joined from a later block");
+            const std::size_t at =
+                edges_.contains({q, src.block}) ? edges_.at({q, src.block}) : *tail_[q];
+            V index;
+            if (src.options[n]) {
+                const std::size_t here = cur_;
+                cur_ = at;
+                try {
+                    index = lane_heap_index(*src.options[n], sampler);
+                } catch (...) {
+                    cur_ = here;
+                    throw;
+                }
+                cur_ = here;
+            } else {
+                index = s_.m.i32(0);
+            }
+            incoming.emplace_back(index, at);
+        }
+        const V phi = s_.m.phi(*block_[src.block], s_.t.i32);
+        s_.m.set_phi(phi, incoming);
+        return phi;
+    }
+    fail("a per-lane descriptor from neither a heap load nor a choice of them");
+}
+
+V Lower::fetched_index(Site load, std::uint8_t first, bool sampler) {
+    const auto tracked = scalar_.find(load);
+    if (tracked == scalar_.end()) fail("an untracked descriptor load");
+    const Address a = tracked->second;
+    if (a.param >= x_->native->layout.size()) fail("a descriptor outside the heaps");
+    const RootType::Kind root = x_->native->layout[a.param].root.kind;
+    if (root != RootType::Kind::Table && root != RootType::Kind::ResourceHeap &&
+        root != RootType::Kind::SamplerHeap)
+        fail("a descriptor outside the heaps");
+    const IrInst& li = x_->p->blocks[load.block].insts[load.index];
+    const auto* fields = std::get_if<FlatFields>(&li.fields);
+    if (fields == nullptr || !fields->addr) fail("a per-lane descriptor load");
+    const auto* vec = std::get_if<VectorOperand>(&*fields->addr);
+    if (vec == nullptr) fail("a per-lane descriptor load");
+    const std::size_t c = cur_;
+    const std::optional<Value> low = li.read(Reg::v(vec->reg));
+    if (!low) fail("a per-lane descriptor load");
+    V at = i32_of(*low);
+    if (fields->saddr) {
+        const auto* scalar = std::get_if<ScalarOperand>(&*fields->saddr);
+        if (scalar != nullptr && scalar->code != kNull) {
+            const std::optional<Value> base = li.read(Reg::s(scalar->code));
+            if (!base) fail("a per-lane descriptor load");
+            at = s_.m.bin(c, Bin::Add, i32_of(*base), at);
+        }
+    }
+    const V k = s_.m.i32(static_cast<std::uint32_t>(fields->offset) +
+                         4u * static_cast<std::uint32_t>(first));
+    at = s_.m.bin(c, Bin::Add, at, k);
+    const V shift = s_.m.i32(sampler ? 4 : 5);
+    return s_.m.bin(c, Bin::LShr, at, shift);
 }
 
 V Lower::heap_index(Site load, std::uint8_t first, bool sampler) {

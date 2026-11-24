@@ -309,3 +309,10 @@
   Closes when: dynamic descriptor slots are not exhausted.
 - Queues and lists log the frame, draws and dispatches only; dropped and indirect counts are not logged.
   Closes when: the diagnostics build lands.
+
+# shader
+
+## add Functional
+
+- A per-lane descriptor joined at a loop header is refused (`a descriptor read from the first lane of a phi at a loop header`): what a lane holds after some passes of the loop is not traced.
+- A waterfall loop's access is proven, but its other per-lane work is taken to run once for each lane; a loop body whose effect adds up over the passes a lane waits through would differ.

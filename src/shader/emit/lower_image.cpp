@@ -156,7 +156,7 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
     }
     std::uint32_t op = 0;
     bool sample = false;
-    if (name == "image_sample") {
+    if (name == "image_sample" || name == "image_sample_o") {
         op = 60;
         sample = true;
     } else if (name == "image_sample_lz" || name == "image_sample_l") {
@@ -286,6 +286,18 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
         std::vector<V> args = {h, sh};
         args.insert(args.end(), cs.begin(), cs.end());
         if (op == 60) {
+            if (offset_word) {
+                const V w = addr_val(0);
+                const std::optional<std::int64_t> constant = s_.m.int_value(w);
+                if (!constant) fail("a sample offset that is not constant");
+                const std::uint32_t bits = static_cast<std::uint32_t>(*constant);
+                for (std::size_t k = 0; k < offsets; ++k) {
+                    const std::int32_t x = static_cast<std::int32_t>((bits >> (8 * k)) & 0x3F);
+                    const std::int32_t signed_offset = x >= 32 ? x - 64 : x;
+                    if (signed_offset < -8 || signed_offset > 7) fail("a sample offset past -8..7");
+                    os[k] = s_.m.i32(static_cast<std::uint32_t>(signed_offset));
+                }
+            }
             args.insert(args.end(), os.begin(), os.end());
             args.push_back(fu);
             r = s_.op(c, "sample.f32", Attr::ReadOnly, s_.t.res_ret, 60, args);

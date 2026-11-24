@@ -15,6 +15,7 @@
 #include "g6shim/shader/ir.hpp"
 #include "g6shim/shader/native.hpp"
 #include "g6shim/shader/resource.hpp"
+#include "g6shim/shader/structure.hpp"
 
 namespace {
 
@@ -34,10 +35,19 @@ std::vector<std::uint8_t> bytes(const std::vector<std::uint32_t>& words) {
     return out;
 }
 
+std::optional<Structured> lanes_of(const Program& p) {
+    try {
+        return structure(p);
+    } catch (const ParseError&) {
+        return std::nullopt;
+    }
+}
+
 Resources track_words(const std::vector<std::uint32_t>& words, const std::vector<RootParam>& layout,
                       HwStage stage) {
     const Program p = build(bytes(words), false, 256);
-    return track(p, layout, stage);
+    const std::optional<Structured> lanes = lanes_of(p);
+    return track(p, layout, stage, lanes ? &*lanes : nullptr);
 }
 
 RootParam param(RootType::Kind kind, std::uint8_t user_data, std::uint32_t sgprs) {
@@ -136,11 +146,42 @@ TEST(resource_descriptors_joined_by_control_flow_are_traced_per_edge) {
     CHECK(zero && sixteen);
 }
 
-TEST(resource_untraceable_addresses_fail_with_a_reason) {
-    const Program p = build(bytes({0xF408'0001, 0xFA00'0000, kEndpgm}), false, 256);
+TEST(resource_descriptors_selected_by_scc_are_traced_per_outcome) {
+    const Resources r = track_words(
+        {0xBE8C'0309, 0xBE8D'0380, 0xF408'0006, 0xFA00'0000, 0xF408'0106, 0xFA00'0010, 0xBF06'800E,
+         0x8588'0400, 0x858A'0602, 0xF420'0404, 0xFA00'0000, kEndpgm},
+        {param(RootType::Kind::Table, 9, 1)}, HwStage::Ps);
+    CHECK(r.descriptors.size() == 1);
+    if (r.descriptors.size() != 1) return;
+    const Source& source = r.descriptors[0].source;
+    CHECK(source.kind == Source::Kind::Select);
+    CHECK(source.args == (std::vector<Source>{Source::loaded(Site{0, 2}, 0), Source::loaded(Site{0, 3}, 0)}));
+    CHECK(r.scalar == (std::vector<std::pair<Site, Address>>{{Site{0, 2}, at(0, 0)}, {Site{0, 3}, at(0, 0x10)}}));
+}
+
+TEST(resource_a_selection_that_mixes_two_descriptors_fails) {
+    const Program p = build(bytes({0xBE8C'0309, 0xBE8D'0380, 0xF408'0006, 0xFA00'0000, 0xF408'0106,
+                                   0xFA00'0010, 0xBF06'800E, 0x8588'0400, 0x858A'0202, 0xF420'0404,
+                                   0xFA00'0000, kEndpgm}),
+                            false, 256);
+    const std::optional<Structured> lanes = lanes_of(p);
     bool rejected = false;
     try {
-        track(p, {param(RootType::Kind::Table, 9, 1)}, HwStage::Ps);
+        (void)track(p, {param(RootType::Kind::Table, 9, 1)}, HwStage::Ps, lanes ? &*lanes : nullptr);
+    } catch (const ParseError& error) {
+        rejected = error.kind() == ErrorKind::Unsupported &&
+                   std::string(error.what()).find("a descriptor changed after loading") !=
+                       std::string::npos;
+    }
+    CHECK(rejected);
+}
+
+TEST(resource_untraceable_addresses_fail_with_a_reason) {
+    const Program p = build(bytes({0xF408'0001, 0xFA00'0000, kEndpgm}), false, 256);
+    const std::optional<Structured> lanes = lanes_of(p);
+    bool rejected = false;
+    try {
+        track(p, {param(RootType::Kind::Table, 9, 1)}, HwStage::Ps, lanes ? &*lanes : nullptr);
     } catch (const ParseError& error) {
         rejected = error.kind() == ErrorKind::Unsupported &&
                    std::string(error.what()).find("an address in an SGPR that is no root parameter") !=

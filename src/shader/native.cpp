@@ -345,6 +345,15 @@ std::pair<std::array<std::optional<std::uint8_t>, 3>, std::optional<std::uint8_t
     return {ids, take(10)};
 }
 
+std::uint8_t ComputeIo::initialized_sgprs() const {
+    const auto [ids, info] = system_sgprs();
+    std::uint8_t end = 0;
+    for (const std::optional<std::uint8_t>& id : ids)
+        if (id) end = std::max(end, static_cast<std::uint8_t>(*id + 1));
+    if (info) end = std::max(end, static_cast<std::uint8_t>(*info + 1));
+    return static_cast<std::uint8_t>(std::max(end, user_sgprs()) + (rsrc2 & 1));
+}
+
 std::uint8_t ComputeIo::thread_id_vgprs() const { return static_cast<std::uint8_t>((rsrc2 >> 11) & 3) + 1; }
 
 std::uint32_t ComputeIo::lds_bytes() const { return ((rsrc2 >> 15) & 0x1FF) * 512; }

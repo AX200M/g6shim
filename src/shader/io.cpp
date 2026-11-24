@@ -350,6 +350,7 @@ Io raise(const Program& program, const NativeProgram& native) {
 
     Io io;
     io.inputs = inputs;
+    if (const auto* cs = std::get_if<ComputeIo>(&native.io)) io.initialized_sgprs = cs->initialized_sgprs();
     std::unordered_map<Value, Site, ValueHash> defs;
     std::unordered_map<Value, Site, ValueHash> phis;
     for (std::size_t b = 0; b < program.blocks.size(); ++b) {

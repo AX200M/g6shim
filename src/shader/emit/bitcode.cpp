@@ -371,6 +371,13 @@ void Module::replace_const(V old_value, V new_value) {
     consts_[old_value.index].constant = consts_[new_value.index].constant;
 }
 
+std::optional<std::int64_t> Module::int_value(V value) const {
+    if (value.kind != V::Kind::Const || value.index >= consts_.size()) return std::nullopt;
+    const Constant& constant = consts_[value.index].constant;
+    if (constant.kind != Constant::Kind::Int) return std::nullopt;
+    return constant.value;
+}
+
 V Module::function(const std::string& name, Ty type, std::optional<Attr> attr, bool body) {
     const auto found = func_ids_.find(name);
     if (found != func_ids_.end()) return V::func(found->second);

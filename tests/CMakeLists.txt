@@ -42,6 +42,7 @@ add_executable(g6shim_tests
   unit/shader_valu_test.cpp
   unit/shader_lowering.cpp
   unit/shader_fixtures_test.cpp
+  unit/shader_waterfall_test.cpp
   unit/shader_tool_test.cpp
   unit/shader_fuzz_test.cpp
   unit/parser_fuzz_test.cpp

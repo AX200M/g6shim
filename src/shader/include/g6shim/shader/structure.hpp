@@ -5,10 +5,12 @@
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "g6shim/shader/ir.hpp"
@@ -71,6 +73,7 @@ public:
     Bool restrict(Bool value, std::uint32_t variable, bool chosen,
                   std::unordered_map<Bool, Bool, BoolHash>& memo);
     Bool given(Bool value, Bool known);
+    bool meet(const std::vector<std::pair<Bool, bool>>& all) const;
 
     bool overflow() const noexcept { return overflow_; }
 
@@ -107,6 +110,7 @@ private:
 
     std::vector<std::uint32_t> vars(Bool value) const;
     std::pair<Bool, Bool> split(Bool value, std::uint32_t variable) const;
+    bool meet_in(std::vector<std::pair<Bool, bool>> all, std::size_t& budget) const;
 
     std::vector<Node> nodes_;
     std::unordered_map<NodeKey, Bool, NodeKeyHash> unique_;
@@ -139,9 +143,13 @@ struct Structured {
     Bools bools;
     std::vector<LaneExit> exits;
     std::vector<std::vector<std::optional<Bool>>> guards;
+    std::vector<Bool> reach;
     std::unordered_map<Value, Bool, ValueHash> masks;
+    std::map<std::pair<Value, Value>, Bool> paired_masks;
     std::unordered_map<Value, Value, ValueHash> highs;
     std::unordered_set<Value, ValueHash> active;
+
+    std::optional<Bool> mask_bits(Value low, std::optional<Value> high) const;
 };
 
 Structured structure(const Program& program);

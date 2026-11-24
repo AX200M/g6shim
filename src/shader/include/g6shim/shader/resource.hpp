@@ -38,7 +38,16 @@ struct Address {
 };
 
 struct Source {
-    enum class Kind : std::uint8_t { Loaded, Built, Constant, Phi };
+    enum class Kind : std::uint8_t {
+        Loaded,
+        Built,
+        Constant,
+        Phi,
+        Select,
+        Fetched,
+        Lanes,
+        LanePhi,
+    };
 
     Kind kind = Kind::Constant;
     Site load;
@@ -48,12 +57,18 @@ struct Source {
     std::array<std::uint32_t, 2> words{};
     std::vector<std::uint32_t> constants;
     std::size_t block = 0;
+    Value key;
     std::vector<Source> args;
+    std::vector<std::optional<Source>> options;
 
     static Source loaded(Site load, std::uint8_t first);
     static Source built(Address address, std::uint32_t bits, std::array<std::uint32_t, 2> words);
     static Source constant(std::vector<std::uint32_t> constants);
     static Source phi(std::size_t block, std::vector<Source> args);
+    static Source select(Value scc, std::vector<Source> args);
+    static Source fetched(Site load, std::uint8_t first);
+    static Source lanes(Value mask, std::vector<Source> args);
+    static Source lane_phi(std::size_t block, std::vector<std::optional<Source>> options);
 
     std::vector<const Source*> leaves() const;
 };
@@ -70,13 +85,27 @@ struct Descriptor {
     friend bool operator==(const Descriptor&, const Descriptor&) = default;
 };
 
+struct Waterfall {
+    std::vector<Site> compares;
+    std::vector<Value> reads;
+    std::vector<Site> loads;
+
+    friend bool operator==(const Waterfall&, const Waterfall&) = default;
+};
+
 struct Resources {
     std::vector<std::pair<Site, Address>> scalar;
     std::vector<Descriptor> descriptors;
     std::vector<std::tuple<Value, std::size_t, std::uint32_t>> params;
+    Waterfall waterfall;
+
+    friend bool operator==(const Resources&, const Resources&) = default;
 };
 
-Resources track(const Program& program, const std::vector<RootParam>& layout, HwStage stage);
+struct Structured;
+
+Resources track(const Program& program, const std::vector<RootParam>& layout, HwStage stage,
+                const Structured* lanes);
 
 std::optional<std::uint32_t> inline_constant(std::uint8_t code);
 

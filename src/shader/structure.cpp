@@ -20,6 +20,7 @@ namespace g6shim::shader {
 namespace {
 
 constexpr std::size_t kMaxNodes = 1u << 21;
+constexpr std::size_t kMaxMeet = 1u << 16;
 constexpr int kMaxRounds = 256;
 constexpr std::size_t kNoIndex = static_cast<std::size_t>(-1);
 
@@ -201,6 +202,37 @@ std::pair<Bool, Bool> Bools::split(Bool value, std::uint32_t variable) const {
     const Node entry = nodes_[value.index];
     if (entry.variable == variable) return {entry.low, entry.high};
     return {value, value};
+}
+
+bool Bools::meet(const std::vector<std::pair<Bool, bool>>& all) const {
+    std::size_t budget = kMaxMeet;
+    return meet_in(all, budget);
+}
+
+bool Bools::meet_in(std::vector<std::pair<Bool, bool>> all, std::size_t& budget) const {
+    const auto fails = [](const std::pair<Bool, bool>& entry) {
+        return entry.first == (entry.second ? kFalse : kTrue);
+    };
+    if (std::any_of(all.begin(), all.end(), fails)) return false;
+    all.erase(std::remove_if(all.begin(), all.end(),
+                             [](const std::pair<Bool, bool>& entry) {
+                                 return entry.first == kFalse || entry.first == kTrue;
+                             }),
+              all.end());
+    if (all.empty() || budget == 0) return true;
+    --budget;
+    std::uint32_t variable = UINT32_MAX;
+    for (const auto& entry : all) variable = std::min(variable, nodes_[entry.first.index].variable);
+    for (bool value : {false, true}) {
+        std::vector<std::pair<Bool, bool>> next;
+        next.reserve(all.size());
+        for (const auto& entry : all) {
+            const auto [low, high] = split(entry.first, variable);
+            next.emplace_back(value ? high : low, entry.second);
+        }
+        if (meet_in(std::move(next), budget)) return true;
+    }
+    return false;
 }
 
 Bool Bools::ite(Bool f, Bool g, Bool h) {
@@ -809,12 +841,18 @@ Structured Lanes::finish(const std::vector<std::vector<std::optional<Bool>>>& ex
     if (b_.overflow()) detail::fail_isa(0, "lane conditions too large");
     Structured result;
     for (const auto& entry : masks_) result.masks.emplace(entry.first.low, entry.second);
+    if (p_->wave64) {
+        for (const auto& entry : masks_)
+            result.paired_masks.emplace(std::pair<Value, Value>{entry.first.low, entry.first.high},
+                                        entry.second);
+    }
     for (const auto& entry : masks_)
         if (entry.first.low != entry.first.high) result.highs.emplace(entry.first.high, entry.first.low);
     result.active = std::move(active_);
     result.bools = std::move(b_);
     result.exits = std::move(exits);
     result.guards = std::move(guards);
+    result.reach = cond;
     return result;
 }
 
@@ -828,6 +866,17 @@ Structured structure(const Program& program) {
         lanes.mark_unresolved(wrong);
         lanes.reset();
     }
+}
+
+std::optional<Bool> Structured::mask_bits(Value low, std::optional<Value> high) const {
+    if (high) {
+        const auto found = paired_masks.find(std::pair<Value, Value>{low, *high});
+        if (found != paired_masks.end()) return found->second;
+        return std::nullopt;
+    }
+    const auto found = masks.find(low);
+    if (found != masks.end()) return found->second;
+    return std::nullopt;
 }
 
 }  // namespace g6shim::shader

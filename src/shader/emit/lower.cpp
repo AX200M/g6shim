@@ -643,6 +643,8 @@ Lowered Lower::run() {
     for (const auto& entry : s_.root_srvs) out.root_srvs.push_back(entry.first);
     out.user_data = user_reads();
     out.samplers = samplers_;
+    out.nonuniform_handles = s_.nonuniform_handles;
+    out.wave_ops = (s_.flags & feature::kWaveOps) != 0;
     return out;
 }
 
@@ -666,8 +668,14 @@ void Lower::inputs() {
         if (reg.kind == Reg::Kind::S && params_.contains(v)) continue;
         if (reg.kind == Reg::Kind::S) {
             const auto found = io_inputs.find(v);
-            val = found == io_inputs.end() ? Val::missing("a hardware SGPR input")
-                                           : input(found->second);
+            if (found != io_inputs.end()) {
+                val = input(found->second);
+            } else if (reg.code <= 105 && x_->io->initialized_sgprs &&
+                       reg.code >= *x_->io->initialized_sgprs) {
+                val = Val::i32(s_.m.i32(0));
+            } else {
+                val = Val::missing("a hardware SGPR input");
+            }
         } else if (reg.kind == Reg::Kind::Scc) {
             val = Val::missing("SCC on entry");
         } else {
@@ -909,6 +917,28 @@ V Lower::operand(const IrInst& inst, const Operand& op) {
 V Lower::as_float(V x) { return s_.m.cast(cur_, Cast::Bitcast, x, s_.t.f32); }
 
 V Lower::as_int(V f) { return s_.m.cast(cur_, Cast::Bitcast, f, s_.t.i32); }
+
+V Lower::max_min(bool max, V a, V b) {
+    const std::size_t c = cur_;
+    const V r = binary(max ? 35 : 36, a, b);
+    const V ia = as_int(a);
+    const V ib = as_int(b);
+    V either = s_.m.bin(c, Bin::Or, ia, ib);
+    const V magnitude = s_.m.i32(0x7FFF'FFFFu);
+    either = s_.m.bin(c, Bin::And, either, magnitude);
+    const V zero = s_.m.i32(0);
+    const V zeros = s_.m.cmp(c, pred::kEq, either, zero);
+    const V sign = s_.m.bin(c, max ? Bin::And : Bin::Or, ia, ib);
+    const V signed_zero = as_float(sign);
+    return s_.m.select(c, zeros, signed_zero, r);
+}
+
+V Lower::f16_operand(const IrInst& inst, const Operand& op) {
+    if (const auto* constant = std::get_if<ConstantOperand>(&op);
+        constant && constant->code >= 240 && constant->code <= 248)
+        return s_.m.i32(kHalfConstants[constant->code - 240]);
+    return operand(inst, op);
+}
 
 std::optional<std::pair<std::uint8_t, bool>> Lower::sdwa_src(const IrInst& inst, std::size_t k) {
     const auto* valu = std::get_if<Valu>(&inst.fields);
@@ -1671,6 +1701,17 @@ std::size_t Lower::edge(std::size_t from, std::size_t to) {
 
 void Lower::fill_phis() {
     const Program& p = *x_->p;
+    std::vector<Value> work;
+    for (Value v : read_phis_) work.push_back(v);
+    while (!work.empty()) {
+        const Value v = work.back();
+        work.pop_back();
+        const auto at = phi_at_.find(v);
+        if (at == phi_at_.end()) continue;
+        const Phi& phi = p.blocks[at->second.first].phis[at->second.second];
+        for (Value arg : phi.args)
+            if (phi_at_.contains(arg) && read_phis_.insert(arg).second) work.push_back(arg);
+    }
     std::vector<std::tuple<V, std::size_t, std::size_t>> data_phis = std::move(data_phis_);
     data_phis_.clear();
     for (const auto& entry : data_phis) {

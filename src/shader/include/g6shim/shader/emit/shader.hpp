@@ -22,6 +22,7 @@ inline constexpr std::uint32_t kRootCbvSpace = 1;
 namespace feature {
 
 inline constexpr std::uint64_t kRawBuffers = 1ull << 4;
+inline constexpr std::uint64_t kStencilRef = 1ull << 11;
 inline constexpr std::uint64_t kTypedUavLoads = 1ull << 13;
 inline constexpr std::uint64_t kWaveOps = 1ull << 19;
 inline constexpr std::uint64_t kInt64 = 1ull << 20;
@@ -56,6 +57,7 @@ struct Shader {
     std::vector<std::pair<std::uint8_t, V>> root_cbvs;
     std::vector<std::pair<std::uint8_t, V>> root_srvs;
     std::uint64_t flags = 0;
+    std::uint32_t nonuniform_handles = 0;
     std::optional<std::array<std::uint32_t, 3>> threads;
     std::optional<std::uint32_t> wave_size;
     std::uint32_t lds_dwords = 0;
@@ -72,7 +74,8 @@ struct Shader {
     V root_srv_handle(std::uint8_t slot);
     V sampler_handle(std::size_t block, std::uint32_t n);
     V annotate(std::size_t block, V handle, std::uint32_t props0, std::uint32_t props1);
-    V heap_handle(std::size_t block, V index, bool sampler, std::pair<std::uint32_t, std::uint32_t> props);
+    V heap_handle(std::size_t block, V index, bool sampler, bool nonuniform,
+                  std::pair<std::uint32_t, std::uint32_t> props);
     std::vector<std::uint8_t> finish();
 
 private:

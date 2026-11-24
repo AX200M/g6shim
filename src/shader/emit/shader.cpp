@@ -23,6 +23,7 @@ constexpr std::uint32_t kProgramKindShift = 16;
 constexpr std::uint32_t kProgramKindMask = 0x66;
 constexpr std::uint32_t kRootCbvSize = 65536;
 constexpr std::uint32_t kRootCbvBlobDwords = 16384;
+constexpr std::uint32_t kFeatureStencilRef = 0x200;
 constexpr std::uint32_t kFeatureTypedUavLoads = 0x800;
 constexpr std::uint32_t kFeatureWaveOps = 0x4000;
 constexpr std::uint32_t kFeatureInt64 = 0x8000;
@@ -151,11 +152,12 @@ V Shader::annotate(std::size_t block, V handle, std::uint32_t props0, std::uint3
     return op(block, "annotateHandle", Attr::ReadNone, t.handle, 216, {handle, props});
 }
 
-V Shader::heap_handle(std::size_t block, V index, bool sampler,
+V Shader::heap_handle(std::size_t block, V index, bool sampler, bool nonuniform,
                       std::pair<std::uint32_t, std::uint32_t> props) {
     flags |= sampler ? feature::kSamplerHeap : feature::kResourceHeap;
+    nonuniform_handles += nonuniform ? 1u : 0u;
     const V is_sampler = m.boolean(sampler);
-    const V non_uniform = m.boolean(false);
+    const V non_uniform = m.boolean(nonuniform);
     const V handle =
         op(block, "createHandleFromHeap", Attr::ReadNone, t.handle, 218, {index, is_sampler, non_uniform});
     return annotate(block, handle, props.first, props.second);
@@ -290,6 +292,10 @@ std::vector<std::uint8_t> Shader::finish() {
         signatures = m.md_node({ins, outs, prim_outputs});
     }
 
+    if (pixel && std::any_of(outputs.begin(), outputs.end(),
+                             [](const SigElement& element) { return element.kind == 20; }))
+        flags |= feature::kStencilRef;
+
     std::vector<std::optional<Md>> props;
     if (flags != 0) {
         props.push_back(i32c(0));
@@ -363,6 +369,7 @@ std::vector<std::uint8_t> Shader::finish() {
     dxil.insert(dxil.end(), bitcode.begin(), bitcode.end());
 
     std::uint64_t features = 0;
+    if ((flags & feature::kStencilRef) != 0) features |= kFeatureStencilRef;
     if ((flags & feature::kTypedUavLoads) != 0) features |= kFeatureTypedUavLoads;
     if ((flags & feature::kWaveOps) != 0) features |= kFeatureWaveOps;
     if ((flags & feature::kInt64) != 0) features |= kFeatureInt64;

@@ -74,6 +74,9 @@ enum class MaskData : std::uint8_t { Console, Host, None };
 
 inline constexpr Why kLaneMask = "a lane mask read as data";
 
+inline constexpr std::array<std::uint32_t, 9> kHalfConstants = {0x3800, 0xB800, 0x3C00, 0xBC00, 0x4000,
+                                                               0xC000, 0x4400, 0xC400, 0x3118};
+
 bool reads_mask_as_data(const Structured& st, const IrInst& inst);
 
 std::optional<std::pair<std::uint8_t, std::uint8_t>> packed_half(
@@ -113,6 +116,8 @@ private:
     V operand(const IrInst& inst, const Operand& op);
     V as_float(V x);
     V as_int(V f);
+    V max_min(bool max, V a, V b);
+    V f16_operand(const IrInst& inst, const Operand& op);
     static std::optional<std::pair<std::uint8_t, bool>> sdwa_src(const IrInst& inst, std::size_t k);
     V select_bits(V x, std::uint8_t sel, bool sext);
     V fsrc(const IrInst& inst, std::size_t k);
@@ -166,6 +171,8 @@ private:
     std::pair<std::uint32_t, std::optional<V>> built_offset(const Source& src);
     const UsedResource* used_kind(const Source& src) const;
     V handle(Site site, const Source& src, bool sampler, std::pair<std::uint32_t, std::uint32_t> props);
+    V lane_heap_index(const Source& src, bool sampler);
+    V fetched_index(Site load, std::uint8_t first, bool sampler);
     V heap_index(Site load, std::uint8_t first, bool sampler);
     void valu(const IrInst& inst, std::size_t b, std::size_t i);
     std::pair<V, std::optional<V>> dpp(const IrInst& inst, const Dpp& dpp);
@@ -180,7 +187,8 @@ private:
                    std::span<const std::string_view> float1,
                    std::span<const std::string_view> float2,
                    std::span<const std::string_view> float3);
-    V packed_src(const IrInst& inst, std::size_t k, bool high);
+    V packed_src(const IrInst& inst, std::size_t k, bool high, bool float16);
+    V cvt_norm16(const IrInst& inst, bool is_signed);
     void packed16(const IrInst& inst, std::string_view op, std::optional<V> guard);
     V integer(const IrInst& inst, std::string_view name);
     void compare(const IrInst& inst, std::string_view rest);

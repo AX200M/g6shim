@@ -70,9 +70,9 @@ Lowered lower_compute(const std::vector<std::uint32_t>& words, std::uint16_t vgp
     native.io = io;
     native.code = bytes_of(words);
     const Program program = ::g6shim::shader::build(native.patched_code(), native.wave64, native.vgprs);
-    const Resources resources = track(program, native.layout, native.stage);
-    const Io raised = raise(program, native);
     const Structured structured = structure(program);
+    const Resources resources = track(program, native.layout, native.stage, &structured);
+    const Io raised = raise(program, native);
     Parts parts;
     parts.native = &native;
     parts.p = &program;

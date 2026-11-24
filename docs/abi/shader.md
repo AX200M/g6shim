@@ -120,6 +120,8 @@ Unabbreviated records only; each block's abbreviation width is fixed.
 | `HASH` | twenty zero bytes |
 | `DXIL` | program |
 
+SFI0 feature bits used here: 0x200 stencil reference, 0x800 typed UAV loads, 0x4000 wave operations, 0x8000 64-bit integers, 0x2000000 resource heap, 0x4000000 sampler heap.
+
 DXIL part header: program kind shifted left 16 and or 0x66, size in dwords, `DXIL`, validator version 1.6, bitcode offset 16, bitcode size.
 
 Container header: `DXBC`, MD5-like digest, version 1.0, total size, part count, part offsets, then each part as FourCC, size and data.
@@ -140,6 +142,18 @@ Container header: `DXBC`, MD5-like digest, version 1.0, total size, part count, 
 | 25 | read/write mask |
 | 28 | minimum precision, 0 |
 
+Interpolation modes: 0 constant, 1 linear, 2 linear centroid, 3 linear no perspective, 4 perspective, 5 perspective centroid, 6 perspective sample, 7 linear sample.
+
+A pixel shader writing SV_DepthLessEqual (18) or SV_DepthGreaterEqual (19) interpolates its position inputs (kind 3) at the centroid (5), as the DXIL validator requires.
+
+## Image instructions
+
+Sampling offsets are 6-bit signed per coordinate in the console encoding, and DXIL's immediate offsets are -8 to 7, so a computed offset word must be constant and in range.
+
+## Predicates
+
+`v_cmp_lg_*` is ordered and not equal, so a NaN makes it false: DXIL `olt | ogt`. `fcmp one` means the same but the AMD D3D12 driver treats it as unordered.
+
 ## PSV0 runtime info
 
 48-byte block.
@@ -147,6 +161,7 @@ Container header: `DXBC`, MD5-like digest, version 1.0, total size, part count, 
 | Offset | Field |
 |---|---|
 | 0 | shared memory bytes (mesh) or output-depth flag |
+| 1 | sample frequency: an input interpolated per sample (interpolation 6 or 7) or the sample index (kind 12) |
 | 12, 14 | maximum vertices, primitives (mesh) |
 | 16, 20 | minimum, maximum wave size |
 | 24 | stage: 0 pixel, 1 vertex, 5 compute, 13 mesh |

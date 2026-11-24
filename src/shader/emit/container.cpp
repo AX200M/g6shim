@@ -237,6 +237,13 @@ std::vector<std::uint8_t> psv(const Psv& p) {
     append_u32(out, 48);
     std::array<std::uint8_t, 48> info{};
     info[0] = p.flag ? 1 : 0;
+    if (p.stage == 0) {
+        info[1] = std::any_of(p.inputs.begin(), p.inputs.end(), [](const SigElement& e) {
+                     return e.interp == 6 || e.interp == 7 || e.kind == 12;
+                 })
+                     ? 1
+                     : 0;
+    }
     const std::uint32_t min_wave = p.wave_size.value_or(0);
     const std::uint32_t max_wave = p.wave_size.value_or(UINT32_MAX);
     info[16] = static_cast<std::uint8_t>(min_wave);
