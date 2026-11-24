@@ -39,6 +39,7 @@ namespace {
 constexpr Guid kFactoryInterface{0x62959d11u, 0xd45f, 0x4884,
                                  {0xa0, 0xa3, 0xf7, 0x86, 0x2e, 0xa2, 0x43, 0xae}};
 constexpr DWORD kConsole64KiBPageReserve = MEM_RESERVE | 0x2040'0000u;
+constexpr DWORD kSynchronousFile = 0;
 constexpr std::size_t kFactorySlots = 16;
 constexpr std::size_t kFileSlots = 8;
 constexpr std::size_t kStatusSlots = 5;
@@ -403,7 +404,7 @@ HRESULT WINAPI open_file(const Object*, const wchar_t* path, const Guid* iid, vo
     const std::string name = narrow(path);
     const auto host = g6shim::drives::translate(path);
     const HANDLE handle = CreateFileW(host ? host->c_str() : path, GENERIC_READ, FILE_SHARE_READ, nullptr,
-                                      OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+                                      OPEN_EXISTING, kSynchronousFile, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
         const DWORD error = GetLastError();
         G6SHIM_WARN("dstorage: opening a file failed: %s: error %lu", name.c_str(), error);
