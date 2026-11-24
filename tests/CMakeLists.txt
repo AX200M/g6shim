@@ -50,6 +50,28 @@ add_executable(g6shim_tests
   unit/bcpack_test.cpp
   unit/xcrdapi_test.cpp
   unit/log_format_test.cpp
+  unit/d3d12_xs_object_test.cpp
+  unit/d3d12_xs_device_test.cpp
+  unit/d3d12_xs_dxgi_test.cpp
+  unit/d3d12_xs_fence_test.cpp
+  unit/d3d12_xs_frame_test.cpp
+  unit/d3d12_xs_root_test.cpp
+  unit/d3d12_xs_descriptor_test.cpp
+  unit/d3d12_xs_resource_test.cpp
+  unit/d3d12_xs_sampler_test.cpp
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/console.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/device.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/dxgi.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/fence.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/frame.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/later.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/object.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/query.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/resource.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/root.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/sampler.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/signature.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/graphics_object.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/device.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/objects.cpp"
@@ -85,6 +107,7 @@ target_include_directories(g6shim_tests PRIVATE
   "${PROJECT_SOURCE_DIR}/hle/kernelx"
   "${PROJECT_SOURCE_DIR}/hle/d3d11_x"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x"
+  "${PROJECT_SOURCE_DIR}/hle"
   "${PROJECT_SOURCE_DIR}/hle/xg_x"
   "${PROJECT_SOURCE_DIR}/hle/xmem"
   "${PROJECT_SOURCE_DIR}/hle/chad"

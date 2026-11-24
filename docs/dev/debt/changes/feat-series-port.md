@@ -155,3 +155,47 @@
 
 - `g6shim-shader` guesses a packed record's name from the graphic bytes before its NUL and leaves the record unnamed when no length byte matches.
   Closes when: the archive's name table is decoded.
+
+# d3d12_xs
+
+## add Silent stubs
+
+- `ScheduleFrameEventX` returns `S_OK` without scheduling anything: every event kind happens once per tick.
+- `GetFrameStatisticsX` returns no statistics.
+- `CreateQueryHeap` keeps its description; no query produces a result while no GPU work runs.
+- Render target and depth views are records in descriptor memory only; no host view exists yet.
+- `CreateSamplerX` stores the console's 27-word description; it is not turned into a host sampler yet.
+- `D3D12ConfigureVirtualMemoryX` logs its inputs and ignores them beyond reporting the user address range.
+
+## add Unknown function info
+
+- Device slots 0x230 and 0x238 take a resource description and a view description for memory the title placed; their argument order is inferred from call sites.
+- Device slots 0x250 and 0x258 are page pools: `(address in 64 KiB pages, page count, handle out)` and `(handle)`.
+- Device slot 0x3f8 is the enhanced-barrier committed-resource creation; its castable-format arguments are not decoded.
+- Device slot 0x428 creates a resource over a title address: `(address, description, initial layout, clear value, iid, out)`.
+- Device slot 0x360 is `GetResourceAllocationInfo2`: the plain description plus a sampler-feedback mip region, and a per-resource placement out.
+- The console sampler description's word indices come from observation: filters at 1-3, mode at 5, address at 6-8, LODs at 9-10, bias at 11, anisotropy at 13, compare at 16, border at 17-20.
+- The interface version `0x20004` and the `ID3D12Device11` creation interface are the only layout signs observed.
+
+## add Functional
+
+- Command queues, command allocators, command lists and pipeline states (device slots 8-12, 48, 62, 73 and 86) return `E_NOTIMPL` and log once until the host GPU parts fill them.
+- Resources have no host GPU copy: buffers are not shadowed, textures are not uploaded, and no host transitions happen.
+- Descriptor heap writes are not mirrored into a host heap; the shader-visible heap hooks do nothing.
+- Committed resources take the title's memory with guessed allocation attributes (2 MiB pages from 2 MiB, alignment as log2, write-combined unless the heap is the default one).
+- The page mapper is not registered; copies that map pages (command queues) are not implemented yet.
+- Title memory remaps reach an observer that does nothing yet.
+- Texture sizes come from the GFX10 layout engine, which omits compression metadata planes (HTILE, CMASK, FMASK, DCC).
+- The adapter reports the title's memory split rather than measured memory, and its name is g6shim's.
+- The display mode list is one fixed 3840x2160 60 Hz mode.
+- `CheckFeatureSupport` says every use of every format is supported, and reports one quality level for 1, 2, 4 and 8 samples.
+- Views of memory without a resource object are kept for the run; a resource's views go stale when it is released.
+- A descriptor placement after the heap description is recognised only by its size matching the descriptor count.
+- A blocking fence wait (null event) returns `E_NOTIMPL` instead of waiting.
+- Root signature console flags (bits 24-31) are dropped; serialization and deserialization call the host's `d3d12.dll`.
+- The device treats creation as `ID3D12Device11` as the sign of the newer command list and queue layouts.
+- Only the first out-of-line flag word is set; which inline device calls it enables is not known.
+- Root signature blobs are kept but not translated; pipeline state creation uses their host form later.
+- The title's allocation hooks are used only when `xmem.dll` is loaded with `XMemAlloc`/`XMemFree`; otherwise resource memory comes from g6shim's own allocator.
+- Host GPU failure reporting is not installed: there is no host device in this part.
+- The resource area's host-upload test is not ported: it needs command lists, queues and the host GPU from later parts.

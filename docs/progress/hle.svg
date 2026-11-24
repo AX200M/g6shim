@@ -39,12 +39,14 @@
 <rect x="254" y="52" width="8" height="8" fill="#d29922"/>
 </g>
 <text x="14" y="71">d3d12_xs.dll</text>
-<text x="217" y="71" text-anchor="end">0/4</text>
+<text x="217" y="71" text-anchor="end">6/6</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="64" width="8" height="8" fill="#d29922"/>
-<rect x="236" y="64" width="8" height="8" fill="#d29922"/>
-<rect x="245" y="64" width="8" height="8" fill="#d29922"/>
-<rect x="254" y="64" width="8" height="8" fill="#d29922"/>
+<rect x="227" y="64" width="8" height="8" fill="#2ea043"/>
+<rect x="236" y="64" width="8" height="8" fill="#2ea043"/>
+<rect x="245" y="64" width="8" height="8" fill="#2ea043"/>
+<rect x="254" y="64" width="8" height="8" fill="#2ea043"/>
+<rect x="263" y="64" width="8" height="8" fill="#2ea043"/>
+<rect x="272" y="64" width="8" height="8" fill="#2ea043"/>
 </g>
 <text x="14" y="83">EtwPlus.dll</text>
 <text x="217" y="83" text-anchor="end">0/4</text>
