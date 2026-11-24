@@ -1,0 +1,37 @@
+# Authors
+
+g6shim is written by gookie and its contributors, listed below with the GitHub names they use.
+
+Parts of g6shim are ported from other projects licensed under the GPL-3.0-or-later. The people who wrote that code hold the copyright to it and are listed by area.
+
+## Contributors
+
+- gookie
+
+## Ported code
+
+### Console API modules, shader translator and graphics (`hle/`, `src/shader/`, `src/tools/shader/`)
+
+- Andrea Casale
+- alessiodeia
+- artor410
+- BaggyALPHA
+- Duff
+- Exorion
+- FIocker
+- ifBars
+- Jeremy Goldberg
+- julio
+- LaunchDoesntCode
+- lordon1a
+- LUIS LARIOS
+- Manuel Pérez
+- Maraco91
+- Marvis
+- meower
+- Nostyxx
+- tedin7
+- TG0000
+- Vanthys
+- Yaekai
+- 9hvn9yt2vk-netizen

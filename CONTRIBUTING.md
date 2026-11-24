@@ -8,6 +8,8 @@ By contributing you declare that your work comes only from public documentation,
 
 Contributions are licensed under GPL-3.0-or-later. New source files start with the same two SPDX lines as the others.
 
+Code ported from another GPL-3.0-or-later project keeps its authors' credit: add them to `AUTHORS` under the area the code lands in, with the names from that project's history. Do not name the project itself.
+
 ## Setup
 
 ```bat

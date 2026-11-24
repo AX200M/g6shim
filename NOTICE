@@ -10,3 +10,6 @@ version. The GNU General Public License is in LICENSE.
 g6shim is distributed in the hope that it will be useful, but WITHOUT ANY
 WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
 PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+Parts of g6shim are ported from other projects licensed under the GPL-3.0-or-later.
+The authors of that code hold its copyright and are listed in AUTHORS.
