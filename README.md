@@ -26,7 +26,7 @@ g6shim runs games made for the Xbox One and Xbox Series X|S consoles on Windows 
 
 ## Progress
 
-**Target: the Series title 7952987A.** It starts, opens all its archives and stops where graphics begin (`D3D12XboxCreateDevice`). Next milestone: **the first frame**.
+**Target: the Series title 7952987A.** It starts, opens all its archives and renders about 12 frames per second up to its account picker. Next milestone: **an offline user, then the main menu**.
 
 | | Area | Progress |
 |:-:|---|---|
