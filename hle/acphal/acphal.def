@@ -7,3 +7,5 @@ EXPORTS
     ApuFree=g6shim_stub_4
     ApuIsVirtualAddressValid=g6shim_stub_5
     ApuMapVirtualAddress=g6shim_stub_6
+    ApuCreateHeap=g6shim_stub_7
+    ApuMapApuAddress=g6shim_stub_8

@@ -7,3 +7,9 @@ EXPORTS
     XMemGetWorkingSetStatistics=g6shim_stub_2
     XMemMapPhysicalPages=g6shim_stub_3
     XMemVirtualAlloc=g6shim_stub_4
+    XMemAllocDefault=g6shim_stub_5
+    XMemFreeDefault=g6shim_stub_6
+    XMemIsToolsMemAvailable=g6shim_stub_7
+    XMemMapPhysicalPagesScatter=g6shim_stub_8
+    XMemTransferMemory=g6shim_stub_9
+    XMemVirtualQuery=g6shim_stub_10

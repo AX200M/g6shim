@@ -1,0 +1,4 @@
+LIBRARY "xg_xs.dll"
+EXPORTS
+    XGCreateTextureComputer=g6shim_stub_0
+    XGSuggestSwizzleMode=g6shim_stub_1

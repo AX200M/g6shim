@@ -1,0 +1,7 @@
+LIBRARY "xapu.dll"
+EXPORTS
+    XApuConnect=g6shim_stub_0
+    XApuDequeueResult=g6shim_stub_1
+    XApuDisconnect=g6shim_stub_2
+    XApuEnqueueCommand=g6shim_stub_3
+    XApuGetResultCount=g6shim_stub_4

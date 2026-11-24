@@ -1,0 +1,6 @@
+LIBRARY "d3d12_xs.dll"
+EXPORTS
+    D3D12ConfigureVirtualMemoryX=g6shim_stub_0
+    D3D12CreateRootSignatureDeserializer=g6shim_stub_1
+    D3D12SerializeVersionedRootSignature=g6shim_stub_2
+    D3D12XboxCreateDevice=g6shim_stub_3

@@ -1,0 +1,7 @@
+LIBRARY "chad.dll"
+EXPORTS
+    XDspActivate=g6shim_stub_0
+    XDspConnectWithMaximumStreamLimit=g6shim_stub_1
+    XDspDeactivate=g6shim_stub_2
+    XDspDisconnect=g6shim_stub_3
+    XDspSubmitCommand=g6shim_stub_4
