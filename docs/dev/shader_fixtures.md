@@ -28,3 +28,7 @@ python tools/gfx10_fixtures.py --llvm-mc <path to llvm-mc.exe>
 The script assembles each program with `-triple=amdgcn-amd-amdpal -mcpu=gfx1030`, takes the `.text` section of the object and writes the words in file-name order. `--check` exits 1 when the committed words are stale; `LLVM_MC` can name the tool instead of `--llvm-mc`.
 
 3. Commit the `.s` file and the regenerated `.inc` together.
+
+## 64-bit image atomics
+
+`tests/gfx10/image64/*.s` are compute programs whose rule is one 64-bit image atomic. The frame loads an 8-dword image descriptor from the table at user data 4 and uses `s0`-`s3` as coordinates and data. `tests/unit/image64_fixtures.inc` holds the words. The same `python tools/gfx10_fixtures.py` command regenerates that file when the directory is present. `shader_image_atomic64_translates_and_validates` lowers each program with an 8-dword UAV and checks the container.

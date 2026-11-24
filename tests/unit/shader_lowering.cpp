@@ -42,14 +42,14 @@ RootParam root_param(RootType::Kind kind, std::uint8_t user_data, std::uint8_t s
     return param;
 }
 
-UsedResource used_uav(std::uint8_t user_data, std::uint8_t slot) {
+UsedResource used_uav(std::uint8_t user_data, std::uint8_t slot, std::uint8_t dwords) {
     UsedResource used;
     used.kind = ResourceType{ResourceType::Kind::Uav, 0};
     used.root = RootType{RootType::Kind::Table, 0};
     used.table_offset_dwords = 0;
     used.lower_bound = 0;
     used.stride = 0;
-    used.dwords = 4;
+    used.dwords = dwords;
     used.user_data = user_data;
     used.slot = slot;
     return used;

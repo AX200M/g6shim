@@ -16,7 +16,7 @@ std::vector<std::uint8_t> bytes_of(const std::vector<std::uint32_t>& words);
 
 shader::RootParam root_param(shader::RootType::Kind kind, std::uint8_t user_data, std::uint8_t slot);
 
-shader::UsedResource used_uav(std::uint8_t user_data, std::uint8_t slot);
+shader::UsedResource used_uav(std::uint8_t user_data, std::uint8_t slot, std::uint8_t dwords = 4);
 
 shader::emit::Lowered lower_compute(const std::vector<std::uint32_t>& words, std::uint16_t vgprs,
                                     const std::vector<shader::RootParam>& layout,

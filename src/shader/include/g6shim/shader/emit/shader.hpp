@@ -26,6 +26,8 @@ inline constexpr std::uint64_t kStencilRef = 1ull << 11;
 inline constexpr std::uint64_t kTypedUavLoads = 1ull << 13;
 inline constexpr std::uint64_t kWaveOps = 1ull << 19;
 inline constexpr std::uint64_t kInt64 = 1ull << 20;
+inline constexpr std::uint64_t kAtomicInt64OnTypedResource = 1ull << 27;
+inline constexpr std::uint64_t kAtomicInt64OnHeapResource = 1ull << 32;
 inline constexpr std::uint64_t kResourceHeap = 1ull << 30;
 inline constexpr std::uint64_t kSamplerHeap = 1ull << 31;
 

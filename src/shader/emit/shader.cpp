@@ -29,6 +29,8 @@ constexpr std::uint32_t kFeatureWaveOps = 0x4000;
 constexpr std::uint32_t kFeatureInt64 = 0x8000;
 constexpr std::uint32_t kFeatureResourceHeap = 0x200'0000;
 constexpr std::uint32_t kFeatureSamplerHeap = 0x400'0000;
+constexpr std::uint32_t kFeatureAtomicInt64OnTypedResource = 0x400000;
+constexpr std::uint32_t kFeatureAtomicInt64OnHeapResource = 0x10000000;
 constexpr std::uint32_t kComparisonSampler = 0x8000;
 constexpr std::uint32_t kUnallocatedRow = UINT32_MAX;
 
@@ -375,6 +377,10 @@ std::vector<std::uint8_t> Shader::finish() {
     if ((flags & feature::kInt64) != 0) features |= kFeatureInt64;
     if ((flags & feature::kResourceHeap) != 0) features |= kFeatureResourceHeap;
     if ((flags & feature::kSamplerHeap) != 0) features |= kFeatureSamplerHeap;
+    if ((flags & feature::kAtomicInt64OnTypedResource) != 0)
+        features |= kFeatureAtomicInt64OnTypedResource;
+    if ((flags & feature::kAtomicInt64OnHeapResource) != 0)
+        features |= kFeatureAtomicInt64OnHeapResource;
     std::array<std::uint8_t, 8> sfi0{};
     for (std::size_t i = 0; i < sfi0.size(); ++i) sfi0[i] = static_cast<std::uint8_t>(features >> (8 * i));
     const std::vector<std::uint8_t> isg1 = signature(inputs, true);

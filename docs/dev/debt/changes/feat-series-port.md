@@ -126,7 +126,7 @@
   Closes when: a packed operation uses one half of such a constant.
 - Image stores are taken to write all four channels of a float format; other mask patterns stop the translation.
   Closes when: a title stores fewer channels.
-- 64-bit image and buffer atomics stop the translation.
+- 64-bit buffer atomics stop the translation.
   Closes when: a title uses one.
 - `d16` image and buffer results and stores are taken as floats; integer 16-bit formats would keep 16 bits.
   Closes when: a title uses an integer 16-bit format.
