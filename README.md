@@ -38,7 +38,7 @@ g6shim runs games made for the Xbox One and Xbox Series X|S consoles on Windows 
 | 🔨 | Shaders | `▰▰▰▰▰▰▰▱▱▱ 75 %` |
 | 🔨 | Graphics · `d3d12_xs` | `▰▰▰▰▱▱▱▱▱▱ 40 %` |
 | 🔨 | Runtime services | `▰▰▰▱▱▱▱▱▱▱ 35 %` |
-| ⬜ | Ray tracing | `▱▱▱▱▱▱▱▱▱▱ 0 %` |
+| 🔨 | Ray tracing | `▱▱▱▱▱▱▱▱▱▱ 0 %` |
 
 ✅ works · 🔨 in progress · ⬜ not started
 
@@ -55,7 +55,7 @@ g6shim runs games made for the Xbox One and Xbox Series X|S consoles on Windows 
 | Shaders | Decoding, containers, SSA, lane structurisation, resource and I/O tracking, DXIL emission for vertex, pixel, compute and mesh shaders | Checking the whole shader set; 64-bit image atomics, merged geometry stages |
 | Graphics · `d3d12_xs` | Device creation, DXGI adapter, fences, heaps and resources, descriptor heaps, root signatures, samplers, queries, frame pacing; the host D3D12 device, host descriptor heaps, copies of title buffers, write tracking, texture uploads | Command queues and lists, draws, pipelines |
 | Runtime services | The PC's own XGameRuntime starts; the package drive `G:\` for titles that call Windows file functions directly | Persistent storage drive, saves, input and lifecycle where the title needs them |
-| Ray tracing | – | Acceleration structures in the console's BVH layout |
+| Ray tracing | Acceleration-structure builder in the console's BVH4 layout: compute-shader builds, refits, copies and sizes, checked against a CPU reference | Calls from the command list; procedural geometry |
 
 </details>
 

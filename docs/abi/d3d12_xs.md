@@ -214,3 +214,113 @@ Wait flag 2 makes a token when the wait times out. The token counts frames; tick
 | Export | Signature |
 |---|---|
 | `g6shim_xmem_map_alias` | `BOOL (uintptr_t to, uintptr_t from, size_t bytes)`; maps title physical pages at `from` (zero: unmaps) |
+
+## Ray-tracing acceleration structures
+
+Translated ray-tracing shaders walk acceleration structures themselves, so a build writes the console's BVH4 records, not a host acceleration structure. `hle/d3d12_xs/bvh/` builds them with compute shaders. Every record offset counts from the structure's start, so a structure can be copied byte for byte.
+
+### Build inputs
+
+`BuildRaytracingAccelerationStructure` takes the public `D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC` (0x30 bytes) as the first part of the console's batched description (0x50 bytes):
+
+| Offset | Bytes | Field |
+|---|---|---|
+| 0x00 | 8 | destination address; 256-byte aligned |
+| 0x08 | 24 | inputs: type (0 top level, 1 bottom level, others refused), flags, count, layout, descriptions |
+| 0x20 | 8 | source address (updates) |
+| 0x28 | 8 | scratch address |
+| 0x30 | 4 | postbuild description count |
+| 0x38 | 8 | postbuild descriptions (16 bytes each) |
+| 0x40 | 16 | stream description: size, pointer to 16-byte records |
+
+| Flag | Effect |
+|---|---|
+| 0x01 `ALLOW_UPDATE` | the structure can be refitted; sibling triangles are not paired |
+| 0x04 `MINIMIZE_MEMORY` | bottom level: inner nodes are BOX16 |
+| 0x20 `PERFORM_UPDATE` | refit the source (or the destination) to new positions; needs `ALLOW_UPDATE` |
+
+Prebuild sizes depend only on the element count (triangles or instances), the level and the node kind: the result has room for the most nodes a tree of that many elements can hold, `(3n - 2) / 4` for `n > 1`, one otherwise. Update scratch equals build scratch. Postbuild `COMPACTED_SIZE` (0) and `CURRENT_SIZE` (3) both report `64 * (totalSizeIn64BNodes + 1)`; type `0x10` (offline statistics) is refused with `E_INVALIDARG`.
+
+### Regions
+
+| Region | Offset | Size |
+|---|---|---|
+| header | 0 | 64 |
+| parent table | 64 | one `UINT32` per 64-byte unit from the elements on, rounded up to 64 bytes |
+| elements | after the parent table | 64 per triangle leaf, 128 per instance |
+| nodes | after the elements | 128 per BOX32 node, 64 per BOX16 node; a BOX16 structure ends with one zeroed spare unit |
+
+### Header (64 bytes)
+
+| Offset | Field |
+|---|---|
+| 0x00 | flags: `0x80000000` bottom level, low bits the version 6 |
+| 0x04 | `totalSizeIn64BNodes`: size in 64-byte units, not counting the header |
+| 0x08 | crc32; 0 for runtime builds |
+| 0x0C | element count |
+| 0x10 | bounds: min x y z, max x y z (floats) |
+| 0x28 | offset of the nodes |
+| 0x2C | offset of the primitive remap; 0 |
+| 0x30 | root node pointer |
+| 0x34 | offset of the elements |
+| 0x38 | offset of the parent table |
+| 0x3C | compression parameters; 0 |
+
+### Node pointers
+
+A pointer is `(offset / 64) << 3 | type`; `0xFFFFFFFF` is no child.
+
+| Type | Record |
+|---|---|
+| 0 TRI0 | triangle leaf, vertex slots 0, 1, 2 |
+| 1 TRI1 | the same leaf, vertex slots 1, 3, 2 |
+| 2 TRI2, 3 TRI3 | not written |
+| 4 BOX16 | 64-byte node with half-float boxes |
+| 5 BOX32 | 128-byte node with float boxes |
+| 6 INSTANCE | 128-byte instance record |
+| 7 AABB | not written |
+
+### Triangle leaf (64 bytes)
+
+| Offset | Field |
+|---|---|
+| 0x00 | four vertex slots, 12 bytes each (x y z floats) |
+| 0x30 | geometry index << 8 \| geometry flags (bit 0 opaque) |
+| 0x34 | primitive index of TRI0 |
+| 0x38 | primitive index of TRI1, `0xFFFFFFFF` without one |
+| 0x3C | barycentric remap: byte 0 for TRI0, byte 1 for TRI1; bits 1:0 and 3:2 are the slots of the triangle's vertices 1 and 2; 0x09 is the identity |
+
+A triangle with a NaN coordinate, or an index at or past the vertex count, is inactive: its box is empty and no ray reaches it. A paired TRI1 shares an edge with its TRI0 in the opposite direction, comes from the same geometry, and sits under the same node.
+
+### Instance record (128 bytes)
+
+| Offset | Field |
+|---|---|
+| 0x00 | object-to-world 3x4 row-major |
+| 0x30 | instance id (24 bits) \| mask << 24 |
+| 0x34 | contribution (24 bits) \| flags << 24 |
+| 0x38 | BLAS root pointer; bit 31 set when the rotation is the identity, bit 30 scaled local space |
+| 0x3C | BLAS address >> 8, as the title wrote it |
+| 0x40 | world-to-object 3x4 row-major; zero when the transform is singular |
+| 0x70 | instance index |
+| 0x74 | parent node pointer |
+| 0x78 | 8 zero bytes |
+
+An instance with mask 0, no BLAS or a singular transform has an empty box.
+
+### Box nodes
+
+| Node | Bytes | Layout |
+|---|---|---|
+| BOX32 | 128 | four child pointers, four boxes of six floats (min x y z, max x y z), 16 zero bytes |
+| BOX16 | 64 | four child pointers, four boxes of three words: min x \| min y << 16, min z \| max x << 16, max y \| max z << 16 |
+
+An unused child slot holds `0xFFFFFFFF` and an empty box (min `+inf`, max `-inf`). BOX16 halves round outward: minima toward `-inf`, maxima toward `+inf`; values past the half range become `±inf` outward and `±65504` inward, and magnitudes below `2^-14` become 0 or `±2^-14`, never a denormal.
+
+### Parent table
+
+Entry `u` holds the pointer of the node whose child starts at 64-byte unit `u` counted from the elements' offset; the root's entry and units that start no record hold `0xFFFFFFFF`.
+
+### Host bindings
+
+The builder binds memory through root unordered-access views at `host_base + console address`, so every buffer it reads or writes (destination, scratch, source, vertex, index and transform buffers, instance descriptions and the bottom-level structures they name) must be in the unordered-access state. A bottom-level structure named by an instance is read through one view at `host_base`, so its console address must lie below 4 GiB and inside the address space; otherwise the instance has no BLAS. A build replaces the command list's compute root signature, pipeline and root arguments.
