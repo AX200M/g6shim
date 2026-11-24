@@ -64,6 +64,7 @@ Each forwarder re-exports the whole DLL it replaces: names it does not translate
 | `G6SHIM_D3D_DRED=1` | Record GPU progress and page faults, so the log says where the GPU stopped when the device is removed. The reason for a removal is logged without it. |
 | `G6SHIM_INPUT_AUTOPRESS=6:Menu,9:A` | Hold buttons for 0.2 s at those seconds after the first controller read. Buttons: `Menu View A B X Y Up Down Left Right`. |
 | `G6SHIM_BCPACK_TABLES=<path>` | BCPack constant tables for DirectStorage texture decompression. Default: `bcpack-tables.bin` next to `XCRDAPI.dll`. Without a table file BCPack requests fail; zlib and plain requests still run. |
+| `G6SHIM_DXIL=<path>` | `dxil.dll` the shader translator and its tests validate and sign DXIL with. Default: the newest `Windows Kits\10\bin\<version>\x64\dxil.dll`. Without one the validator tests are skipped; when the variable is set and the file cannot be loaded, they fail. CI sets it to the Windows SDK's copy. |
 | `G6SHIM_CACHE_DIR=<folder>` | Folder for translated shaders and compiled host pipelines. Default `%LOCALAPPDATA%\g6shim\cache\<title ID or exe name>`. |
 
 ## Caches

@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <limits>
@@ -156,6 +157,7 @@ void check_dxil(const std::vector<std::uint8_t>& dxil, const char* label) {
     CHECK(container.part(kDxil) != nullptr);
     std::optional<Validator> validator = load_validator();
     if (!validator) {
+        CHECK(std::getenv("G6SHIM_DXIL") == nullptr);
         std::printf("no dxil.dll; validation skipped for %s\n", label);
         return;
     }
