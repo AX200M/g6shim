@@ -71,8 +71,8 @@
 
 ## add Functional
 
-- `G:` is mounted on the folder of the executable and persistent local storage on a free letter; the console's `T:\` temporary drive has no mount, and no title-facing call reports the persistent storage drive yet.
-  Closes when: the temporary folder has a drive and the persistent storage functions report theirs.
+- `G:` is mounted on the folder of the executable, persistent local storage on a free letter and the temporary drive on `T:`, but no title-facing call reports the persistent storage drive yet.
+  Closes when: the persistent storage functions report their drive.
 - The forwarders translate only the functions listed in `docs/abi/g6shim_file.md`. The other path-taking exports of the replaced DLLs stay plain forwarders: in the file sets `FindFirstFileA`, `GetDiskFreeSpaceA`, `GetFileAttributesExA`, `RemoveDirectoryA`, `GetTempFileNameW`, `GetDriveTypeA/W`, `GetLongPathNameA/W`, `GetShortPathNameW`, `GetVolumeInformationW`, `CopyFileExW`, `CreateDirectoryExW`, `CreateHardLinkW`, `CreateSymbolicLinkW`, `MoveFileWithProgressW`, `ReplaceFileW`; in the CRT `_access`, `_chdir`, `_chmod`, `_rmdir`, `_stat64`, `_waccess`, `_wchdir`, `_wrename`, `rename`, `_fullpath`, `_popen`, `_sopen`, `freopen` and every crt-time path call but `_wutime64`.
   Closes when: the remaining path-taking exports are translated too.
 - `api-ms-win-core-processenvironment-l1-1-0.dll`, `api-ms-win-core-file-l1-2-0.dll` and the other contracts a GDK title may import path functions from are not replaced. Only `kernel32.dll`'s copies of `SetCurrentDirectoryA/W` and the file API set's copies of the file functions are translated; an import that binds to a different contract reaches Windows untranslated.

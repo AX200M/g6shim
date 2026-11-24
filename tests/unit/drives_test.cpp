@@ -9,6 +9,8 @@
 #include <io.h>
 
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -18,6 +20,7 @@ using g6shim::drives::mount_drive_at;
 using g6shim::drives::on_drive;
 using g6shim::drives::translate;
 using g6shim::drives::persistent_storage_drive;
+using g6shim::drives::temporary_storage_drive;
 using g6shim::drives::translate_package;
 
 namespace {
@@ -395,4 +398,108 @@ TEST(drives_mount_persistent_storage_on_a_free_letter) {
     moved_drive += L":\\a";
     CHECK(is(translate(moved_drive.c_str()), root + L"\\a"));
     RemoveDirectoryW(root.c_str());
+}
+
+namespace {
+
+constexpr wchar_t kTemporaryChildVariable[] = L"G6SHIM_TEST_TEMPORARY_CHILD";
+constexpr char kTemporaryChildTest[] = "drives_temporary_storage_child";
+constexpr char kTemporaryRootLine[] = "temporary root: ";
+constexpr DWORD kChildTimeoutMs = 30000;
+
+std::wstring drive_root(int letter) {
+    std::wstring spec(1, static_cast<wchar_t>(letter));
+    spec += L":";
+    const auto root = translate(spec.c_str());
+    return root ? *root : std::wstring{};
+}
+
+std::wstring widen(const std::string& text) { return std::wstring(text.begin(), text.end()); }
+
+bool folder_exists(const std::wstring& path) {
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
+std::string run_child(DWORD* exit_code) {
+    SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+    HANDLE read_end = nullptr;
+    HANDLE write_end = nullptr;
+    if (!CreatePipe(&read_end, &write_end, &inherit, 0)) return {};
+    SetHandleInformation(read_end, HANDLE_FLAG_INHERIT, 0);
+    wchar_t exe[MAX_PATH] = L"";
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring command = L"\"" + std::wstring(exe) + L"\" " + widen(kTemporaryChildTest);
+    STARTUPINFOW startup{};
+    startup.cb = sizeof startup;
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdOutput = write_end;
+    startup.hStdError = write_end;
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    PROCESS_INFORMATION process{};
+    SetEnvironmentVariableW(kTemporaryChildVariable, L"1");
+    const BOOL started =
+        CreateProcessW(exe, command.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process);
+    SetEnvironmentVariableW(kTemporaryChildVariable, nullptr);
+    CloseHandle(write_end);
+    std::string output;
+    if (started) {
+        char buffer[512];
+        DWORD read = 0;
+        while (ReadFile(read_end, buffer, sizeof buffer, &read, nullptr) && read > 0) output.append(buffer, read);
+        WaitForSingleObject(process.hProcess, kChildTimeoutMs);
+        GetExitCodeProcess(process.hProcess, exit_code);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+    }
+    CloseHandle(read_end);
+    return output;
+}
+
+}  // namespace
+
+TEST(drives_temporary_storage_child) {
+    if (GetEnvironmentVariableW(kTemporaryChildVariable, nullptr, 0) == 0) return;
+    const int letter = temporary_storage_drive();
+    CHECK(letter != 0);
+    const std::wstring root = drive_root(letter);
+    std::wstring probe(1, static_cast<wchar_t>(letter));
+    probe += L":\\nested\\probe.bin";
+    CHECK(CreateDirectoryW((root + L"nested").c_str(), nullptr));
+    const auto host = translate(probe.c_str());
+    CHECK(host.has_value());
+    const HANDLE file = host ? CreateFileW(host->c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, 0, nullptr)
+                             : INVALID_HANDLE_VALUE;
+    CHECK(file != INVALID_HANDLE_VALUE);
+    if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+    std::printf("%s%ls\n", kTemporaryRootLine, root.c_str());
+}
+
+TEST(drives_mount_temporary_storage_and_remove_it_on_exit) {
+    const bool t_taken = ((GetLogicalDrives() >> (L'T' - L'A')) & 1u) != 0 || translate(L"T:").has_value();
+    const int letter = temporary_storage_drive();
+    CHECK(letter != 0);
+    CHECK(letter != L'G');
+    if (!t_taken) CHECK(letter == L'T');
+    const std::wstring root = drive_root(letter);
+    CHECK(folder_exists(root));
+    CHECK(root.find(L"g6shim_temp_") != std::wstring::npos);
+    std::wstring file(1, static_cast<wchar_t>(letter));
+    file += L":\\a\\b.bin";
+    CHECK(is(translate(file.c_str()), root + L"a\\b.bin"));
+    CHECK(temporary_storage_drive() == letter);
+    CHECK(drive_root(letter) == root);
+
+    DWORD exit_code = 1;
+    const std::string output = run_child(&exit_code);
+    CHECK(exit_code == 0);
+    const std::size_t at = output.find(kTemporaryRootLine);
+    CHECK(at != std::string::npos);
+    if (at == std::string::npos) return;
+    const std::size_t start = at + std::strlen(kTemporaryRootLine);
+    const std::size_t end = output.find_first_of("\r\n", start);
+    const std::wstring child_root = widen(output.substr(start, end - start));
+    CHECK(!child_root.empty());
+    CHECK(child_root != root);
+    CHECK(!folder_exists(child_root));
 }
