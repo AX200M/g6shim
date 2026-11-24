@@ -482,9 +482,9 @@
 <rect x="256" y="208" width="8" height="8" fill="#2ea043"/>
 </g>
 <text x="14" y="227">XCRDAPI.dll</text>
-<text x="210" y="227" text-anchor="end">0/1</text>
+<text x="210" y="227" text-anchor="end">1/1</text>
 <g shape-rendering="crispEdges">
-<rect x="220" y="220" width="8" height="8" fill="#d29922"/>
+<rect x="220" y="220" width="8" height="8" fill="#2ea043"/>
 </g>
 <text x="14" y="239">XFrontPanelDisplay.dll</text>
 <text x="210" y="239" text-anchor="end">0/6</text>

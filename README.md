@@ -34,7 +34,7 @@ g6shim runs games made for the Xbox One and Xbox Series X|S consoles on Windows 
 | ✅ | Memory · `xmem` | `▰▰▰▰▰▰▰▰▰▱ 95 %` |
 | ✅ | Audio · `AcpHal` `xapu` `chad` | `▰▰▰▰▰▰▰▰▱▱ 80 %` |
 | ✅ | Textures · `xg_xs` | `▰▰▰▰▰▰▰▰▱▱ 85 %` |
-| 🔨 | Storage · `XCRDAPI` | `▱▱▱▱▱▱▱▱▱▱ 0 %` |
+| ✅ | Storage · `XCRDAPI` | `▰▰▰▰▰▰▰▰▱▱ 85 %` |
 | 🔨 | Shaders | `▰▰▰▰▱▱▱▱▱▱ 40 %` |
 | ⬜ | Graphics · `d3d12_xs` | `▱▱▱▱▱▱▱▱▱▱ 0 %` |
 | 🔨 | Runtime services | `▰▰▱▱▱▱▱▱▱▱ 20 %` |
@@ -51,7 +51,7 @@ g6shim runs games made for the Xbox One and Xbox Series X|S consoles on Windows 
 | Memory · `xmem` | All functions: the title's allocation hooks, address ranges, 64 KiB physical pages, budgets | GPU-side page mapping |
 | Audio · `AcpHal` `xapu` `chad` | Coprocessor queues, APU memory, shape contexts, XMA2 decoding, Opus and DSP queues | Opus decoding, DSP transforms, SHAPE units other than XMA |
 | Textures · `xg_xs` | Tiled layouts of the Series GPU, texture computer, tiled and linear copies | XOR and MSAA addressing, metadata planes |
-| Storage · `XCRDAPI` | – | DirectStorage queues, BCPack decompression |
+| Storage · `XCRDAPI` | DirectStorage factory, files, queues and status arrays; zlib and BCPack decompression | BCPack needs the format tables supplied by the user (`G6SHIM_BCPACK_TABLES`); some interface slots |
 | Shaders | Decoding, containers, SSA, lane structurisation, resource and I/O tracking | DXIL emission, the whole shader set |
 | Graphics · `d3d12_xs` | – | Device, resources, descriptors, command lists, pipelines, presentation |
 | Runtime services | The PC's own XGameRuntime starts | Package paths, saves, input and lifecycle where the title needs them |
@@ -68,7 +68,7 @@ Each square is one function: green implemented, blue forwarded, amber stubbed, g
 
 ![7952987A shader coverage](docs/progress/7952987A.shaders.svg)
 
-34/39 functions implemented, 0 forwarded, 5 stubbed, 0 missing; shaders: no data yet.
+35/39 functions implemented, 0 forwarded, 4 stubbed, 0 missing; shaders: no data yet.
 
 ![Replacement DLL coverage](docs/progress/hle.svg)
 <!-- progress:end -->

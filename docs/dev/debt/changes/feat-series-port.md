@@ -38,3 +38,22 @@
   Closes when: a title is seen addressing more than 4 GB past a root parameter.
 - Copy propagation folds constants only through `s_mov_b32`, `s_movk_i32`, `s_mov_b64`, `s_brev_b32` and `s_not_b32`; a descriptor or address built from a constant made any other way is not traced.
   Closes when: a title builds a descriptor constant with another instruction.
+
+# xcrdapi
+
+## add Build
+
+- BCPack texture decompression needs a constant table file: `G6SHIM_BCPACK_TABLES`, or `bcpack-tables.bin` next to `XCRDAPI.dll`; without it BCPack requests fail while zlib and plain requests run.
+
+## add Unknown function info
+
+- The queue description's last 8-byte field is logged, not interpreted.
+- Factory slots 0x00, 0x18, 0x30, 0x38, 0x48 and 0x58-0x78, file slots 0x18-0x50, status slot 0x00 and queue slots 0x28, 0x38 and 0x48-0x58 return `E_NOTIMPL` and log their offset.
+
+## add Functional
+
+- Only the factory interface `62959D11-D45F-4884-A0A3-F7862EA243AE` is answered; other interface ids return `E_NOINTERFACE`.
+- Requests with option bits 5-20 (a further transform) or bit 23 (a physical-page source) fail with `E_NOTIMPL`.
+- BCPack streams are unpacked one lane step at a time on one core.
+- BCPack BC2 streams are rejected.
+- zlib streams are decoded with the repository's inflater, which requires a complete dynamic tree and a matching Adler-32 trailer.

@@ -38,6 +38,8 @@ add_executable(g6shim_tests
   unit/xmem_statistics_test.cpp
   unit/acphal_test.cpp
   unit/xma_test.cpp
+  unit/bcpack_test.cpp
+  unit/xcrdapi_test.cpp
   unit/log_format_test.cpp
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/graphics_object.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/device.cpp"
@@ -64,7 +66,9 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/acphal/acp.cpp"
   "${PROJECT_SOURCE_DIR}/hle/acphal/hal.cpp"
   "${PROJECT_SOURCE_DIR}/hle/acphal/xma.cpp"
-  "${PROJECT_SOURCE_DIR}/hle/acphal/xma_voices.cpp")
+  "${PROJECT_SOURCE_DIR}/hle/acphal/xma_voices.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xcrdapi/bcpack.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xcrdapi/dstorage.cpp")
 target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim_shader g6shim::winrt d3d12 dxgi onecore)
 target_link_options(g6shim_tests PRIVATE "/EXPORT:__XMemAllocationHooks__,DATA")
 target_include_directories(g6shim_tests PRIVATE
@@ -77,6 +81,7 @@ target_include_directories(g6shim_tests PRIVATE
   "${PROJECT_SOURCE_DIR}/hle/chad"
   "${PROJECT_SOURCE_DIR}/hle/xapu"
   "${PROJECT_SOURCE_DIR}/hle/xg_xs"
+  "${PROJECT_SOURCE_DIR}/hle/xcrdapi"
   "${PROJECT_SOURCE_DIR}/runtime/src"
   "${PROJECT_SOURCE_DIR}/winrt")
 add_test(NAME unit COMMAND g6shim_tests)
