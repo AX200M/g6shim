@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
 # SPDX-License-Identifier: GPL-3.0-or-later
+g6shim_require_opus()
 add_executable(g6shim_tests
   unit/main.cpp
   unit/sample_pe.cpp
@@ -100,7 +101,7 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/acphal/xma_voices.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xcrdapi/bcpack.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xcrdapi/dstorage.cpp")
-target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim_shader g6shim::winrt d3d12 dxgi onecore)
+target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim_shader g6shim::winrt Opus::opus d3d12 dxgi onecore)
 target_link_options(g6shim_tests PRIVATE "/EXPORT:__XMemAllocationHooks__,DATA")
 target_include_directories(g6shim_tests PRIVATE
   "${PROJECT_SOURCE_DIR}/hle/acphal"

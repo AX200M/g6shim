@@ -13,3 +13,9 @@ PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 Parts of g6shim are ported from other projects licensed under the GPL-3.0-or-later.
 The authors of that code hold its copyright and are listed in AUTHORS.
+
+xapu.dll and the unit tests link libopus (https://opus-codec.org/),
+Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, Jean-Marc Valin,
+Timothy B. Terriberry, CSIRO, Gregory Maxwell, Mark Borgerding,
+Erik de Castro Lopo, Mozilla, Amazon, under the BSD 3-Clause licence in
+the libopus source (COPYING).

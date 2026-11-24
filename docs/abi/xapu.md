@@ -34,7 +34,7 @@ The console's audio decoder. A title connects once with a block of its memory, q
 
 | Offset | Field |
 |---|---|
-| +0x00 | `UINT32 kind`; 1 activate, 2 deactivate, 3 process, 4 notify, 5 reset |
+| +0x00 | `UINT32 kind`; 1 activate, 2 deactivate, 3 process, 4 notify, 5 reset (returns the stream's decoder to its starting state) |
 | +0x04 | `UINT32 stream`; below the connection's stream count |
 | +0x08 | `UINT32 sequence`; echoed in the result |
 | +0x0C | `UINT32 options`; value 1 signals the connection's event when the result is queued |
@@ -64,9 +64,9 @@ The console's audio decoder. A title connects once with a block of its memory, q
 | +0x28 | `UINT32 input_length`; bytes of the Opus packet |
 | +0x2C | `const UINT8* input` |
 | +0x34 | `UINT32 output_length`; bytes available at `output` |
-| +0x38 | `UINT8* output`; float samples, interleaved or deinterleaved per the connect options |
+| +0x38 | `UINT8* output`; 32-bit float samples, interleaved or deinterleaved per the connect options |
 
-The packet's duration at 48 kHz comes from its table-of-contents byte and frame count, and is at most 5760 frames (120 ms). The frames kept are the smaller of the command's `frame_count`, the frames left after `first_frame`, and `output_length / (4 * channels)`.
+The packet is decoded as one Opus packet (RFC 6716) at 48 kHz with the stream's channel count; its duration is at most 5760 frames (120 ms). The frames kept are the smaller of the command's `frame_count`, the frames left after `first_frame`, and `output_length / (4 * channels)`. Interleaved output stores the channels of each frame together; deinterleaved output stores all kept frames of channel 0, then all kept frames of channel 1. The stream's decoder state carries from one packet to the next until a reset or deactivate.
 
 ## Result (0x50 bytes)
 
@@ -90,7 +90,7 @@ The packet's duration at 48 kHz comes from its table-of-contents byte and frame 
 |---|---|
 | `0x80070057` | `E_INVALIDARG` |
 | `0x80004001` | `E_NOTIMPL`; processing kind not implemented |
-| `0x8007000E` | `E_OUTOFMEMORY`; decoder memory could not be allocated |
+| `0x8007000E` | `E_OUTOFMEMORY`; decoder memory or a stream's decoder could not be allocated |
 | `0x8AC81000` | the stream already holds `commands_per_stream` results |
 | `0x8AC81001` | no result queued yet; titles poll for it |
 | `0x8AC81002` | unknown command kind |

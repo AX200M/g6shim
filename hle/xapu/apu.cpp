@@ -7,14 +7,17 @@
 #include <g6shim/log.hpp>
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstring>
 #include <deque>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <utility>
 #include <vector>
+
+#include <opus.h>
 
 #include <malloc.h>
 
@@ -25,99 +28,30 @@ namespace {
 constexpr std::size_t kMemoryAlignment = 16;
 constexpr std::uint32_t kBytesPerSample = 4;
 constexpr float kUnityPitch = 1.0f;
+constexpr std::size_t kScratchSamples = static_cast<std::size_t>(kMaxFrames) * kMaxChannels;
 
-constexpr std::size_t kMaxFrameBytes = 1275;
-constexpr std::uint32_t kMaxPacketFrames = 48;
-constexpr std::uint8_t kTwoByteFrameLength = 252;
-constexpr std::uint8_t kPaddingContinues = 255;
-constexpr std::size_t kPaddingContinueBytes = 254;
-
-constexpr std::uint32_t kSilkFrameSamples[] = {480, 960, 1920, 2880};
-constexpr std::uint32_t kHybridFrameSamples[] = {480, 960};
-constexpr std::uint32_t kCeltFrameSamples[] = {120, 240, 480, 960};
-
-std::uint32_t frame_samples(std::uint8_t toc) {
-    const std::uint32_t config = toc >> 3;
-    if (config < 12) return kSilkFrameSamples[config & 3u];
-    if (config < 16) return kHybridFrameSamples[config & 1u];
-    return kCeltFrameSamples[config & 3u];
-}
-
-std::optional<std::uint32_t> packet_frame_count(const std::uint8_t* data, std::size_t length) {
-    if (length == 0) return std::nullopt;
-    const std::uint32_t code = data[0] & 3u;
-    if (code == 0) {
-        if (length - 1 > kMaxFrameBytes) return std::nullopt;
-        return 1u;
-    }
-    if (length < 2) return std::nullopt;
-    if (code == 1) {
-        if ((length - 1) % 2 != 0 || (length - 1) / 2 > kMaxFrameBytes) return std::nullopt;
-        return 2u;
-    }
-    if (code == 2) {
-        if (length < 3) return std::nullopt;
-        const std::size_t first = static_cast<std::size_t>(data[1]) | (static_cast<std::size_t>(data[2]) << 8);
-        if (first > kMaxFrameBytes || first > length - 3) return std::nullopt;
-        if (length - 3 - first > kMaxFrameBytes) return std::nullopt;
-        return 2u;
-    }
-    const std::uint32_t count = data[1] & 0x3Fu;
-    if (count == 0 || count > kMaxPacketFrames) return std::nullopt;
-    const bool variable = (data[1] & 0x80u) != 0;
-    const bool padded = (data[1] & 0x40u) != 0;
-    std::size_t offset = 2;
-    std::size_t padding = 0;
-    if (padded) {
-        for (;;) {
-            if (offset >= length) return std::nullopt;
-            const std::uint8_t value = data[offset++];
-            padding += value == kPaddingContinues ? kPaddingContinueBytes : value;
-            if (value != kPaddingContinues) break;
-        }
-    }
-    if (padding > length - offset) return std::nullopt;
-    std::array<std::size_t, kMaxPacketFrames> sizes{};
-    if (variable) {
-        for (std::uint32_t i = 0; i + 1 < count; ++i) {
-            if (offset >= length) return std::nullopt;
-            std::size_t size = data[offset++];
-            if (size >= kTwoByteFrameLength) {
-                if (offset >= length) return std::nullopt;
-                size += 4 * static_cast<std::size_t>(data[offset++]);
-            }
-            if (size > kMaxFrameBytes) return std::nullopt;
-            sizes[i] = size;
-        }
-    }
-    const std::size_t remaining = length - offset - padding;
-    if (!variable && remaining % count != 0) return std::nullopt;
-    std::size_t used = 0;
-    for (std::uint32_t i = 0; i + 1 < count; ++i) {
-        const std::size_t size = variable ? sizes[i] : remaining / count;
-        if (size > remaining - used) return std::nullopt;
-        used += size;
-    }
-    if (remaining - used > kMaxFrameBytes) return std::nullopt;
-    return count;
-}
-
-std::optional<std::uint32_t> packet_frames(const std::uint8_t* data, std::size_t length) {
-    const std::optional<std::uint32_t> count = packet_frame_count(data, length);
-    if (!count) return std::nullopt;
-    const std::uint64_t frames = static_cast<std::uint64_t>(*count) * frame_samples(data[0]);
-    if (frames > kMaxFrames) return std::nullopt;
-    return static_cast<std::uint32_t>(frames);
-}
+struct OpusDecoderDeleter {
+    void operator()(OpusDecoder* decoder) const { opus_decoder_destroy(decoder); }
+};
 
 struct Decoder {
+    std::unique_ptr<OpusDecoder, OpusDecoderDeleter> opus;
     std::uint32_t channels;
 };
+
+std::optional<Decoder> make_decoder(std::uint32_t channels) {
+    int error = OPUS_OK;
+    std::unique_ptr<OpusDecoder, OpusDecoderDeleter> opus(
+        opus_decoder_create(static_cast<opus_int32>(kSampleRate), static_cast<int>(channels), &error));
+    if (error != OPUS_OK || opus == nullptr) return std::nullopt;
+    return Decoder{std::move(opus), channels};
+}
 
 struct State {
     std::vector<std::optional<Decoder>> streams;
     std::vector<std::uint32_t> queued;
     std::deque<Result> results;
+    std::vector<float> scratch;
     std::uint32_t commands = 0;
     std::uint32_t dequeued = 0;
 };
@@ -135,7 +69,20 @@ struct Connection {
 
 namespace {
 
-void process(const Decoder& decoder, const ProcessCommand& command, Result& result) {
+void write_interleaved(const float* source, std::size_t frames, std::uint32_t channels, std::uint8_t* output) {
+    std::memcpy(output, source, frames * channels * kBytesPerSample);
+}
+
+void write_deinterleaved(const float* source, std::size_t frames, std::uint32_t channels, std::uint8_t* output) {
+    for (std::uint32_t channel = 0; channel < channels; ++channel) {
+        std::uint8_t* plane = output + static_cast<std::size_t>(channel) * frames * kBytesPerSample;
+        for (std::size_t frame = 0; frame < frames; ++frame)
+            std::memcpy(plane + frame * kBytesPerSample, source + frame * channels + channel, kBytesPerSample);
+    }
+}
+
+void process(Decoder& decoder, bool deinterleaved, std::vector<float>& scratch, const ProcessCommand& command,
+             Result& result) {
     result.input = command.input;
     result.input_length = command.input_length;
     result.output = command.output;
@@ -143,20 +90,29 @@ void process(const Decoder& decoder, const ProcessCommand& command, Result& resu
         result.error = kInvalidArg;
         return;
     }
-    const std::optional<std::uint32_t> decoded = packet_frames(command.input, command.input_length);
-    if (!decoded) {
+    if (command.input_length > static_cast<std::uint32_t>(std::numeric_limits<opus_int32>::max())) {
         result.error = kBadPacket;
         return;
     }
-    const std::size_t first = std::min<std::size_t>(command.first_frame, *decoded);
-    const std::size_t frames = std::min({static_cast<std::size_t>(*decoded) - first,
+    const int decoded =
+        opus_decode_float(decoder.opus.get(), command.input, static_cast<opus_int32>(command.input_length),
+                          scratch.data(), static_cast<int>(kMaxFrames), 0);
+    if (decoded < 0) {
+        result.error = kBadPacket;
+        return;
+    }
+    const std::size_t first = std::min<std::size_t>(command.first_frame, static_cast<std::size_t>(decoded));
+    const std::size_t frames = std::min({static_cast<std::size_t>(decoded) - first,
                                          static_cast<std::size_t>(command.frame_count),
                                          static_cast<std::size_t>(command.output_length) /
                                              (kBytesPerSample * decoder.channels)});
-    const std::size_t bytes = frames * decoder.channels * kBytesPerSample;
-    std::memset(command.output, 0, bytes);
+    const float* source = scratch.data() + first * decoder.channels;
+    if (deinterleaved)
+        write_deinterleaved(source, frames, decoder.channels, command.output);
+    else
+        write_interleaved(source, frames, decoder.channels, command.output);
     result.frames = static_cast<std::uint32_t>(frames);
-    result.output_length = static_cast<std::uint32_t>(bytes);
+    result.output_length = static_cast<std::uint32_t>(frames * decoder.channels * kBytesPerSample);
 }
 
 }
@@ -183,6 +139,7 @@ HResult connect(const ConnectInput* input, ConnectOutput* output, Connection** h
     connection->per_stream = input->commands_per_stream;
     connection->state.streams.resize(input->streams);
     connection->state.queued.assign(input->streams, 0);
+    connection->state.scratch.assign(kScratchSamples, 0.0f);
     G6SHIM_INFO("xapu: audio decoder connected, %u streams, %u bytes of memory, options 0x%X", input->streams,
                 input->memory, input->options);
     output->memory = memory;
@@ -222,7 +179,8 @@ HResult enqueue_command(Connection* handle, const void* command, std::uint32_t* 
             } else if (activate.channels == 0 || activate.channels > kMaxChannels) {
                 result.error = kInvalidArg;
             } else {
-                decoder = Decoder{activate.channels};
+                decoder = make_decoder(activate.channels);
+                if (!decoder) result.error = kOutOfMemory;
             }
             break;
         }
@@ -230,6 +188,7 @@ HResult enqueue_command(Connection* handle, const void* command, std::uint32_t* 
             decoder.reset();
             break;
         case kReset:
+            if (decoder) opus_decoder_ctl(decoder->opus.get(), OPUS_RESET_STATE);
             break;
         case kNotify:
             break;
@@ -237,7 +196,8 @@ HResult enqueue_command(Connection* handle, const void* command, std::uint32_t* 
             ProcessCommand process_command{};
             std::memcpy(&process_command, command, sizeof process_command);
             if (decoder)
-                process(*decoder, process_command, result);
+                process(*decoder, (handle->options & kDeinterleavedOutput) != 0, handle->state.scratch,
+                        process_command, result);
             else
                 result.error = kInvalidStream;
             break;
