@@ -38,7 +38,7 @@ g6shim runs games made for the Xbox One and Xbox Series X|S consoles on Windows 
 | 🔨 | Shaders | `▰▰▰▰▰▰▰▱▱▱ 75 %` |
 | 🔨 | Graphics · `d3d12_xs` | `▰▰▰▰▱▱▱▱▱▱ 40 %` |
 | 🔨 | Runtime services | `▰▰▰▱▱▱▱▱▱▱ 35 %` |
-| 🔨 | Ray tracing | `▱▱▱▱▱▱▱▱▱▱ 0 %` |
+| 🔨 | Ray tracing | `▰▰▰▰▱▱▱▱▱▱ 40 %` |
 
 ✅ works · 🔨 in progress · ⬜ not started
 
