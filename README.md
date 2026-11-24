@@ -15,6 +15,7 @@ g6shim runs games made for the Xbox One and Xbox Series X|S consoles on Windows 
 | Path | What it is |
 |---|---|
 | `src/core/` | Library shared by the tools: PE reader, game-folder inventory, `.def` handling, relinking |
+| `src/shader/` | Shader translator for the Series GPU: GFX10 decoding, containers, SSA, lane structurisation, resource tracking, DXIL emission |
 | `src/tools/` | `g6shim-scan`, `g6shim-stubgen`, `g6shim-relink`, `g6shim-run` |
 | `runtime/` | `g6shim_runtime.dll`, loaded by every replacement DLL: logging, stub macro, the shared game window |
 | `hle/<dll>/` | One replacement DLL per folder: kernel services, graphics (`d3d11_x`), audio, WinRT activation and forwarders |
@@ -24,6 +25,39 @@ g6shim runs games made for the Xbox One and Xbox Series X|S consoles on Windows 
 | `docs/` | [Running games](docs/running.md), observed binary layouts per DLL ([abi](docs/abi/)), [developer notes](docs/dev/hle.md) and the [technical-debt ledger](docs/dev/debt/README.md) |
 
 ## Progress
+
+**Target: the Series title 7952987A.** It runs for about two seconds today, up to its DirectStorage setup. Next milestone: **the first frame**.
+
+| | Area | Progress |
+|:-:|---|---|
+| ✅ | Loading | `▰▰▰▰▰▰▰▰▰▰ 100 %` |
+| ✅ | Memory · `xmem` | `▰▰▰▰▰▰▰▰▰▱ 95 %` |
+| ✅ | Audio · `AcpHal` `xapu` `chad` | `▰▰▰▰▰▰▰▰▱▱ 80 %` |
+| ✅ | Textures · `xg_xs` | `▰▰▰▰▰▰▰▰▱▱ 85 %` |
+| 🔨 | Storage · `XCRDAPI` | `▱▱▱▱▱▱▱▱▱▱ 0 %` |
+| 🔨 | Shaders | `▰▰▰▰▱▱▱▱▱▱ 40 %` |
+| ⬜ | Graphics · `d3d12_xs` | `▱▱▱▱▱▱▱▱▱▱ 0 %` |
+| 🔨 | Runtime services | `▰▰▱▱▱▱▱▱▱▱ 20 %` |
+| ⬜ | Ray tracing | `▱▱▱▱▱▱▱▱▱▱ 0 %` |
+
+✅ works · 🔨 in progress · ⬜ not started
+
+<details>
+<summary>What is implemented and what is left</summary>
+
+| Area | Implemented | Left |
+|---|---|---|
+| Loading | The executable and its DLLs load through the Windows loader; static initialisation runs | – |
+| Memory · `xmem` | All functions: the title's allocation hooks, address ranges, 64 KiB physical pages, budgets | GPU-side page mapping |
+| Audio · `AcpHal` `xapu` `chad` | Coprocessor queues, APU memory, shape contexts, XMA2 decoding, Opus and DSP queues | Opus decoding, DSP transforms, SHAPE units other than XMA |
+| Textures · `xg_xs` | Tiled layouts of the Series GPU, texture computer, tiled and linear copies | XOR and MSAA addressing, metadata planes |
+| Storage · `XCRDAPI` | – | DirectStorage queues, BCPack decompression |
+| Shaders | Decoding, containers, SSA, lane structurisation, resource and I/O tracking | DXIL emission, the whole shader set |
+| Graphics · `d3d12_xs` | – | Device, resources, descriptors, command lists, pipelines, presentation |
+| Runtime services | The PC's own XGameRuntime starts | Package paths, saves, input and lifecycle where the title needs them |
+| Ray tracing | – | Acceleration structures in the console's BVH layout |
+
+</details>
 
 <!-- progress:begin -->
 Each square is one function: green implemented, blue forwarded, amber stubbed, grey missing; in the shader maps green is translated, red failed and grey not attempted.
