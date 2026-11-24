@@ -242,6 +242,33 @@ TEST(cmp_class_f16_classes) {
     check_valu(body, "v_cmp_class_f16");
 }
 
+TEST(cmpx_compares_read_their_operation_and_type) {
+    for (const std::uint16_t op : {std::uint16_t{0x0d4}, std::uint16_t{0x014}}) {
+        const auto compare = vop3(op, 0, vgpr(1), vgpr(2), 0);
+        const auto value = vop1(0x001, 0, vgpr(3));
+        std::vector<std::uint32_t> body(compare.begin(), compare.end());
+        body.push_back(value);
+        std::string_view reason;
+        std::vector<std::uint32_t> words;
+        words.push_back(s_mov_b32(5, 0x80));
+        const std::array<std::uint32_t, 2> load = s_load_dwordx4(8, 4);
+        words.insert(words.end(), load.begin(), load.end());
+        words.insert(words.end(), body.begin(), body.end());
+        const std::array<std::uint32_t, 2> store = buffer_store_dword(0, 8, 0);
+        words.insert(words.end(), store.begin(), store.end());
+        words.push_back(kSEndPgm);
+        try {
+            lower_compute(words, 8,
+                          {root_param(RootType::Kind::Constants, 0, 0), root_param(RootType::Kind::Table, 4, 1)},
+                          {used_uav(4, 1)}, 5u << 1, {1, 1, 1});
+        } catch (const std::exception& error) {
+            reason = error.what();
+        }
+        CHECK(reason.find("compare") == std::string_view::npos);
+        CHECK(reason.find("v_cmpx") == std::string_view::npos);
+    }
+}
+
 TEST(buffer_formats_by_number) {
     const auto bits_of = [](std::uint8_t format) {
         const std::optional<BufferFormat> found = buffer_format(format);

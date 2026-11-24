@@ -35,8 +35,16 @@ constexpr std::array<std::string_view, 13> kInt16 = {
 constexpr std::array<std::uint32_t, 9> kHalfConstants = {0x3800, 0xB800, 0x3C00, 0xBC00, 0x4000,
                                                          0xC000, 0x4400, 0xC400, 0x3118};
 
+constexpr std::string_view kComparePrefix = "v_cmp_";
+constexpr std::string_view kCompareExecPrefix = "v_cmpx_";
+
 bool member(std::span<const std::string_view> list, std::string_view value) {
     return std::find(list.begin(), list.end(), value) != list.end();
+}
+
+std::string_view compare_rest(std::string_view name) {
+    if (name.starts_with(kCompareExecPrefix)) return name.substr(kCompareExecPrefix.size());
+    return name.substr(kComparePrefix.size());
 }
 
 }  // namespace
@@ -45,10 +53,10 @@ void Lower::valu(const IrInst& inst, std::size_t b, std::size_t i) {
     const auto* fields = std::get_if<Valu>(&inst.fields);
     if (fields == nullptr) std::abort();
     const std::string_view name = inst.name();
-    if (name.starts_with("v_cmp_") || name.starts_with("v_cmpx_")) {
+    if (name.starts_with(kComparePrefix) || name.starts_with(kCompareExecPrefix)) {
         try {
             if (fields->dpp) fail("a compare with DPP");
-            compare(inst, name.substr(6));
+            compare(inst, compare_rest(name));
         } catch (const WhyError& error) {
             for (const auto& write : inst.writes) lane_fail_[write.second] = error.why;
             throw;
