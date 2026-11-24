@@ -55,6 +55,8 @@ add_executable(g6shim_tests
   unit/bcpack_test.cpp
   unit/xcrdapi_test.cpp
   unit/log_format_test.cpp
+  unit/cpu_emulation_test.cpp
+  "${PROJECT_SOURCE_DIR}/runtime/src/cpu_emulation.cpp"
   unit/d3d12_xs_object_test.cpp
   unit/d3d12_xs_device_test.cpp
   unit/d3d12_xs_dxgi_test.cpp

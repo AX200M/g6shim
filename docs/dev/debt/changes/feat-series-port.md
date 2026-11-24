@@ -316,3 +316,14 @@
 
 - A per-lane descriptor joined at a loop header is refused (`a descriptor read from the first lane of a phi at a loop header`): what a lane holds after some passes of the loop is not traced.
 - A waterfall loop's access is proven, but its other per-lane work is taken to run once for each lane; a loop body whose effect adds up over the passes a lane waits through would differ.
+
+# project
+
+## add Functional
+
+- The illegal-instruction emulation covers `clzero`, `monitorx`, `mwaitx`, `clwb` and SSE4a's `extrq`/`insertq` only; other AMD-only instructions, such as `rdpru`, still raise the exception.
+  Closes when: a title stops on another AMD-only instruction.
+- `monitorx` does nothing and `mwaitx` yields the thread instead of waiting for the monitored line; a spin loop around them still ends.
+  Closes when: a title needs the monitor's wait semantics.
+- `clwb` is skipped and its write-back loop is retired in one exception; host memory is coherent, so no cache line is written back.
+  Closes when: a title's timing depends on the write-back.

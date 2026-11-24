@@ -95,3 +95,4 @@ Translated shaders and compiled host pipelines are kept outside the game folder 
 - The console's temporary drive is `%TEMP%\g6shim_temp_<process id>_<tick count>`, made on the first request for it and mounted on `T:`, or on the highest free letter when the host or another mount uses `T:`. It is deleted with everything in it when the process exits normally.
 - DLLs the game ships for its own WinRT classes are activated from the game folder. Some need the Visual C++ 2012 x64 runtime.
 - A window close ends the game.
+- On CPUs that lack the console's AMD-only instructions, the runtime emulates them (`clzero`, `monitorx`/`mwaitx`, `clwb` and SSE4a's `extrq`/`insertq`) instead of stopping at an illegal instruction; [docs/abi/cpu.md](abi/cpu.md) lists the encodings.
