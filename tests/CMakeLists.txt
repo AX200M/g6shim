@@ -28,6 +28,7 @@ add_executable(g6shim_tests
   unit/xg_xs_test.cpp
   unit/shader_gfx10_test.cpp
   unit/shader_container_test.cpp
+  unit/title_memory_test.cpp
   unit/log_format_test.cpp
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/graphics_object.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/device.cpp"
