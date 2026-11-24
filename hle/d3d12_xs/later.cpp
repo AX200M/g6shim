@@ -3,6 +3,7 @@
 #include "later.hpp"
 
 #include "descriptor_host.hpp"
+#include "pipeline.hpp"
 #include "resource.hpp"
 #include "shadow.hpp"
 #include "texture.hpp"
@@ -45,20 +46,21 @@ HRESULT create_command_list_x(Object*, std::uint32_t, std::uint32_t, Object*, Ob
     return unimplemented("console command list creation");
 }
 
-HRESULT create_graphics_pipeline(Object*, const void*, const Iid*, Object**) {
-    return unimplemented("graphics pipeline creation");
+HRESULT create_graphics_pipeline(Object*, const void* desc, const Iid* iid, Object** out) {
+    return pipeline::create_graphics(desc, iid, out);
 }
 
-HRESULT create_compute_pipeline(Object*, const void*, const Iid*, Object**) {
-    return unimplemented("compute pipeline creation");
+HRESULT create_compute_pipeline(Object*, const void* desc, const Iid* iid, Object** out) {
+    return pipeline::create_compute(desc, iid, out);
 }
 
-HRESULT create_compute_pipeline_x(Object*, const void*, std::uint32_t, const Iid*, Object**) {
-    return unimplemented("console compute pipeline creation");
+HRESULT create_compute_pipeline_x(Object*, const void* desc, std::uint32_t, const void*, const Iid* iid,
+                                  Object** out) {
+    return pipeline::create_compute(desc, iid, out);
 }
 
-HRESULT create_stream_pipeline(Object*, const void*, const Iid*, Object**) {
-    return unimplemented("stream pipeline creation");
+HRESULT create_stream_pipeline(Object*, const void* desc, const Iid* iid, Object** out) {
+    return pipeline::create_stream(desc, iid, out);
 }
 
 std::shared_ptr<HostTexture> create_host_texture(const resource::ResourceDesc& desc, std::uint32_t state,

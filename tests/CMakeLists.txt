@@ -66,6 +66,7 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh/reference.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh/builder.cpp"
   unit/bvh_builder_test.cpp
+  unit/d3d12_xs_pipeline_test.cpp
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/console.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor_host.cpp"
@@ -76,10 +77,15 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/host.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/later.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/object.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/pipeline.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/pipeline_host.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/pipeline_library.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/pipeline_make.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/query.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/resource.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/root.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/sampler.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/shader_cache.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/shadow.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/signature.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/texture.cpp"

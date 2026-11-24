@@ -29,8 +29,8 @@ HRESULT create_command_list_x(Object* device, std::uint32_t node_mask, std::uint
                               Object* state, const Iid* iid, Object** out);
 HRESULT create_graphics_pipeline(Object* device, const void* desc, const Iid* iid, Object** out);
 HRESULT create_compute_pipeline(Object* device, const void* desc, const Iid* iid, Object** out);
-HRESULT create_compute_pipeline_x(Object* device, const void* desc, std::uint32_t flags, const Iid* iid,
-                                  Object** out);
+HRESULT create_compute_pipeline_x(Object* device, const void* desc, std::uint32_t extension_count,
+                                  const void* extended, const Iid* iid, Object** out);
 HRESULT create_stream_pipeline(Object* device, const void* desc, const Iid* iid, Object** out);
 
 std::shared_ptr<HostTexture> create_host_texture(const resource::ResourceDesc& desc, std::uint32_t state,

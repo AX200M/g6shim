@@ -35,8 +35,45 @@ The Series console's Direct3D 12 runtime. Console graphics objects are g6shim ob
 | root signature | `Object` + serialized blob | 24: 3, 4, 1 |
 | query heap | `Object` + description | 24: 3, 4, 1 |
 | command signature | `Object` + stride + arguments | 24: 3, 4, 1 |
+| pipeline | `Object` + 0x20 packet | 24: 3, 4, 1, 3 |
 
 The object methods occupy slots 3 to 6: `GetPrivateData`, `SetPrivateData`, `SetPrivateDataInterface` (unwritten), `SetName`.
+
+## Pipelines
+
+| Description | Bytes | Fields |
+|---|---|---|
+| graphics | 0x58 | root signature at 0, five bytecode pointers and sizes from 0x08: vertex, pixel, domain, hull, geometry |
+| compute | 0x18 | root signature at 0, bytecode at 0x08 |
+| stream | 0x10 | byte count at 0, stream at 0x08 |
+| bytecode | 0x10 | code pointer at 0, size at 8 (absent when either is zero) |
+
+| Stream subobject | Bytes | Meaning |
+|---|---|---|
+| 0 | 16 | root signature |
+| 1-6 | 24 | vertex, pixel, domain, hull, geometry, compute shader |
+| 7, 15 | 40 | stream output, render target formats |
+| 8 | 336 | blend |
+| 9 | 8 | sample mask |
+| 10 | 48 | rasterizer |
+| 11 | 56 | depth-stencil |
+| 12, 19 | 24 | input layout, cached pipeline state |
+| 13, 14, 16, 18, 20 | 8 | strip cut, topology type, depth format, node mask, flags |
+| 17 | 16 | sample description |
+| 21 | 64 | depth-stencil with bounds test |
+| 22 | 32 | view instancing |
+| 23, 24 | 24 | amplification, mesh shader (host types 24, 25) |
+
+A subobject holds its type at +0, its data at +4, or at +8 when the data holds a pointer; each is padded to 8 bytes.
+
+| Host pipeline | Meaning |
+|---|---|
+| user data | one 32-bit-constant root parameter per stage, `b0` space 0 |
+| root views | one CBV or SRV root parameter per title root parameter, space 1, data volatile |
+| immediate samplers | static samplers `s<n>` space 0, in the translated shader's order |
+| heaps | CBV/SRV/UAV and sampler heaps directly indexed |
+| topology | console rectangles (19) and quads (32) become triangles |
+| cache | `<cache>\shaders\<32 hex>.bin`, `<cache>\pipelines\host-pipelines.bin`, `early-pipelines.txt` |
 
 ## Device slots
 
@@ -46,7 +83,7 @@ The object methods occupy slots 3 to 6: `GetPrivateData`, `SetPrivateData`, `Set
 | 7 | 0x38 | `GetNodeCount` |
 | 8 | 0x40 | `CreateCommandQueue` (later part) |
 | 9 | 0x48 | `CreateCommandAllocator` (later part) |
-| 10, 11 | 0x50, 0x58 | `CreateGraphicsPipelineState`, `CreateComputePipelineState` (later part) |
+| 10, 11 | 0x50, 0x58 | `CreateGraphicsPipelineState`, `CreateComputePipelineState` |
 | 12 | 0x60 | `CreateCommandList` (later part) |
 | 13 | 0x68 | `CheckFeatureSupport` |
 | 14, 15 | 0x70, 0x78 | `CreateDescriptorHeap`, `GetDescriptorHandleIncrementSize` |
@@ -61,14 +98,14 @@ The object methods occupy slots 3 to 6: `GetPrivateData`, `SetPrivateData`, `Set
 | 41 | 0x148 | `CreateCommandSignature` |
 | 48 | 0x180 | `CreateCommandQueueX` (later part) |
 | 61 | 0x1e8 | `CreateSamplerX` |
-| 62 | 0x1f0 | `CreateComputePipelineStateX` (later part) |
+| 62 | 0x1f0 | `CreateComputePipelineStateX` |
 | 69 | 0x228 | debug error filter, accepted and ignored |
 | 70, 71 | 0x230, 0x238 | `CreateShaderResourceViewX`, `CreateUnorderedAccessViewX` of placed memory |
 | 73 | 0x248 | `CreateCommandListX` (later part) |
 | 74, 75 | 0x250, 0x258 | `RegisterPagePool`, `UnregisterPagePool` |
 | 76 | 0x260 | `CreateCommittedResourceX` |
 | 78-81 | 0x270-0x288 | `SetFrameIntervalX`, `ScheduleFrameEventX`, `WaitFrameEventX`, `GetFrameStatisticsX` |
-| 86 | 0x2b0 | `CreateStreamPipelineState` (later part) |
+| 86 | 0x2b0 | `CreateStreamPipelineState` |
 | 108 | 0x360 | `GetResourceAllocationInfo2` |
 | 127 | 0x3f8 | `CreateCommittedResource3` |
 | 133 | 0x428 | `CreateResourceAtAddress` |

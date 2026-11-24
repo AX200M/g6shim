@@ -179,7 +179,7 @@
 
 ## add Functional
 
-- Command queues, command allocators, command lists and pipeline states (device slots 8-12, 48, 62, 73 and 86) return `E_NOTIMPL` and log once until the host GPU parts fill them.
+- Command queues, command allocators and command lists (device slots 8, 9, 12, 48 and 73) return `E_NOTIMPL` and log once until the host GPU parts fill them.
 - Resources have no host GPU copy: buffers are not shadowed, textures are not uploaded, and no host transitions happen.
 - Descriptor heap writes are not mirrored into a host heap; the shader-visible heap hooks do nothing.
 - Committed resources take the title's memory with guessed allocation attributes (2 MiB pages from 2 MiB, alignment as log2, write-combined unless the heap is the default one).
@@ -226,7 +226,7 @@
   Closes when: such views are cast through castable formats.
 - Texture change detection hashes memory with FNV-1a; only equality of hashes is used.
   Closes when: a shared content hash is available.
-- Command queues, allocators, command lists, graphics, compute and stream pipelines are still `E_NOTIMPL` extension points.
+- Command queues, allocators and command lists are still `E_NOTIMPL` extension points.
   Closes when: the command list, queue, draw and pipeline parts land.
 - `buffer_copy_to_host` refreshes a whole buffer into its host copy immediately; no title path calls it yet.
   Closes when: title copies are recorded as deferred steps.
@@ -237,3 +237,22 @@
 
 - BCPack lanes decode one symbol step at a time in the schedule's order, at roughly 30-60 MB/s for BC1 and 15-20 MB/s for BC7 on one core; dividing the input per lane and decoding the lanes apart is not done.
   Closes when: texture streaming needs more throughput.
+
+# d3d12_xs
+
+## add Functional
+
+- Only vertex, mesh, pixel and compute stages get host pipelines; descriptions with domain, hull, geometry or amplification stages, and plain graphics descriptions, keep their shader containers only, and the 32-byte packet after a pipeline's header stays zero.
+  Closes when: the other stages and the plain description are translated into host pipelines.
+- Host pipelines are made on worker threads and waited for at most 500 ms per title frame; a draw or dispatch whose pipeline is not ready is dropped, so a pass run once whose pipeline takes longer is lost.
+  Closes when: the wait budget is derived from a measurement rather than a guess.
+- A depth-stencil subobject that carries the bounds test is compiled without it; the host pipeline gets the plain depth-stencil description.
+  Closes when: a title enables the bounds test.
+- Console rectangle and quad primitive types are compiled as host triangles.
+  Closes when: a title needs the console's rectangle or quad rasterisation.
+- `CreateComputePipelineStateX` accepts its console extension count and extensions but uses only the plain compute description.
+  Closes when: a title's compute pipeline depends on the console's shader settings.
+- Translated shaders and host pipelines are cached by content hash under `%LOCALAPPDATA%\g6shim\cache` (or `G6SHIM_CACHE_DIR`); the hashes are MD5, and a changed module file invalidates every entry.
+  Closes when: a shared content hash is available.
+- The pipeline library and the early-pipeline list are written when the workers run dry (at most every 20 s) or on an explicit save, so a run that ends while pipelines are still being made can lose that last batch.
+  Closes when: every run saves at shutdown.
