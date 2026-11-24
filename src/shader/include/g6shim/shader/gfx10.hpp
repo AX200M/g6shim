@@ -67,4 +67,13 @@ std::span<const OpcodeEntry> opcode_table(Encoding encoding);
 
 std::vector<Instruction> decode(std::span<const std::uint8_t> code);
 
+struct Control {
+    enum class Kind : std::uint8_t { Next, Stop, Jump, Branch };
+
+    Kind kind = Kind::Next;
+    std::size_t target = 0;
+};
+
+Control control(const Instruction& inst, std::size_t code_len, std::span<const Instruction> preceding);
+
 }  // namespace g6shim::shader

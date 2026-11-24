@@ -48,13 +48,6 @@ std::optional<std::string_view> lookup(std::span<const OpcodeEntry> table, std::
     return std::string_view{it->name};
 }
 
-enum class FlowKind : std::uint8_t { Next, Stop, Jump, Branch };
-
-struct Flow {
-    FlowKind kind = FlowKind::Next;
-    std::size_t target = 0;
-};
-
 using Found = std::map<std::size_t, Instruction>;
 
 const Instruction* previous(const Found& found, std::size_t at) {
@@ -76,27 +69,28 @@ std::size_t branch_target(const Instruction& inst, std::size_t next, std::size_t
     return static_cast<std::size_t>(target);
 }
 
-Flow flow(const Instruction& inst, std::size_t next, std::size_t len) {
+Control flow(const Instruction& inst, std::size_t next, std::size_t len) {
     const std::string_view name = name_of(inst);
     if (inst.encoding == Encoding::Sopp) {
         if (name == "s_endpgm" || name == "s_endpgm_saved" || name == "s_endpgm_ordered_ps_done" || name == "s_code_end")
-            return {FlowKind::Stop, 0};
-        if (name == "s_branch") return {FlowKind::Jump, branch_target(inst, next, len)};
-        if (name.starts_with("s_cbranch_")) return {FlowKind::Branch, branch_target(inst, next, len)};
+            return {Control::Kind::Stop, 0};
+        if (name == "s_branch") return {Control::Kind::Jump, branch_target(inst, next, len)};
+        if (name.starts_with("s_cbranch_")) return {Control::Kind::Branch, branch_target(inst, next, len)};
     } else if (inst.encoding == Encoding::Sopk) {
-        if (name == "s_call_b64") return {FlowKind::Branch, branch_target(inst, next, len)};
+        if (name == "s_call_b64") return {Control::Kind::Branch, branch_target(inst, next, len)};
     } else if (inst.encoding == Encoding::Sop1) {
-        if (name == "s_setpc_b64") return {FlowKind::Stop, 0};
+        if (name == "s_setpc_b64") return {Control::Kind::Stop, 0};
     }
-    return {FlowKind::Next, 0};
+    return {Control::Kind::Next, 0};
 }
 
-std::optional<std::size_t> far_jump(const Found& found, const Instruction& setpc, std::size_t len) {
+template <typename Previous>
+std::optional<std::size_t> far_jump(Previous previous, const Instruction& setpc, std::size_t len) {
     const std::uint32_t n = setpc.words[0] & 0xFF;
     std::optional<std::int64_t> delta;
     std::size_t at = setpc.offset;
     for (int step = 0; step < 4; ++step) {
-        const Instruction* prev = previous(found, at);
+        const Instruction* prev = previous(at);
         if (prev == nullptr) break;
         if (prev->offset + 4 * prev->words.size() != at) break;
         const std::uint32_t w = prev->words[0];
@@ -120,12 +114,13 @@ std::optional<std::size_t> far_jump(const Found& found, const Instruction& setpc
     return std::nullopt;
 }
 
-Flow control(const Instruction& inst, std::size_t len, const Found& found) {
+template <typename Previous>
+Control control_from(const Instruction& inst, std::size_t len, Previous previous) {
     const std::size_t next = inst.offset + 4 * inst.words.size();
-    const Flow result = flow(inst, next, len);
-    if (result.kind == FlowKind::Stop && name_of(inst) == "s_setpc_b64") {
-        const auto target = far_jump(found, inst, len);
-        return target ? Flow{FlowKind::Jump, *target} : Flow{FlowKind::Stop, 0};
+    const Control result = flow(inst, next, len);
+    if (result.kind == Control::Kind::Stop && name_of(inst) == "s_setpc_b64") {
+        const auto target = far_jump(previous, inst, len);
+        return target ? Control{Control::Kind::Jump, *target} : Control{Control::Kind::Stop, 0};
     }
     return result;
 }
@@ -313,14 +308,14 @@ std::vector<Instruction> decode(std::span<const std::uint8_t> code) {
         while (found.find(offset) == found.end()) {
             Instruction inst = decode_instruction(code, offset);
             const std::size_t next = offset + 4 * inst.words.size();
-            const Flow result = control(inst, code.size(), found);
+            const Control result = control_from(inst, code.size(), [&](std::size_t at) { return previous(found, at); });
             found.emplace(offset, std::move(inst));
             bool stop = false;
             switch (result.kind) {
-                case FlowKind::Next: offset = next; break;
-                case FlowKind::Stop: stop = true; break;
-                case FlowKind::Jump: offset = result.target; break;
-                case FlowKind::Branch:
+                case Control::Kind::Next: offset = next; break;
+                case Control::Kind::Stop: stop = true; break;
+                case Control::Kind::Jump: offset = result.target; break;
+                case Control::Kind::Branch:
                     pending.push_back(result.target);
                     offset = next;
                     break;
@@ -337,6 +332,15 @@ std::vector<Instruction> decode(std::span<const std::uint8_t> code) {
             detail::fail_isa(list[i].offset, "a branch lands inside an instruction");
     }
     return list;
+}
+
+Control control(const Instruction& inst, std::size_t code_len, std::span<const Instruction> preceding) {
+    const auto previous_of = [&](std::size_t at) -> const Instruction* {
+        const auto it = std::lower_bound(preceding.begin(), preceding.end(), at,
+                                         [](const Instruction& entry, std::size_t key) { return entry.offset < key; });
+        return it == preceding.begin() ? nullptr : &*(it - 1);
+    };
+    return control_from(inst, code_len, previous_of);
 }
 
 }  // namespace g6shim::shader

@@ -29,3 +29,12 @@
 - `ApuIsVirtualAddressValid` is treated as a byte-range test; its second argument may instead be an alignment.
 
 ## remove `AcpHalCreate` fails with `E_NOTIMPL`
+
+# shader
+
+## add Functional
+
+- A tracked address whose high half adds anything to a root descriptor's takes it as the carry of its computed term, so offsets stay below 4 GB.
+  Closes when: a title is seen addressing more than 4 GB past a root parameter.
+- Copy propagation folds constants only through `s_mov_b32`, `s_movk_i32`, `s_mov_b64`, `s_brev_b32` and `s_not_b32`; a descriptor or address built from a constant made any other way is not traced.
+  Closes when: a title builds a descriptor constant with another instruction.

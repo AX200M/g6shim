@@ -28,6 +28,10 @@ add_executable(g6shim_tests
   unit/xg_xs_test.cpp
   unit/shader_gfx10_test.cpp
   unit/shader_container_test.cpp
+  unit/shader_ir_test.cpp
+  unit/shader_structure_test.cpp
+  unit/shader_resource_test.cpp
+  unit/shader_io_test.cpp
   unit/title_memory_test.cpp
   unit/xmem_virtual_test.cpp
   unit/xmem_physical_test.cpp

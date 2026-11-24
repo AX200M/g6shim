@@ -8,5 +8,9 @@ add_library(g6shim_shader STATIC
   gfx10_fields.cpp
   gfx10_sp3.cpp
   inflate.cpp
-  native.cpp)
+  io.cpp
+  ir.cpp
+  native.cpp
+  resource.cpp
+  structure.cpp)
 target_include_directories(g6shim_shader PUBLIC include)
