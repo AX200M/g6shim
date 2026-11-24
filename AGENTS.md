@@ -26,6 +26,8 @@ python tools/check_conventions.py --staged
 python tools/debt_fold.py --check
 ```
 
+Changes to `tools/` also run `python -m unittest discover -s tools/tests`.
+
 ## Layout
 
 ```
@@ -37,7 +39,7 @@ hle/<dll>/         one replacement DLL each; the .def is its coverage record
 tests/unit/        unit tests, one file per area, shared CHECK header
 tests/integration/ the fake-game pipeline
 docs/              running.md, abi/<dll>.md, dev/
-tools/             convention, ledger and coverage scripts; git hooks
+tools/             convention, ledger and coverage scripts, their tests (tests/); git hooks
 ```
 
 ## Conventions
