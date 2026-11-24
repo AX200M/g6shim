@@ -61,6 +61,11 @@ add_executable(g6shim_tests
   unit/d3d12_xs_resource_test.cpp
   unit/d3d12_xs_sampler_test.cpp
   unit/d3d12_xs_host_test.cpp
+  unit/bvh_reference_test.cpp
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh/format.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh/reference.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh/builder.cpp"
+  unit/bvh_builder_test.cpp
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/console.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor_host.cpp"
@@ -115,6 +120,7 @@ target_include_directories(g6shim_tests PRIVATE
   "${PROJECT_SOURCE_DIR}/hle/d3d11_x"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x"
   "${PROJECT_SOURCE_DIR}/hle"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh"
   "${PROJECT_SOURCE_DIR}/hle/xg_x"
   "${PROJECT_SOURCE_DIR}/hle/xmem"
   "${PROJECT_SOURCE_DIR}/hle/chad"
@@ -123,6 +129,8 @@ target_include_directories(g6shim_tests PRIVATE
   "${PROJECT_SOURCE_DIR}/hle/xcrdapi"
   "${PROJECT_SOURCE_DIR}/runtime/src"
   "${PROJECT_SOURCE_DIR}/winrt")
+g6shim_add_compute_dxil(g_bvh_build_dxil "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh/build.hlsl" main)
+g6shim_target_compute_dxil(g6shim_tests g_bvh_build_dxil)
 add_test(NAME unit COMMAND g6shim_tests)
 set_tests_properties(unit PROPERTIES TIMEOUT 30
   ENVIRONMENT "G6SHIM_LOG=${CMAKE_CURRENT_BINARY_DIR}/unit.log;G6SHIM_LOG_STDERR=0")
