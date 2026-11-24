@@ -18,6 +18,7 @@ A path whose letter is not mounted, a relative path and a null path are passed t
 |---|---|
 | Package drive | `G:` |
 | Persistent local storage drive | `g6shim_persistent` next to the executable, created and mounted on a free letter by `persistent_storage_drive()`; a later call returns the same letter while that mount stands, and mounts the folder again on a free letter if another root took the letter |
+| Temporary drive | a per-process folder `g6shim_temp_<process id>_<tick count>` in the host's temporary folder, created and mounted by `temporary_storage_drive()` on `T:` when neither the host nor another mount uses it, otherwise on a free letter; removed with its contents when `g6shim_runtime.dll` unloads |
 | Long-path cut-off | host root + tail from 248 UTF-16 units |
 | Long-path form | `\\?\...`; `/` becomes `\`, empty and `.` parts drop, `..` pops a part and stops at the root |
 | UNC long-path form | `\\server\share` becomes `\\?\UNC\server\share` |

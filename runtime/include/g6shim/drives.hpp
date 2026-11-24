@@ -41,6 +41,7 @@ G6SHIM_DRIVES_API std::size_t package_path_size(const wchar_t* path, const wchar
 G6SHIM_DRIVES_API void package_path(const wchar_t* path, const wchar_t* root, wchar_t* out);
 G6SHIM_DRIVES_API int mount_drive(const wchar_t* root);
 G6SHIM_DRIVES_API int persistent_storage_drive();
+G6SHIM_DRIVES_API int temporary_storage_drive();
 G6SHIM_DRIVES_API void mount_drive_at(wchar_t letter, const wchar_t* root);
 
 template <class Char>
