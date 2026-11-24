@@ -3,6 +3,12 @@
 add_library(g6shim_shader STATIC
   dxbc.cpp
   dxil.cpp
+  emit/bitcode.cpp
+  emit/container.cpp
+  emit/sampler.cpp
+  emit/shader.cpp
+  emit/validator.cpp
+  emit/wave.cpp
   error.cpp
   gfx10.cpp
   gfx10_fields.cpp

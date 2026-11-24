@@ -57,3 +57,12 @@
 - BCPack streams are unpacked one lane step at a time on one core.
 - BCPack BC2 streams are rejected.
 - zlib streams are decoded with the repository's inflater, which requires a complete dynamic tree and a matching Adler-32 trailer.
+
+# shader
+
+## add Functional
+
+- Translated shaders declare every output to depend on every input in `dx.viewIdState`; the exact dependence sets need a dependence pass.
+  Closes when: a dependence pass derives the input-to-output sets from the program.
+- A custom border colour in an immediate sampler decodes as transparent black; the custom colour table entry is ignored.
+  Closes when: a title uses a custom border colour.
