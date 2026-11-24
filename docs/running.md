@@ -85,6 +85,7 @@ Translated shaders and compiled host pipelines are kept outside the game folder 
 | `g6shim.log` | The log, appended on every run. |
 | `g6shim_input.ini` | Keyboard and controller mapping, written with defaults on first start. XInput controllers need no mapping. |
 | `g6shim_saves\<container>\<blob>` | Saves. Files larger than 64 MiB are treated as damaged. |
+| `g6shim_persistent\` | Persistent local storage, made on the first request for it and mounted as its own drive on the highest letter of `D:`-`Z:` that neither the host nor another mount uses. The log names the letter. |
 | `g6shim_frame_<n>.bmp` | Captured frames. |
 | `console_xg_x.dll` | Optional: a copy of the console's own `xg_x.dll` from your dump. When present, texture layouts come from it instead of g6shim's own code. |
 
