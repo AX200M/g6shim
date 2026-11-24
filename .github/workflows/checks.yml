@@ -31,6 +31,8 @@ jobs:
         run: python3 -I tools/debt_fold.py --check
       - name: Coverage
         run: python3 -I tools/def_coverage.py
+      - name: Progress maps
+        run: python3 -I tools/progress_map.py --check
 
   windows:
     runs-on: windows-latest

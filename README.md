@@ -20,8 +20,24 @@ g6shim runs games made for the Xbox One and Xbox Series X|S consoles on Windows 
 | `hle/<dll>/` | One replacement DLL per folder: kernel services, graphics (`d3d11_x`), audio, WinRT activation and forwarders |
 | `winrt/` | Library behind WinRT activation: the object kit (probes, events, collections, async objects, package activation) and stand-ins for console classes, grouped by namespace |
 | `tests/` | Unit tests and an end-to-end test that runs the whole pipeline on a fake game |
-| `tools/` | Convention, ledger and coverage scripts, git hooks |
+| `tools/` | Convention, ledger, coverage and progress scripts, git hooks |
 | `docs/` | [Running games](docs/running.md), observed binary layouts per DLL ([abi](docs/abi/)), [developer notes](docs/dev/hle.md) and the [technical-debt ledger](docs/dev/debt/README.md) |
+
+## Progress
+
+<!-- progress:begin -->
+Each square is one function: green implemented, blue forwarded, amber stubbed, grey missing; in the shader maps green is translated, red failed and grey not attempted.
+
+### 7952987A
+
+![7952987A API coverage](docs/progress/7952987A.apis.svg)
+
+![7952987A shader coverage](docs/progress/7952987A.shaders.svg)
+
+33/39 functions implemented, 0 forwarded, 6 stubbed, 0 missing; shaders: no data yet.
+
+![Replacement DLL coverage](docs/progress/hle.svg)
+<!-- progress:end -->
 
 ## Build
 

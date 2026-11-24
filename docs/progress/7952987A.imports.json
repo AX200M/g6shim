@@ -1,0 +1,79 @@
+{
+ "title_id": "7952987A",
+ "modules": [
+  {
+   "dll": "AcpHal.dll",
+   "functions": [
+    "AcpHalAllocateShapeContexts",
+    "AcpHalCreate",
+    "AcpHalReleaseShapeContexts",
+    "ApuAlloc",
+    "ApuCreateHeap",
+    "ApuFree",
+    "ApuIsVirtualAddressValid",
+    "ApuMapApuAddress",
+    "ApuMapVirtualAddress"
+   ]
+  },
+  {
+   "dll": "chad.dll",
+   "functions": [
+    "XDspActivate",
+    "XDspConnectWithMaximumStreamLimit",
+    "XDspDeactivate",
+    "XDspDisconnect",
+    "XDspSubmitCommand"
+   ]
+  },
+  {
+   "dll": "d3d12_xs.dll",
+   "functions": [
+    "D3D12ConfigureVirtualMemoryX",
+    "D3D12CreateRootSignatureDeserializer",
+    "D3D12SerializeVersionedRootSignature",
+    "D3D12XboxCreateDevice"
+   ]
+  },
+  {
+   "dll": "xapu.dll",
+   "functions": [
+    "XApuConnect",
+    "XApuDequeueResult",
+    "XApuDisconnect",
+    "XApuEnqueueCommand",
+    "XApuGetResultCount"
+   ]
+  },
+  {
+   "dll": "XCRDAPI.dll",
+   "functions": [
+    "DStorageGetFactory"
+   ]
+  },
+  {
+   "dll": "xg_xs.dll",
+   "functions": [
+    "XGCreateTextureComputer",
+    "XGSuggestSwizzleMode"
+   ]
+  },
+  {
+   "dll": "xmem.dll",
+   "functions": [
+    "XMemAlloc",
+    "XMemAllocDefault",
+    "XMemAllocatePhysicalPages",
+    "XMemFree",
+    "XMemFreeDefault",
+    "XMemFreePhysicalPages",
+    "XMemGetWorkingSetStatistics",
+    "XMemIsToolsMemAvailable",
+    "XMemMapPhysicalPages",
+    "XMemMapPhysicalPagesScatter",
+    "XMemTransferMemory",
+    "XMemVirtualAlloc",
+    "XMemVirtualQuery"
+   ]
+  }
+ ]
+}
