@@ -66,6 +66,8 @@ The two library-loader forwarders make `LoadLibraryExW`/`LoadLibraryW` of `xgame
 | `G6SHIM_CAPTURE_FRAMES=300,600` | Save the back buffer of those presented frames (counted from 1) as `g6shim_frame_<n>.bmp` next to the executable. Works with the window hidden or the desktop locked. |
 | `G6SHIM_D3D_DEBUG=1` | Create the device with the Direct3D debug layer; invalid calls appear as debug output. |
 | `G6SHIM_D3D_DRED=1` | Record GPU progress and page faults, so the log says where the GPU stopped when the device is removed. The reason for a removal is logged without it. |
+| `G6SHIM_WINDOW=<width>x<height>` | Client size of the presentation window, whatever the title renders at; the picture is scaled to it. By default the window takes the title's size and is shrunk to the monitor's work area when that is larger. |
+| `G6SHIM_FULLSCREEN=1` | Borderless fullscreen: the presentation window covers the whole monitor it opens on, including the taskbar. |
 | `G6SHIM_INPUT_AUTOPRESS=6:Menu,9:A` | Hold buttons for 0.2 s at those seconds after the first controller read. Buttons: `Menu View A B X Y Up Down Left Right`. |
 | `G6SHIM_BCPACK_TABLES=<path>` | BCPack constant tables for DirectStorage texture decompression. Default: `bcpack-tables.bin` next to `XCRDAPI.dll`. Without a table file BCPack requests fail; zlib and plain requests still run. |
 | `G6SHIM_DXIL=<path>` | `dxil.dll` the shader translator and its tests validate and sign DXIL with. Default: the newest `Windows Kits\10\bin\<version>\x64\dxil.dll`. Without one the validator tests are skipped; when the variable is set and the file cannot be loaded, they fail. CI sets it to the Windows SDK's copy. |
@@ -98,5 +100,5 @@ Translated shaders and compiled host pipelines are kept outside the game folder 
 - The console's game drive `G:\` is the game folder; for a GDK title it is the folder of the executable, and the file forwarders translate it.
 - The console's temporary drive is `%TEMP%\g6shim_temp_<process id>_<tick count>`, made on the first request for it and mounted on `T:`, or on the highest free letter when the host or another mount uses `T:`. It is deleted with everything in it when the process exits normally.
 - DLLs the game ships for its own WinRT classes are activated from the game folder. Some need the Visual C++ 2012 x64 runtime.
-- A window close ends the game.
+- A window close ends the game. A window larger than the monitor's work area is shrunk to fit it, keeping the title's aspect ratio.
 - On CPUs that lack the console's AMD-only instructions, the runtime emulates them (`clzero`, `monitorx`/`mwaitx`, `clwb` and SSE4a's `extrq`/`insertq`) instead of stopping at an illegal instruction; [docs/abi/cpu.md](abi/cpu.md) lists the encodings.

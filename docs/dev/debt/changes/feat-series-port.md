@@ -295,8 +295,6 @@
   Closes when: subresource states or split barriers matter to a title.
 - Enhanced barrier groups only order shader writes with one unordered-access barrier; their layouts are not applied.
   Closes when: a title depends on a specific enhanced-barrier layout.
-- `PresentX` shows the first plane's first resource, without scaling or placement, and expects it in the common state.
-  Closes when: a title presents several planes, scales, or presents another state.
 - Page mappings are applied at once, outside the host queue; a failed mapping is logged once and the batch still reports success.
   Closes when: a title observes a page mapping before an earlier submission has run.
 - `CopyMemoryToMemoryX` copies at submission when both ranges are committed title memory, outside the host GPU.
@@ -340,3 +338,20 @@
 - The analytics information always describes the device as `Xbox Series X`; there is no console model selection.
 - The device type the console keeps in `Software\Microsoft\Windows NT\CurrentVersion\OEM\ConsoleMode` is not served, so title code that reads it sees the host's registry and takes the device for a PC.
   Closes when: a registry replacement answers that value from the selected console model.
+
+# d3d12_xs
+
+## add Functional
+
+- The window fit and its hooks cover the window the host presents on: other windows a title creates are neither fitted nor made to end the title when closed.
+  Closes when: the console's window contract is replaced and every title window gets the behaviour.
+- The app-state change registry has no exporter: no replaced contract forwards registrations to it, so a title's suspend routines are not run when its window closes.
+  Closes when: the app-notify contract is replaced and forwards its registrations.
+- Only suspension has a path: closing the window runs the registered routines; no resume notification reaches the title.
+  Closes when: the console's resume notification is served.
+- Focus is not tracked: the title keeps presenting while its window is in the background, and no notification tells it that it lost or gained focus.
+  Closes when: the console's focus notifications are served.
+- `G6SHIM_FULLSCREEN` fills the monitor's rectangle, so a title whose aspect ratio differs from the monitor's is stretched rather than letterboxed.
+  Closes when: a title's frame has to keep its aspect ratio in fullscreen.
+- `G6SHIM_WINDOW` forces the window's client size without fitting it; a size larger than the monitor puts part of the window off screen.
+  Closes when: a window has to be larger than the monitor.

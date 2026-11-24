@@ -86,6 +86,7 @@ add_executable(g6shim_tests
   unit/d3d12_xs_list_test.cpp
   unit/d3d12_xs_acceleration_test.cpp
   unit/d3d12_xs_queue_test.cpp
+  unit/d3d12_xs_window_test.cpp
   unit/d3d12_xs_primitive_test.cpp
   unit/d3d12_xs_indirect_test.cpp
   unit/d3d12_xs_draw_test.cpp
@@ -117,6 +118,8 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/signature.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/texture.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/watch.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/window.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/window_geometry.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/graphics_object.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/device.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/objects.cpp"

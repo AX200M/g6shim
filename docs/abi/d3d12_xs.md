@@ -292,6 +292,19 @@ Wait flag 2 makes a token when the wait times out. The token counts frames; tick
 | swap chain | 2 buffers, flip discard, `Present(0, 0)` |
 | drawable formats | 27-32, 87, 90, 91, 23-25, 9-14; other formats are not shown |
 
+## Presentation window
+
+| Piece | Value |
+|---|---|
+| requested client size | a window the module creates takes the first presented texture's size; a title window keeps the size it was made with |
+| fit | scaled to the monitor's work area, aspect kept, truncated, centred; unchanged when it already fits |
+| `G6SHIM_WINDOW` | `widthxheight`, positive, at most 32767; forces the client size without fitting and keeps the window's position |
+| `G6SHIM_FULLSCREEN` | any value not starting with `0`: `WS_POPUP` on the monitor's rectangle |
+| swap chain | back buffer at the title's size, `DXGI_SCALING_STRETCH`: a frame is stretched to the client area |
+| close | `WM_SYSCOMMAND` `SC_CLOSE` and `WM_CLOSE` run the registered suspend routines with quiesced 1 (1 s at most), save the host pipeline cache, then end the process |
+| other system commands | `SC_KEYMENU` is swallowed, so Alt and F10 open no window menu |
+| app state registrations | ids start at 1; a null routine or registration is `ERROR_INVALID_PARAMETER` (87); unregistering removes every routine with the id |
+
 ## Host lists
 
 | Piece | Bytes |

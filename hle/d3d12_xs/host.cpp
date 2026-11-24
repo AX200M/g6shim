@@ -6,13 +6,13 @@
 #include "shadow.hpp"
 #include "texture.hpp"
 #include "watch.hpp"
+#include "window.hpp"
 
 #include <g6shim/log.hpp>
 #include <g6shim/window.hpp>
 
 #include <algorithm>
 #include <chrono>
-#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -138,57 +138,6 @@ HWND title_window() {
     HWND found = nullptr;
     ::EnumWindows(&consider_window, reinterpret_cast<LPARAM>(&found));
     return found;
-}
-
-LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
-    return ::DefWindowProcW(window, message, wparam, lparam);
-}
-
-HWND make_window(std::uint32_t width, std::uint32_t height) {
-    constexpr wchar_t kClass[] = L"g6shim_window";
-    const HINSTANCE instance = ::GetModuleHandleW(nullptr);
-    WNDCLASSEXW window_class{};
-    window_class.cbSize = sizeof window_class;
-    window_class.lpfnWndProc = &window_proc;
-    window_class.hInstance = instance;
-    window_class.lpszClassName = kClass;
-    window_class.hCursor = ::LoadCursorA(nullptr, IDC_ARROW);
-    ::RegisterClassExW(&window_class);
-    RECT rect{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
-    ::AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
-    return ::CreateWindowExW(0, kClass, L"g6shim", WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
-                             rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, instance, nullptr);
-}
-
-void pump_messages() {
-    MSG message{};
-    while (::GetMessageW(&message, nullptr, 0, 0) > 0) {
-        ::TranslateMessage(&message);
-        ::DispatchMessageW(&message);
-    }
-}
-
-HWND window(std::uint32_t width, std::uint32_t height) {
-    struct Shared {
-        std::mutex mutex;
-        std::condition_variable ready;
-        HWND window = nullptr;
-        bool done = false;
-    };
-    auto shared = std::make_shared<Shared>();
-    std::thread([shared, width, height] {
-        const HWND made = make_window(width, height);
-        {
-            std::lock_guard<std::mutex> lock(shared->mutex);
-            shared->window = made;
-            shared->done = true;
-        }
-        shared->ready.notify_all();
-        if (made != nullptr) pump_messages();
-    }).detach();
-    std::unique_lock<std::mutex> lock(shared->mutex);
-    shared->ready.wait(lock, [&shared] { return shared->done; });
-    return shared->window;
 }
 
 std::wstring widen(const std::string& text) {
@@ -558,7 +507,10 @@ std::optional<std::pair<Microsoft::WRL::ComPtr<ID3D12Resource>, std::uint8_t*>> 
 std::unique_ptr<Host::Presenter> Host::make_presenter(std::uint32_t width, std::uint32_t height,
                                                       DXGI_FORMAT format) {
     HWND hwnd = title_window();
-    if (hwnd == nullptr) hwnd = window(width, height);
+    if (hwnd != nullptr)
+        window::adopt(hwnd);
+    else
+        hwnd = window::create(width, height);
     if (hwnd == nullptr) return nullptr;
     Microsoft::WRL::ComPtr<IDXGIFactory2> factory;
     if (FAILED(::CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)))) return nullptr;
@@ -571,6 +523,7 @@ std::unique_ptr<Host::Presenter> Host::make_presenter(std::uint32_t width, std::
     desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     desc.BufferCount = kSwapChainBuffers;
     desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    desc.Scaling = DXGI_SCALING_STRETCH;
     Microsoft::WRL::ComPtr<IDXGISwapChain1> swap_chain;
     if (FAILED(factory->CreateSwapChainForHwnd(queue_.Get(), hwnd, &desc, nullptr, nullptr, &swap_chain)))
         return nullptr;
@@ -583,7 +536,10 @@ std::unique_ptr<Host::Presenter> Host::make_presenter(std::uint32_t width, std::
     made->height = height;
     made->format = format;
     made->hwnd = hwnd;
-    G6SHIM_INFO("d3d12_xs: presenting %ux%u on window %p", width, height, hwnd);
+    RECT client{};
+    ::GetClientRect(hwnd, &client);
+    G6SHIM_INFO("d3d12_xs: presenting %ux%u on a %ldx%ld client window %p", width, height,
+                client.right - client.left, client.bottom - client.top, hwnd);
     return made;
 }
 
