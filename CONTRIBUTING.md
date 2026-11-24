@@ -6,7 +6,7 @@ By contributing you declare that your work comes only from public documentation,
 
 ## Licence
 
-Contributions are licensed under LGPL-3.0-or-later. New source files start with the same two SPDX lines as the others.
+Contributions are licensed under GPL-3.0-or-later. New source files start with the same two SPDX lines as the others.
 
 ## Setup
 

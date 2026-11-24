@@ -49,4 +49,4 @@ See [docs/running.md](docs/running.md) for the workflow, every tool option and e
 
 ## Licence
 
-[LGPL-3.0-or-later](LICENSE).
+[GPL-3.0-or-later](LICENSE).

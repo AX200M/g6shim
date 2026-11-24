@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
-// SPDX-License-Identifier: LGPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "g6shim/hle.hpp"
 #include "g6shim/inventory.hpp"
 
@@ -16,10 +16,10 @@ namespace {
 
 constexpr char kCppSpdx[] =
     "// SPDX-FileCopyrightText: 2026 gookie and g6shim contributors\n"
-    "// SPDX-License-Identifier: LGPL-3.0-or-later\n";
+    "// SPDX-License-Identifier: GPL-3.0-or-later\n";
 constexpr char kCmakeSpdx[] =
     "# SPDX-FileCopyrightText: 2026 gookie and g6shim contributors\n"
-    "# SPDX-License-Identifier: LGPL-3.0-or-later\n";
+    "# SPDX-License-Identifier: GPL-3.0-or-later\n";
 constexpr char kStubInclude[] = "#include <g6shim/stub.hpp>\n\n";
 
 void usage() {

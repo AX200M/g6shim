@@ -1,4 +1,4 @@
 #!/bin/sh
 # SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
-# SPDX-License-Identifier: LGPL-3.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 exec python3 "$(git rev-parse --show-toplevel)/tools/check_conventions.py" --commit-msg "$1"

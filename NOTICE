@@ -3,11 +3,10 @@ Copyright (C) 2026 gookie and the g6shim contributors
 https://github.com/gookie-dev/g6shim
 
 g6shim is free software: you can redistribute it and/or modify it under the
-terms of the GNU Lesser General Public License as published by the Free
-Software Foundation, either version 3 of the License, or (at your option) any
-later version. The GNU Lesser General Public License is in LICENSE; the GNU
-General Public License it incorporates is in LICENSE.GPL.
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. The GNU General Public License is in LICENSE.
 
 g6shim is distributed in the hope that it will be useful, but WITHOUT ANY
 WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
-PARTICULAR PURPOSE. See the GNU Lesser General Public License for more details.
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
