@@ -1,0 +1,5 @@
+LIBRARY "g6shim_libloader2.dll"
+EXPORTS
+    FindResourceW=kernel32.FindResourceW
+    LoadLibraryA=g6shim_LoadLibraryA
+    LoadLibraryW=g6shim_LoadLibraryW

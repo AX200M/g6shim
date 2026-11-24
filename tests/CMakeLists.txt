@@ -54,6 +54,16 @@ add_executable(g6shim_tests
   unit/xma_test.cpp
   unit/bcpack_test.cpp
   unit/xcrdapi_test.cpp
+  unit/xgameruntime_xasync_test.cpp
+  unit/xgameruntime_xuser_test.cpp
+  unit/xgameruntime_xgame_test.cpp
+  unit/xgameruntime_xsystem_test.cpp
+  unit/xgameruntime_module_test.cpp
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/runtime.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xasync.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xuser.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xgame.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xsystem.cpp"
   unit/log_format_test.cpp
   unit/cpu_emulation_test.cpp
   "${PROJECT_SOURCE_DIR}/runtime/src/cpu_emulation.cpp"
@@ -137,7 +147,8 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/xcrdapi/dstorage.cpp")
 target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim_shader g6shim::winrt Opus::opus d3d12 dxgi d3dcompiler onecore)
 target_link_options(g6shim_tests PRIVATE "/EXPORT:__XMemAllocationHooks__,DATA" "/EXPORT:g6shim_xmem_map_alias")
-foreach(forwarder IN ITEMS hle_g6shim_file hle_g6shim_file2 hle_g6shim_crtfs hle_g6shim_kernel32)
+foreach(forwarder IN ITEMS hle_g6shim_file hle_g6shim_file2 hle_g6shim_crtfs hle_g6shim_kernel32
+                         hle_g6shim_libloader hle_g6shim_libloader2 hle_xgameruntime)
   if(TARGET ${forwarder})
     add_dependencies(g6shim_tests ${forwarder})
   endif()
@@ -155,6 +166,7 @@ target_include_directories(g6shim_tests PRIVATE
   "${PROJECT_SOURCE_DIR}/hle/xapu"
   "${PROJECT_SOURCE_DIR}/hle/xg_xs"
   "${PROJECT_SOURCE_DIR}/hle/xcrdapi"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime"
   "${PROJECT_SOURCE_DIR}/runtime/src"
   "${PROJECT_SOURCE_DIR}/winrt")
 g6shim_add_compute_dxil(g_bvh_build_dxil "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh/build.hlsl" main)

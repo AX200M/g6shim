@@ -327,3 +327,16 @@
   Closes when: a title needs the monitor's wait semantics.
 - `clwb` is skipped and its write-back loop is retired in one exception; host memory is coherent, so no cache line is written back.
   Closes when: a title's timing depends on the write-back.
+
+# xgameruntime
+
+## add Functional
+
+- `XLaunchNewGame` logs its executable and arguments and returns; the title is not ended and no new process starts.
+  Closes when: the runner can restart a title with its own options and the title's arguments.
+- `XTaskQueueTerminate` ignores its wait flag: it runs the queued callbacks as cancelled on the calling thread and returns without waiting for a callback that is already running.
+- Feature checks answer from the console's full area list, so areas whose `QueryApiImpl` still returns `0x80070032` are reported as available.
+  Closes when: every advertised area is served.
+- The analytics information always describes the device as `Xbox Series X`; there is no console model selection.
+- The device type the console keeps in `Software\Microsoft\Windows NT\CurrentVersion\OEM\ConsoleMode` is not served, so title code that reads it sees the host's registry and takes the device for a PC.
+  Closes when: a registry replacement answers that value from the selected console model.
