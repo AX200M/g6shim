@@ -25,6 +25,22 @@ g6shim-run D:\work\Game\Game.exe
 
 `unimplemented: <dll>!<function>` in the output is the next function to write. [docs/dev/hle.md](dev/hle.md) explains how.
 
+## GDK titles
+
+GDK titles call the PC's file functions directly, so they need the virtual drive without `kernelx.dll`. Point their file imports at the forwarders:
+
+```bat
+g6shim-relink D:\original\Game.exe -o D:\work\Game\Game.exe ^
+  --rename api-ms-win-core-file-l1-1-0.dll=g6shim_file.dll ^
+  --rename api-ms-win-core-file-l2-1-0.dll=g6shim_file2.dll ^
+  --rename api-ms-win-crt-filesystem-l1-1-0.dll=g6shim_crtfs.dll ^
+  --rename api-ms-win-crt-stdio-l1-1-0.dll=g6shim_crtstdio.dll ^
+  --rename api-ms-win-crt-time-l1-1-0.dll=g6shim_crttime.dll ^
+  --rename kernel32.dll=g6shim_kernel32.dll
+```
+
+Each forwarder re-exports the whole DLL it replaces: names it does not translate reach Windows unchanged, and the path-taking ones rewrite `G:\` to the folder of the executable. `G:\common.rpf` is `<exe folder>\common.rpf`. Build and deploy the forwarders like the other replacement DLLs.
+
 ## Tools
 
 | Tool | Does |
@@ -60,6 +76,6 @@ g6shim-run D:\work\Game\Game.exe
 
 ## Notes
 
-- The console's game drive `G:\` is the game folder.
+- The console's game drive `G:\` is the game folder; for a GDK title it is the folder of the executable, and the file forwarders translate it.
 - DLLs the game ships for its own WinRT classes are activated from the game folder. Some need the Visual C++ 2012 x64 runtime.
 - A window close ends the game.

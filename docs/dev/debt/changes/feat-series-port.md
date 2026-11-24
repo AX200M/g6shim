@@ -66,3 +66,24 @@
   Closes when: a dependence pass derives the input-to-output sets from the program.
 - A custom border colour in an immediate sampler decodes as transparent black; the custom colour table entry is ignored.
   Closes when: a title uses a custom border colour.
+
+# project
+
+## add Functional
+
+- Only `G:` is mounted, on the folder of the executable. The console's persistent local storage drive and its `T:\` temporary drive have no mount, and nothing calls the free-letter mount helper yet.
+  Closes when: local storage and temporary folders are given drives.
+- The forwarders translate only the functions listed in `docs/abi/g6shim_file.md`. The other path-taking exports of the replaced DLLs stay plain forwarders: in the file sets `CreateDirectoryA`, `FindFirstFileA`, `FindFirstFileExA`, `GetDiskFreeSpaceA`, `GetFileAttributesExA`, `RemoveDirectoryA`, `GetTempFileNameW`, `GetFullPathNameW`, `GetDriveTypeA/W`, `GetLongPathNameA/W`, `GetShortPathNameW`, `GetVolumeInformationW`, `CopyFile2`, `CopyFileExW`, `CreateDirectoryExW`, `CreateHardLinkW`, `CreateSymbolicLinkW`, `MoveFileWithProgressW`, `ReplaceFileW`; in the CRT `_access`, `_chdir`, `_chmod`, `_mkdir`, `_rmdir`, `_stat64`, `_waccess`, `_wchdir`, `_wmkdir`, `_wrmdir`, `_wrename`, `rename`, the `_findfirst*`/`_findnext*` pairs, `_fullpath`, `_popen`, `_sopen`, `freopen` and every crt-time path call but `_wutime64`.
+  Closes when: the remaining path-taking exports are translated too.
+- `api-ms-win-core-processenvironment-l1-1-0.dll`, `api-ms-win-core-file-l1-2-0.dll` and the other contracts a GDK title may import path functions from are not replaced. Only `kernel32.dll`'s copies of `SetCurrentDirectoryA/W` and the file API set's copies of the file functions are translated; an import that binds to a different contract reaches Windows untranslated.
+  Closes when: a title is seen importing a path function from a contract that has no forwarder.
+- The CRT forwarders call the System32 `ucrtbase.dll`; a title that opens files through another CRT, such as `msvcp140.dll`'s `_Fiopen`, still sees its own paths.
+  Closes when: the C++ stream open is intercepted as well.
+- A drive stays mounted for the rest of the process even when the folder behind it is removed, and a title can mount no drive of its own.
+  Closes when: mounts follow the folder's lifetime.
+
+# kernelx
+
+## change paths are translated
+
+- `G:\` paths are translated through the shared drive table in `g6shim_runtime.dll`, in kernelx's own file functions and in `ucrtbase.dll`'s imports of nine file functions. Modules that call the PC's file functions directly need one of the file forwarder DLLs.

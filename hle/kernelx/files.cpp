@@ -3,13 +3,11 @@
 #include <windows.h>
 #include <fileapi.h>
 
+#include <g6shim/drives.hpp>
 #include <g6shim/log.hpp>
-
-#include "game_drive.hpp"
 
 #include <cstdint>
 #include <cstring>
-#include <cwchar>
 #include <mutex>
 #include <set>
 #include <string>
@@ -20,20 +18,6 @@ constexpr std::size_t kMaxLogged = 500;
 constexpr USHORT kBacktraceFrames = 24;
 constexpr wchar_t kCrt[] = L"ucrtbase.dll";
 
-const std::wstring& game_folder() {
-    static const std::wstring folder = [] {
-        wchar_t exe[MAX_PATH];
-        const DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
-        if (n == 0 || n >= MAX_PATH) return std::wstring{};
-        std::wstring path(exe, n);
-        path.erase(path.find_last_of(L"\\/") + 1);
-        return path;
-    }();
-    return folder;
-}
-
-std::wstring translate(LPCWSTR path) { return g6shim::kernelx::translate_game_drive(path, game_folder()); }
-
 std::wstring widen(LPCSTR path) {
     if (!path) return {};
     const int n = MultiByteToWideChar(CP_ACP, 0, path, -1, nullptr, 0);
@@ -42,8 +26,6 @@ std::wstring widen(LPCSTR path) {
     if (!out.empty()) out.pop_back();
     return out;
 }
-
-bool on_game_drive(LPCSTR path) { return g6shim::kernelx::on_game_drive(path); }
 
 void log_failure(LPCWSTR path, DWORD error) {
     static std::mutex mutex;
@@ -56,7 +38,8 @@ void log_failure(LPCWSTR path, DWORD error) {
     char utf8[MAX_PATH * 3] = "";
     WideCharToMultiByte(CP_UTF8, 0, key.c_str(), -1, utf8, sizeof utf8 - 1, nullptr, nullptr);
     const auto exe = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(exe + reinterpret_cast<const IMAGE_DOS_HEADER*>(exe)->e_lfanew);
+    const auto* nt =
+        reinterpret_cast<const IMAGE_NT_HEADERS64*>(exe + reinterpret_cast<const IMAGE_DOS_HEADER*>(exe)->e_lfanew);
     void* frames[kBacktraceFrames] = {};
     const USHORT n = RtlCaptureStackBackTrace(1, kBacktraceFrames, frames, nullptr);
     std::uintptr_t caller = 0;
@@ -68,15 +51,20 @@ void log_failure(LPCWSTR path, DWORD error) {
                 static_cast<unsigned long long>(caller));
 }
 
+LPCWSTR host_path(const std::optional<std::wstring>& path, LPCWSTR original) {
+    return path ? path->c_str() : original;
+}
+
 }  // namespace
 
 extern "C" HANDLE WINAPI g6shim_CreateFileW(LPCWSTR path, DWORD access, DWORD share, LPSECURITY_ATTRIBUTES security,
                                             DWORD disposition, DWORD flags, HANDLE template_file) {
-    const std::wstring p = translate(path);
-    const HANDLE h = CreateFileW(path ? p.c_str() : nullptr, access, share, security, disposition, flags, template_file);
+    const auto p = g6shim::drives::translate(path);
+    const HANDLE h =
+        CreateFileW(host_path(p, path), access, share, security, disposition, flags, template_file);
     if (h == INVALID_HANDLE_VALUE) {
         const DWORD error = GetLastError();
-        log_failure(path ? p.c_str() : nullptr, error);
+        log_failure(host_path(p, path), error);
         SetLastError(error);
     }
     return h;
@@ -84,12 +72,12 @@ extern "C" HANDLE WINAPI g6shim_CreateFileW(LPCWSTR path, DWORD access, DWORD sh
 
 extern "C" HANDLE WINAPI g6shim_CreateFileA(LPCSTR path, DWORD access, DWORD share, LPSECURITY_ATTRIBUTES security,
                                             DWORD disposition, DWORD flags, HANDLE template_file) {
-    if (on_game_drive(path))
-        return g6shim_CreateFileW(widen(path).c_str(), access, share, security, disposition, flags, template_file);
-    const HANDLE h = CreateFileA(path, access, share, security, disposition, flags, template_file);
+    const auto p = g6shim::drives::translate(path);
+    const HANDLE h = p ? CreateFileW(p->c_str(), access, share, security, disposition, flags, template_file)
+                       : CreateFileA(path, access, share, security, disposition, flags, template_file);
     if (h == INVALID_HANDLE_VALUE) {
         const DWORD error = GetLastError();
-        log_failure(widen(path).c_str(), error);
+        log_failure(p ? p->c_str() : widen(path).c_str(), error);
         SetLastError(error);
     }
     return h;
@@ -97,11 +85,11 @@ extern "C" HANDLE WINAPI g6shim_CreateFileA(LPCSTR path, DWORD access, DWORD sha
 
 extern "C" HANDLE WINAPI g6shim_CreateFile2(LPCWSTR path, DWORD access, DWORD share, DWORD disposition,
                                             LPCREATEFILE2_EXTENDED_PARAMETERS parameters) {
-    const std::wstring p = translate(path);
-    const HANDLE h = CreateFile2(path ? p.c_str() : nullptr, access, share, disposition, parameters);
+    const auto p = g6shim::drives::translate(path);
+    const HANDLE h = CreateFile2(host_path(p, path), access, share, disposition, parameters);
     if (h == INVALID_HANDLE_VALUE) {
         const DWORD error = GetLastError();
-        log_failure(path ? p.c_str() : nullptr, error);
+        log_failure(host_path(p, path), error);
         SetLastError(error);
     }
     return h;
@@ -109,17 +97,18 @@ extern "C" HANDLE WINAPI g6shim_CreateFile2(LPCWSTR path, DWORD access, DWORD sh
 
 extern "C" HANDLE WINAPI g6shim_FindFirstFileExW(LPCWSTR path, FINDEX_INFO_LEVELS level, LPVOID data,
                                                  FINDEX_SEARCH_OPS op, LPVOID filter, DWORD flags) {
-    return FindFirstFileExW(path ? translate(path).c_str() : nullptr, level, data, op, filter, flags);
+    return FindFirstFileExW(host_path(g6shim::drives::translate(path), path), level, data, op, filter, flags);
 }
 
 extern "C" HANDLE WINAPI g6shim_FindFirstFileW(LPCWSTR path, LPWIN32_FIND_DATAW data) {
-    return FindFirstFileW(path ? translate(path).c_str() : nullptr, data);
+    return FindFirstFileW(host_path(g6shim::drives::translate(path), path), data);
 }
 
 extern "C" HANDLE WINAPI g6shim_FindFirstFileA(LPCSTR path, LPWIN32_FIND_DATAA data) {
-    if (!on_game_drive(path)) return FindFirstFileA(path, data);
+    const auto p = g6shim::drives::translate(path);
+    if (!p) return FindFirstFileA(path, data);
     WIN32_FIND_DATAW wide{};
-    const HANDLE h = FindFirstFileW(translate(widen(path).c_str()).c_str(), &wide);
+    const HANDLE h = FindFirstFileW(p->c_str(), &wide);
     if (h != INVALID_HANDLE_VALUE && data) {
         std::memset(data, 0, sizeof *data);
         data->dwFileAttributes = wide.dwFileAttributes;
@@ -135,53 +124,57 @@ extern "C" HANDLE WINAPI g6shim_FindFirstFileA(LPCSTR path, LPWIN32_FIND_DATAA d
 }
 
 extern "C" DWORD WINAPI g6shim_GetFileAttributesW(LPCWSTR path) {
-    return GetFileAttributesW(path ? translate(path).c_str() : nullptr);
+    return GetFileAttributesW(host_path(g6shim::drives::translate(path), path));
 }
 
 extern "C" DWORD WINAPI g6shim_GetFileAttributesA(LPCSTR path) {
-    return on_game_drive(path) ? GetFileAttributesW(translate(widen(path).c_str()).c_str()) : GetFileAttributesA(path);
+    const auto p = g6shim::drives::translate(path);
+    return p ? GetFileAttributesW(p->c_str()) : GetFileAttributesA(path);
 }
 
 extern "C" BOOL WINAPI g6shim_GetFileAttributesExW(LPCWSTR path, GET_FILEEX_INFO_LEVELS level, LPVOID info) {
-    return GetFileAttributesExW(path ? translate(path).c_str() : nullptr, level, info);
+    return GetFileAttributesExW(host_path(g6shim::drives::translate(path), path), level, info);
 }
 
 extern "C" BOOL WINAPI g6shim_GetFileAttributesExA(LPCSTR path, GET_FILEEX_INFO_LEVELS level, LPVOID info) {
-    return on_game_drive(path) ? GetFileAttributesExW(translate(widen(path).c_str()).c_str(), level, info)
-                               : GetFileAttributesExA(path, level, info);
+    const auto p = g6shim::drives::translate(path);
+    return p ? GetFileAttributesExW(p->c_str(), level, info) : GetFileAttributesExA(path, level, info);
 }
 
 extern "C" BOOL WINAPI g6shim_SetFileAttributesW(LPCWSTR path, DWORD attributes) {
-    return SetFileAttributesW(path ? translate(path).c_str() : nullptr, attributes);
+    return SetFileAttributesW(host_path(g6shim::drives::translate(path), path), attributes);
 }
 
 extern "C" BOOL WINAPI g6shim_CreateDirectoryW(LPCWSTR path, LPSECURITY_ATTRIBUTES security) {
-    return CreateDirectoryW(path ? translate(path).c_str() : nullptr, security);
+    return CreateDirectoryW(host_path(g6shim::drives::translate(path), path), security);
 }
 
 extern "C" BOOL WINAPI g6shim_CreateDirectoryA(LPCSTR path, LPSECURITY_ATTRIBUTES security) {
-    return on_game_drive(path) ? CreateDirectoryW(translate(widen(path).c_str()).c_str(), security)
-                               : CreateDirectoryA(path, security);
+    const auto p = g6shim::drives::translate(path);
+    return p ? CreateDirectoryW(p->c_str(), security) : CreateDirectoryA(path, security);
 }
 
 extern "C" BOOL WINAPI g6shim_RemoveDirectoryW(LPCWSTR path) {
-    return RemoveDirectoryW(path ? translate(path).c_str() : nullptr);
+    return RemoveDirectoryW(host_path(g6shim::drives::translate(path), path));
 }
 
 extern "C" BOOL WINAPI g6shim_RemoveDirectoryA(LPCSTR path) {
-    return on_game_drive(path) ? RemoveDirectoryW(translate(widen(path).c_str()).c_str()) : RemoveDirectoryA(path);
+    const auto p = g6shim::drives::translate(path);
+    return p ? RemoveDirectoryW(p->c_str()) : RemoveDirectoryA(path);
 }
 
 extern "C" BOOL WINAPI g6shim_DeleteFileW(LPCWSTR path) {
-    return DeleteFileW(path ? translate(path).c_str() : nullptr);
+    return DeleteFileW(host_path(g6shim::drives::translate(path), path));
 }
 
 extern "C" BOOL WINAPI g6shim_DeleteFileA(LPCSTR path) {
-    return on_game_drive(path) ? DeleteFileW(translate(widen(path).c_str()).c_str()) : DeleteFileA(path);
+    const auto p = g6shim::drives::translate(path);
+    return p ? DeleteFileW(p->c_str()) : DeleteFileA(path);
 }
 
 extern "C" BOOL WINAPI g6shim_MoveFileExW(LPCWSTR from, LPCWSTR to, DWORD flags) {
-    return MoveFileExW(from ? translate(from).c_str() : nullptr, to ? translate(to).c_str() : nullptr, flags);
+    return MoveFileExW(host_path(g6shim::drives::translate(from), from),
+                       host_path(g6shim::drives::translate(to), to), flags);
 }
 
 namespace {

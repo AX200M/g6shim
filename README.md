@@ -26,7 +26,7 @@ g6shim runs games made for the Xbox One and Xbox Series X|S consoles on Windows 
 
 ## Progress
 
-**Target: the Series title 7952987A.** It runs for about two seconds today, up to its DirectStorage setup. Next milestone: **the first frame**.
+**Target: the Series title 7952987A.** It starts, opens all its archives and stops where graphics begin (`D3D12XboxCreateDevice`). Next milestone: **the first frame**.
 
 | | Area | Progress |
 |:-:|---|---|
@@ -37,7 +37,7 @@ g6shim runs games made for the Xbox One and Xbox Series X|S consoles on Windows 
 | ✅ | Storage · `XCRDAPI` | `▰▰▰▰▰▰▰▰▱▱ 85 %` |
 | 🔨 | Shaders | `▰▰▰▰▱▱▱▱▱▱ 40 %` |
 | ⬜ | Graphics · `d3d12_xs` | `▱▱▱▱▱▱▱▱▱▱ 0 %` |
-| 🔨 | Runtime services | `▰▰▱▱▱▱▱▱▱▱ 20 %` |
+| 🔨 | Runtime services | `▰▰▰▱▱▱▱▱▱▱ 35 %` |
 | ⬜ | Ray tracing | `▱▱▱▱▱▱▱▱▱▱ 0 %` |
 
 ✅ works · 🔨 in progress · ⬜ not started
@@ -54,7 +54,7 @@ g6shim runs games made for the Xbox One and Xbox Series X|S consoles on Windows 
 | Storage · `XCRDAPI` | DirectStorage factory, files, queues and status arrays; zlib and BCPack decompression | BCPack needs the format tables supplied by the user (`G6SHIM_BCPACK_TABLES`); some interface slots |
 | Shaders | Decoding, containers, SSA, lane structurisation, resource and I/O tracking | DXIL emission, the whole shader set |
 | Graphics · `d3d12_xs` | – | Device, resources, descriptors, command lists, pipelines, presentation |
-| Runtime services | The PC's own XGameRuntime starts | Package paths, saves, input and lifecycle where the title needs them |
+| Runtime services | The PC's own XGameRuntime starts; the package drive `G:\` for titles that call Windows file functions directly | Persistent storage drive, saves, input and lifecycle where the title needs them |
 | Ray tracing | – | Acceleration structures in the console's BVH layout |
 
 </details>

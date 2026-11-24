@@ -4,7 +4,7 @@
 
 | Export | Signature and use |
 |---|---|
-| `CreateFileW`, `CreateFile2`, `FindFirstFileExW` and the other file functions | PC signatures; paths on `G:\` name the game's package |
+| `CreateFileW`, `CreateFile2`, `FindFirstFileExW` and the other file functions | PC signatures; paths on `G:\` are translated through the shared drive table |
 | `VirtualAlloc` | PC signature; accepts type and protection bits the PC rejects; large-page requests |
 | `XMemAlloc` | `void* (SIZE_T size, ULONGLONG attributes)` |
 | `XMemFree` | `void (void* p, ULONGLONG attributes)` |

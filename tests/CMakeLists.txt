@@ -8,6 +8,7 @@ add_executable(g6shim_tests
   unit/inventory_test.cpp
   unit/relink_test.cpp
   unit/game_drive_test.cpp
+  unit/drives_test.cpp
   unit/topology_test.cpp
   unit/packet_test.cpp
   unit/view_desc_test.cpp

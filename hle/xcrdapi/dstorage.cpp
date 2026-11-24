@@ -4,6 +4,7 @@
 
 #include "bcpack.hpp"
 
+#include <g6shim/drives.hpp>
 #include <g6shim/log.hpp>
 #include <g6shim/shader/error.hpp>
 #include <g6shim/shader/inflate.hpp>
@@ -84,20 +85,6 @@ std::string narrow(const wchar_t* text) {
 
 HRESULT from_win32(DWORD error) {
     return static_cast<HRESULT>(0x8007'0000u | (error & 0xffffu));
-}
-
-using CreateFileFunction = HANDLE(WINAPI*)(LPCWSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD,
-                                           DWORD, HANDLE);
-
-CreateFileFunction create_file_api() {
-    static const CreateFileFunction api = [] {
-        const HMODULE kernel = GetModuleHandleW(L"kernelx.dll");
-        const auto proc = kernel != nullptr
-                              ? reinterpret_cast<CreateFileFunction>(GetProcAddress(kernel, "CreateFileW"))
-                              : nullptr;
-        return proc != nullptr ? proc : &::CreateFileW;
-    }();
-    return api;
 }
 
 std::atomic<std::uint64_t>& reading_time() {
@@ -414,8 +401,9 @@ std::uint32_t WINAPI add_ref(const Object*) { return 1; }
 HRESULT WINAPI open_file(const Object*, const wchar_t* path, const Guid* iid, void** out) {
     if (path == nullptr) return kInvalidArgument;
     const std::string name = narrow(path);
-    const HANDLE handle = create_file_api()(path, GENERIC_READ, FILE_SHARE_READ, nullptr,
-                                            OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+    const auto host = g6shim::drives::translate(path);
+    const HANDLE handle = CreateFileW(host ? host->c_str() : path, GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                      OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
         const DWORD error = GetLastError();
         G6SHIM_WARN("dstorage: opening a file failed: %s: error %lu", name.c_str(), error);
