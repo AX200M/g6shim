@@ -676,7 +676,6 @@ private:
             }
         }
         detail::fail_unsupported(0, "copies that do not settle");
-        return {};
     }
 
     const Program* p_;

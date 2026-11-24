@@ -742,7 +742,6 @@ std::vector<Bool> Lanes::paths() {
         if (!changed) return cond;
     }
     detail::fail_isa(0, "lane conditions do not settle");
-    return {};
 }
 
 std::vector<Value> Lanes::wrong_joins(const std::vector<Bool>& cond) {

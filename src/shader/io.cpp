@@ -339,7 +339,6 @@ Io raise(const Program& program, const NativeProgram& native) {
             for (const PsInput& input : *ps_inputs)
                 if (input.attr == a->index) return Attribute{input.usage, input.row, a->chan, a->high};
         detail::fail_unsupported(inst.machine.offset, "an interpolated attribute the stage data does not list");
-        return Attribute{Usage{}, 0, 0, false};
     };
     const auto barycentric = [&](std::optional<Value> value)
         -> std::optional<std::pair<Barycentric, std::uint8_t>> {

@@ -266,7 +266,8 @@ TEST(bcpack_malformed_input_is_an_error) {
     CHECK(decode(4, std::span<const std::uint8_t>{}, dst, t).has_value());
     CHECK(decode(4, src, std::span<std::uint8_t>(dst).first(12), t).has_value());
     CHECK(decode(4, src, std::span<std::uint8_t>{}, t).has_value());
-    CHECK(decode(4, src, std::span<std::uint8_t>(dst).first(65 * 8), t).has_value());
+    std::vector<std::uint8_t> roomier(65 * 8, 0);
+    CHECK(decode(4, src, roomier, t).has_value());
     CHECK(decode(2, src, dst, t).has_value());
     const std::vector<std::uint8_t> short_table(16, 0);
     CHECK(!Tables::parse(short_table, nullptr).has_value());
