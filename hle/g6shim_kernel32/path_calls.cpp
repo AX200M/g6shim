@@ -4,6 +4,7 @@
 #include <fileapi.h>
 
 #include <g6shim/drives.hpp>
+#include <g6shim/path_forwarding.hpp>
 
 namespace {
 
@@ -100,4 +101,25 @@ extern "C" BOOL WINAPI g6shim_SetCurrentDirectoryW(LPCWSTR path) {
 
 extern "C" BOOL WINAPI g6shim_SetFileAttributesW(LPCWSTR path, DWORD attributes) {
     return SetFileAttributesW(host_path(g6shim::drives::translate(path), path), attributes);
+}
+
+extern "C" BOOL WINAPI g6shim_CreateDirectoryA(LPCSTR path, LPSECURITY_ATTRIBUTES security) {
+    return g6shim::path_forwarding::create_directory_a(path, security);
+}
+
+extern "C" HANDLE WINAPI g6shim_FindFirstFileExA(LPCSTR path, FINDEX_INFO_LEVELS level, LPVOID data,
+                                                 FINDEX_SEARCH_OPS op, LPVOID filter, DWORD flags) {
+    return g6shim::path_forwarding::find_first_file_ex_a(path, level, data, op, filter, flags);
+}
+
+extern "C" DWORD WINAPI g6shim_GetFullPathNameW(LPCWSTR path, DWORD size, LPWSTR buffer, LPWSTR* file_part) {
+    return g6shim::path_forwarding::full_path_name_w(path, size, buffer, file_part);
+}
+
+extern "C" BOOL WINAPI g6shim_CopyFileW(LPCWSTR from, LPCWSTR to, BOOL fail_if_exists) {
+    return g6shim::path_forwarding::copy_file_w(from, to, fail_if_exists);
+}
+
+extern "C" HRESULT WINAPI g6shim_CopyFile2(PCWSTR from, PCWSTR to, COPYFILE2_EXTENDED_PARAMETERS* parameters) {
+    return g6shim::path_forwarding::copy_file2(from, to, parameters);
 }

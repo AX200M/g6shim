@@ -6,7 +6,12 @@
 
 #include <windows.h>
 
+#include <io.h>
+
+#include <cstdint>
+#include <cstring>
 #include <string>
+#include <vector>
 
 using g6shim::drives::mount_drive;
 using g6shim::drives::mount_drive_at;
@@ -48,6 +53,105 @@ std::wstring exe_folder() {
 
 bool is(const std::optional<std::wstring>& value, const std::wstring& expected) {
     return value.has_value() && *value == expected;
+}
+
+constexpr wchar_t kTestLetter = L'Y';
+constexpr char kPayload[] = "8 bytes!";
+constexpr DWORD kPayloadSize = sizeof kPayload - 1;
+
+struct Module {
+    explicit Module(const wchar_t* name) : handle(LoadLibraryW((exe_folder() + L"\\" + name).c_str())) {}
+    ~Module() {
+        if (handle != nullptr) FreeLibrary(handle);
+    }
+    Module(const Module&) = delete;
+    Module& operator=(const Module&) = delete;
+    template <class Function>
+    Function get(const char* name) const {
+        return handle != nullptr ? reinterpret_cast<Function>(GetProcAddress(handle, name)) : nullptr;
+    }
+    HMODULE handle;
+};
+
+struct MountedFolder {
+    MountedFolder() { mount_drive_at(kTestLetter, folder.path.c_str()); }
+    ~MountedFolder() {
+        for (const std::wstring& name : created) {
+            const std::wstring path = folder.path + L"\\" + name;
+            if (!DeleteFileW(path.c_str())) RemoveDirectoryW(path.c_str());
+        }
+        mount_drive_at(kTestLetter, exe_folder().c_str());
+    }
+    MountedFolder(const MountedFolder&) = delete;
+    MountedFolder& operator=(const MountedFolder&) = delete;
+    std::wstring host(const wchar_t* name) {
+        created.emplace_back(name);
+        return folder.path + L"\\" + name;
+    }
+    void write(const wchar_t* name) {
+        const HANDLE file = CreateFileW(host(name).c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+        DWORD written = 0;
+        WriteFile(file, kPayload, kPayloadSize, &written, nullptr);
+        CloseHandle(file);
+    }
+    TempFolder folder;
+    std::vector<std::wstring> created;
+};
+
+bool is_directory(const std::wstring& path) {
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
+std::uint64_t file_size(const std::wstring& path) {
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) return 0;
+    return (std::uint64_t{data.nFileSizeHigh} << 32) | data.nFileSizeLow;
+}
+
+using CreateDirectoryAFunction = BOOL(WINAPI*)(LPCSTR, LPSECURITY_ATTRIBUTES);
+using FindFirstFileExAFunction = HANDLE(WINAPI*)(LPCSTR, FINDEX_INFO_LEVELS, LPVOID, FINDEX_SEARCH_OPS, LPVOID, DWORD);
+using GetFullPathNameWFunction = DWORD(WINAPI*)(LPCWSTR, DWORD, LPWSTR, LPWSTR*);
+using CopyFileWFunction = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, BOOL);
+using CopyFile2Function = HRESULT(WINAPI*)(PCWSTR, PCWSTR, COPYFILE2_EXTENDED_PARAMETERS*);
+using DirectoryAFunction = int(__cdecl*)(const char*);
+using DirectoryWFunction = int(__cdecl*)(const wchar_t*);
+using FindCloseFunction = int(__cdecl*)(std::intptr_t);
+
+template <class Data>
+using FindFirstA = std::intptr_t(__cdecl*)(const char*, Data*);
+template <class Data>
+using FindFirstW = std::intptr_t(__cdecl*)(const wchar_t*, Data*);
+
+template <class Data>
+bool crt_finds_narrow(const Module& crt, const char* name) {
+    const auto find = crt.get<FindFirstA<Data>>(name);
+    const auto close = crt.get<FindCloseFunction>("_findclose");
+    if (find == nullptr || close == nullptr) return false;
+    Data data{};
+    const std::intptr_t handle = find("Y:\\*.txt", &data);
+    if (handle == -1) return false;
+    close(handle);
+    return std::strcmp(data.name, "a.txt") == 0 && data.size == kPayloadSize && (data.attrib & _A_SUBDIR) == 0;
+}
+
+template <class Data>
+bool crt_finds_wide(const Module& crt, const char* name) {
+    const auto find = crt.get<FindFirstW<Data>>(name);
+    const auto close = crt.get<FindCloseFunction>("_findclose");
+    if (find == nullptr || close == nullptr) return false;
+    Data data{};
+    const std::intptr_t handle = find(L"Y:\\*.txt", &data);
+    if (handle == -1) return false;
+    close(handle);
+    return std::wcscmp(data.name, L"a.txt") == 0 && data.size == kPayloadSize;
+}
+
+std::wstring full_path(GetFullPathNameWFunction function, const wchar_t* path) {
+    wchar_t buffer[MAX_PATH] = L"";
+    LPWSTR file_part = nullptr;
+    const DWORD length = function(path, MAX_PATH, buffer, &file_part);
+    return length > 0 && length < MAX_PATH ? std::wstring(buffer, length) : std::wstring{};
 }
 
 }  // namespace
@@ -154,4 +258,109 @@ TEST(drives_translate_against_a_given_root) {
     CHECK(translate_package(L"C:\\other", L"D:\\games\\copy") == L"C:\\other");
     CHECK(translate_package(L"G:\\x", L"") == L"G:\\x");
     CHECK(translate_package(nullptr, L"D:\\games\\copy").empty());
+}
+
+TEST(drives_forwarders_create_and_remove_directories) {
+    MountedFolder mounted;
+    const struct {
+        const wchar_t* dll;
+        const char* drive_path;
+        const wchar_t* host_name;
+    } cases[] = {{L"g6shim_file.dll", "Y:\\made_file", L"made_file"},
+                 {L"g6shim_kernel32.dll", "Y:/made_kernel32", L"made_kernel32"}};
+    for (const auto& item : cases) {
+        const Module module(item.dll);
+        const auto create = module.get<CreateDirectoryAFunction>("CreateDirectoryA");
+        CHECK(create != nullptr);
+        if (create == nullptr) continue;
+        CHECK(create(item.drive_path, nullptr));
+        CHECK(is_directory(mounted.host(item.host_name)));
+        CHECK(!create(item.drive_path, nullptr));
+        CHECK(GetLastError() == ERROR_ALREADY_EXISTS);
+    }
+    const Module crt(L"g6shim_crtfs.dll");
+    const auto mkdir_narrow = crt.get<DirectoryAFunction>("_mkdir");
+    const auto mkdir_wide = crt.get<DirectoryWFunction>("_wmkdir");
+    const auto rmdir_wide = crt.get<DirectoryWFunction>("_wrmdir");
+    CHECK(mkdir_narrow != nullptr && mkdir_wide != nullptr && rmdir_wide != nullptr);
+    if (mkdir_narrow == nullptr || mkdir_wide == nullptr || rmdir_wide == nullptr) return;
+    CHECK(mkdir_narrow("Y:\\crt_narrow") == 0);
+    CHECK(is_directory(mounted.host(L"crt_narrow")));
+    CHECK(mkdir_wide(L"Y:/crt_wide") == 0);
+    CHECK(is_directory(mounted.host(L"crt_wide")));
+    CHECK(rmdir_wide(L"Y:\\crt_wide") == 0);
+    CHECK(!is_directory(mounted.folder.path + L"\\crt_wide"));
+    CHECK(rmdir_wide(L"Y:\\crt_wide") == -1);
+}
+
+TEST(drives_forwarders_find_files_on_a_mounted_drive) {
+    MountedFolder mounted;
+    mounted.write(L"a.txt");
+    for (const wchar_t* dll : {L"g6shim_file.dll", L"g6shim_kernel32.dll"}) {
+        const Module module(dll);
+        const auto find = module.get<FindFirstFileExAFunction>("FindFirstFileExA");
+        CHECK(find != nullptr);
+        if (find == nullptr) continue;
+        WIN32_FIND_DATAA data{};
+        const HANDLE handle = find("Y:\\*.txt", FindExInfoBasic, &data, FindExSearchNameMatch, nullptr, 0);
+        CHECK(handle != INVALID_HANDLE_VALUE);
+        if (handle == INVALID_HANDLE_VALUE) continue;
+        CHECK(std::strcmp(data.cFileName, "a.txt") == 0);
+        CHECK(data.nFileSizeLow == kPayloadSize);
+        WIN32_FIND_DATAA next{};
+        CHECK(!FindNextFileA(handle, &next));
+        FindClose(handle);
+        CHECK(find("Y:\\*.none", FindExInfoBasic, &data, FindExSearchNameMatch, nullptr, 0) == INVALID_HANDLE_VALUE);
+        CHECK(GetLastError() == ERROR_FILE_NOT_FOUND);
+    }
+    const Module crt(L"g6shim_crtfs.dll");
+    CHECK(crt_finds_narrow<_finddata32_t>(crt, "_findfirst32"));
+    CHECK(crt_finds_narrow<_finddata32i64_t>(crt, "_findfirst32i64"));
+    CHECK(crt_finds_narrow<__finddata64_t>(crt, "_findfirst64"));
+    CHECK(crt_finds_narrow<_finddata64i32_t>(crt, "_findfirst64i32"));
+    CHECK(crt_finds_wide<_wfinddata32_t>(crt, "_wfindfirst32"));
+    CHECK(crt_finds_wide<_wfinddata32i64_t>(crt, "_wfindfirst32i64"));
+    CHECK(crt_finds_wide<_wfinddata64_t>(crt, "_wfindfirst64"));
+    CHECK(crt_finds_wide<_wfinddata64i32_t>(crt, "_wfindfirst64i32"));
+}
+
+TEST(drives_forwarders_keep_full_paths_on_the_drive) {
+    MountedFolder mounted;
+    for (const wchar_t* dll : {L"g6shim_file.dll", L"g6shim_kernel32.dll"}) {
+        const Module module(dll);
+        const auto function = module.get<GetFullPathNameWFunction>("GetFullPathNameW");
+        CHECK(function != nullptr);
+        if (function == nullptr) continue;
+        CHECK(full_path(function, L"Y:\\a\\..\\b.txt") == L"Y:\\b.txt");
+        CHECK(full_path(function, L"Y:/a/./b.txt") == L"Y:\\a\\b.txt");
+        CHECK(full_path(function, L"Y:b.txt") == L"Y:\\b.txt");
+        CHECK(full_path(function, L"Y:") == L"Y:\\");
+        CHECK(full_path(function, L"relative.txt") == full_path(&GetFullPathNameW, L"relative.txt"));
+        wchar_t small[4] = L"";
+        CHECK(function(L"Y:\\a\\b.txt", 4, small, nullptr) == sizeof "Y:\\a\\b.txt");
+    }
+}
+
+TEST(drives_forwarders_copy_files_between_drive_paths) {
+    MountedFolder mounted;
+    mounted.write(L"a.txt");
+    const Module kernel32(L"g6shim_kernel32.dll");
+    const auto copy = kernel32.get<CopyFileWFunction>("CopyFileW");
+    CHECK(copy != nullptr);
+    if (copy != nullptr) {
+        CHECK(copy(L"Y:\\a.txt", L"Y:/b.txt", TRUE));
+        CHECK(file_size(mounted.host(L"b.txt")) == kPayloadSize);
+        CHECK(!copy(L"Y:\\a.txt", L"Y:\\b.txt", TRUE));
+        CHECK(GetLastError() == ERROR_FILE_EXISTS);
+    }
+    for (const wchar_t* dll : {L"g6shim_file2.dll", L"g6shim_kernel32.dll"}) {
+        const Module module(dll);
+        const auto copy2 = module.get<CopyFile2Function>("CopyFile2");
+        CHECK(copy2 != nullptr);
+        if (copy2 == nullptr) continue;
+        const std::wstring target = std::wstring(L"c_") + dll + L".txt";
+        CHECK(copy2(L"Y:\\a.txt", (L"Y:\\" + target).c_str(), nullptr) == S_OK);
+        CHECK(file_size(mounted.host(target.c_str())) == kPayloadSize);
+        CHECK(copy2(L"Y:\\missing.txt", L"Y:\\d.txt", nullptr) == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
+    }
 }

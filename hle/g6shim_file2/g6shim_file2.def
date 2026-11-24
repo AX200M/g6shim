@@ -1,6 +1,6 @@
 LIBRARY "g6shim_file2.dll"
 EXPORTS
-    CopyFile2=kernel32.CopyFile2
+    CopyFile2=g6shim_CopyFile2
     CopyFileExW=kernel32.CopyFileExW
     CreateDirectoryExW=kernel32.CreateDirectoryExW
     CreateHardLinkW=kernel32.CreateHardLinkW
