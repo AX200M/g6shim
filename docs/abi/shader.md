@@ -265,6 +265,19 @@ Each part is a FourCC[4], a size u32 and the part body. A container is its first
 
 Shader kinds: 0 ps, 1 vs, 2 gs, 3 hs, 4 ds, 5 cs, 13 ms, 14 as.
 
+A console container's `DXIL` part can hold a placeholder instead of LLVM bitcode. The kind always comes from the version word; the code is the native program the `XDAT` index lists.
+
+## Native program index
+
+| Offset | Content |
+|---|---|
+| 0x18 | `XDAT` |
+| 0x1C | entry count u32, at most 64 |
+| 0x20 | 0x24 u32 |
+| 0x24 | entries: kind u32, offset u32, size u32 (part-relative) |
+
+Kind 0x0D entries hold `XBCH`: version 3 u32, packed size u64, unpacked size u64, then a zlib stream of an `FSSM` blob.
+
 ## Packed shader record
 
 Found by its marker. Offsets relative to the marker:

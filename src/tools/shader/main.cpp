@@ -8,13 +8,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cwctype>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -28,13 +31,60 @@ void usage() {
     std::cerr <<
         "usage: g6shim-shader <files or folders...> [options]\n"
         "\n"
-        "Finds the shader containers a game ships, decodes their native programs and\n"
-        "counts the unique shaders per stage.\n"
+        "Finds the shader containers a game ships, decodes their native programs,\n"
+        "translates them and counts the unique shaders per stage.\n"
         "\n"
         "options:\n"
         "  --json <out.json>     write the unique per-stage counts as JSON\n"
         "  --title-id <8 hex>    title ID to put in the JSON\n"
+        "  --out <dir>           write each translated PC container as <hash>.dxil\n"
         "  -v                    list files and the first failure per reason\n";
+}
+
+std::optional<fs::path> repository_root(fs::path start) {
+    std::error_code ec;
+    start = fs::weakly_canonical(start, ec);
+    if (ec) return std::nullopt;
+    for (;;) {
+        if (fs::exists(start / L".git", ec)) return start;
+        const fs::path parent = start.parent_path();
+        if (parent.empty() || parent == start) return std::nullopt;
+        start = parent;
+    }
+}
+
+bool same_component(const fs::path& left, const fs::path& right) {
+    const std::wstring a = left.native();
+    const std::wstring b = right.native();
+    if (a.size() != b.size()) return false;
+    for (std::size_t index = 0; index < a.size(); ++index)
+        if (std::towlower(a[index]) != std::towlower(b[index])) return false;
+    return true;
+}
+
+bool within(const fs::path& path, const fs::path& root) {
+    std::error_code ec;
+    fs::path resolved = fs::weakly_canonical(path, ec);
+    if (ec) resolved = fs::absolute(path, ec).lexically_normal();
+    auto component = resolved.begin();
+    for (auto root_component = root.begin(); root_component != root.end(); ++root_component, ++component) {
+        if (component == resolved.end() || !same_component(*component, *root_component)) return false;
+    }
+    return true;
+}
+
+bool inside_repository(const fs::path& path, const std::optional<fs::path>& tool_dir) {
+    std::error_code ec;
+    const fs::path current = fs::current_path(ec);
+    if (!ec) {
+        if (const auto root = repository_root(current))
+            if (within(path, *root)) return true;
+    }
+    if (tool_dir) {
+        if (const auto root = repository_root(*tool_dir))
+            if (within(path, *root)) return true;
+    }
+    return false;
 }
 
 class MappedFile {
@@ -183,8 +233,8 @@ void print_totals(const g6shim::shader::ShaderTotals& totals, bool verbose) {
     std::uint64_t decoded = 0;
     std::uint64_t failed = 0;
     for (const auto& [stage, counts] : totals.stages) {
-        std::cout << "  " << stage << ": " << counts.decoded << "/" << counts.total << " decoded, " << counts.failed
-                  << " failed\n";
+        std::cout << "  " << stage << ": " << counts.translated << " translated, " << counts.decoded << " decoded, "
+                  << counts.failed << " failed of " << counts.total << "\n";
         translated += counts.translated;
         decoded += counts.decoded;
         failed += counts.failed;
@@ -212,6 +262,7 @@ int main(int argc, char** argv) {
 #endif
     std::vector<fs::path> inputs;
     std::optional<fs::path> json_path;
+    std::optional<fs::path> out_dir;
     std::optional<std::string> title_id;
     bool verbose = false;
 
@@ -236,6 +287,12 @@ int main(int argc, char** argv) {
                 std::cerr << "g6shim-shader: --title-id needs 8 hex digits\n";
                 return 2;
             }
+        } else if (argument == "--out") {
+            if (i + 1 >= argc) {
+                std::cerr << "g6shim-shader: --out needs an output folder\n";
+                return 2;
+            }
+            out_dir = fs::path(argv[++i]);
         } else if (argument == "-v") {
             verbose = true;
         } else if (!argument.empty() && argument[0] == '-') {
@@ -251,6 +308,25 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    std::optional<fs::path> tool_dir;
+    {
+        std::error_code ec;
+        const fs::path executable = fs::absolute(fs::path(argv[0]), ec);
+        if (!ec) tool_dir = executable.parent_path();
+    }
+    if (out_dir) {
+        if (inside_repository(*out_dir, tool_dir)) {
+            std::cerr << "g6shim-shader: refusing to write outputs inside the repository\n";
+            return 2;
+        }
+        std::error_code ec;
+        fs::create_directories(*out_dir, ec);
+        if (ec || !fs::is_directory(*out_dir, ec)) {
+            std::cerr << "g6shim-shader: cannot create " << out_dir->string() << "\n";
+            return 2;
+        }
+    }
+
     try {
         std::vector<InputFailure> failures;
         const std::vector<fs::path> files = collect(inputs, failures);
@@ -258,6 +334,26 @@ int main(int argc, char** argv) {
             std::cerr << "g6shim-shader: skipped " << failure.path.string() << ": " << failure.error << "\n";
 
         g6shim::shader::ShaderScanner scanner;
+        std::mutex output_mutex;
+        std::string first_output_error;
+        std::uint64_t output_failures = 0;
+        if (out_dir) {
+            const fs::path directory = *out_dir;
+            scanner.set_translated_writer([directory, &output_mutex, &first_output_error, &output_failures](
+                                               std::string_view hash, std::span<const std::uint8_t> dxil) {
+                const fs::path path = directory / (std::string(hash) + ".dxil");
+                std::ofstream out(path, std::ios::binary | std::ios::trunc);
+                if (out) {
+                    out.write(reinterpret_cast<const char*>(dxil.data()),
+                              static_cast<std::streamsize>(dxil.size()));
+                    out.flush();
+                }
+                if (out) return;
+                std::lock_guard<std::mutex> lock(output_mutex);
+                if (output_failures == 0) first_output_error = path.string();
+                ++output_failures;
+            });
+        }
         std::size_t read = 0;
         for (const fs::path& path : files) {
             MappedFile file;
@@ -281,6 +377,11 @@ int main(int argc, char** argv) {
 
         if (json_path && !write_json(*json_path, title_id, totals)) {
             std::cerr << "g6shim-shader: cannot write " << json_path->string() << "\n";
+            return 1;
+        }
+        if (output_failures != 0) {
+            std::cerr << "g6shim-shader: " << output_failures << " translated container(s) could not be written; first "
+                      << first_output_error << "\n";
             return 1;
         }
         return 0;

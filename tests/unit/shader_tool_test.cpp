@@ -6,14 +6,17 @@
 #include "g6shim/shader/dxil.hpp"
 #include "g6shim/shader/error.hpp"
 #include "g6shim/shader/inflate.hpp"
+#include "g6shim/shader/native.hpp"
 #include "g6shim/shader/scan.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -36,6 +39,11 @@ void set_u32(std::vector<std::uint8_t>& data, std::size_t at, std::uint32_t valu
     data[at + 1] = static_cast<std::uint8_t>(value >> 8);
     data[at + 2] = static_cast<std::uint8_t>(value >> 16);
     data[at + 3] = static_cast<std::uint8_t>(value >> 24);
+}
+
+void set_u64(std::vector<std::uint8_t>& data, std::size_t at, std::uint64_t value) {
+    set_u32(data, at, static_cast<std::uint32_t>(value));
+    set_u32(data, at + 4, static_cast<std::uint32_t>(value >> 32));
 }
 
 std::vector<std::uint8_t> raw_stored(const std::vector<std::uint8_t>& data) {
@@ -153,6 +161,134 @@ std::vector<std::uint8_t> dxbc(const std::vector<std::pair<FourCC, std::vector<s
         append_u32(out, static_cast<std::uint32_t>(part.second.size()));
         out.insert(out.end(), part.second.begin(), part.second.end());
     }
+    return out;
+}
+
+void append_u64(std::vector<std::uint8_t>& out, std::uint64_t value) {
+    append_u32(out, static_cast<std::uint32_t>(value));
+    append_u32(out, static_cast<std::uint32_t>(value >> 32));
+}
+
+std::uint32_t adler32(const std::vector<std::uint8_t>& data) {
+    constexpr std::uint32_t kModulus = 65521;
+    std::uint32_t a = 1;
+    std::uint32_t b = 0;
+    for (const std::uint8_t byte : data) {
+        a = (a + byte) % kModulus;
+        b = (b + a) % kModulus;
+    }
+    return b << 16 | a;
+}
+
+std::vector<std::uint8_t> zlib_stored(const std::vector<std::uint8_t>& data) {
+    std::vector<std::uint8_t> out{0x78, 0x01};
+    std::size_t at = 0;
+    do {
+        const std::size_t length = std::min<std::size_t>(65535, data.size() - at);
+        const bool final = at + length == data.size();
+        out.push_back(final ? 1 : 0);
+        out.push_back(static_cast<std::uint8_t>(length));
+        out.push_back(static_cast<std::uint8_t>(length >> 8));
+        const std::uint16_t inverse = static_cast<std::uint16_t>(~static_cast<std::uint16_t>(length));
+        out.push_back(static_cast<std::uint8_t>(inverse));
+        out.push_back(static_cast<std::uint8_t>(inverse >> 8));
+        out.insert(out.end(), data.begin() + static_cast<std::ptrdiff_t>(at),
+                   data.begin() + static_cast<std::ptrdiff_t>(at + length));
+        at += length;
+    } while (at < data.size());
+    const std::uint32_t check = adler32(data);
+    out.push_back(static_cast<std::uint8_t>(check >> 24));
+    out.push_back(static_cast<std::uint8_t>(check >> 16));
+    out.push_back(static_cast<std::uint8_t>(check >> 8));
+    out.push_back(static_cast<std::uint8_t>(check));
+    return out;
+}
+
+std::vector<std::uint8_t> xbch(const std::vector<std::uint8_t>& unpacked) {
+    const std::vector<std::uint8_t> stream = zlib_stored(unpacked);
+    std::vector<std::uint8_t> out{'X', 'B', 'C', 'H'};
+    append_u32(out, 3);
+    append_u64(out, stream.size());
+    append_u64(out, unpacked.size());
+    out.insert(out.end(), stream.begin(), stream.end());
+    return out;
+}
+
+std::size_t slot(HwStage stage) {
+    constexpr std::array<std::pair<HwStage, std::size_t>, 8> kSlots{{
+        {HwStage::Ls, 0x08}, {HwStage::Hs, 0x10}, {HwStage::Es, 0x18}, {HwStage::Gs, 0x20},
+        {HwStage::Vs, 0x28}, {HwStage::Ps, 0x30}, {HwStage::Ms, 0x48}, {HwStage::Cs, 0x60},
+    }};
+    for (const auto& entry : kSlots)
+        if (entry.first == stage) return entry.second;
+    return 0;
+}
+
+constexpr std::size_t kStageDataSize = 0x14C + 8 * (4 + 10 * 10 * 4);
+constexpr std::size_t kRecordSize = 0x54;
+constexpr std::uint64_t kAbsent = 0xDEADBEEFDEADBEEFULL;
+
+std::vector<std::uint8_t> fssm(HwStage stage, const std::vector<std::uint8_t>& code) {
+    std::vector<std::uint8_t> payload;
+    append_u64(payload, 6);
+    payload.resize(0x60 + 8, 0);
+    constexpr std::array<std::size_t, 8> kSlotOffsets{0x08, 0x10, 0x18, 0x20, 0x28, 0x30, 0x48, 0x60};
+    for (const std::size_t at : kSlotOffsets) set_u64(payload, at, kAbsent);
+    const std::uint64_t record = payload.size();
+    set_u64(payload, slot(stage), record);
+    const std::uint64_t code_at = record + kRecordSize + kStageDataSize;
+    append_u64(payload, code_at);
+    append_u64(payload, code.size());
+    payload.resize(static_cast<std::size_t>(record) + 0x14, 0);
+    append_u32(payload, stage == HwStage::Ps ? 1u << 5 : 0);
+    payload.resize(static_cast<std::size_t>(record) + 0x50, 0);
+    append_u32(payload, 28);
+    payload.resize(static_cast<std::size_t>(record) + kRecordSize + kStageDataSize, 0);
+    payload.insert(payload.end(), code.begin(), code.end());
+    std::vector<std::uint8_t> out{'F', 'S', 'S', 'M'};
+    append_u32(out, 0x101);
+    append_u64(out, payload.size());
+    out.insert(out.end(), payload.begin(), payload.end());
+    return out;
+}
+
+std::vector<std::uint8_t> native_part(std::uint16_t kind, HwStage stage, const std::vector<std::uint8_t>& code) {
+    const std::vector<std::uint8_t> blob = xbch(fssm(stage, code));
+    std::vector<std::uint8_t> out(0x18, 0);
+    out.insert(out.end(), {'X', 'D', 'A', 'T'});
+    append_u32(out, 1);
+    append_u32(out, 0x24);
+    const std::size_t blob_at = out.size() + 12;
+    append_u32(out, 0x0D);
+    append_u32(out, static_cast<std::uint32_t>(blob_at));
+    append_u32(out, static_cast<std::uint32_t>(blob.size()));
+    out.insert(out.end(), blob.begin(), blob.end());
+    const std::size_t bitcode_at = out.size();
+    out.resize(bitcode_at + 16, 0);
+    while (out.size() % 4 != 0) out.push_back(0);
+    set_u32(out, 0, static_cast<std::uint32_t>(kind) << 16 | 0x66);
+    set_u32(out, 4, static_cast<std::uint32_t>(out.size() / 4));
+    out[8] = 'D';
+    out[9] = 'X';
+    out[10] = 'I';
+    out[11] = 'L';
+    set_u32(out, 12, 0x106);
+    set_u32(out, 16, static_cast<std::uint32_t>(bitcode_at - 8));
+    set_u32(out, 20, 16);
+    return out;
+}
+
+std::vector<std::uint8_t> header_only_part(std::uint16_t kind) {
+    std::vector<std::uint8_t> out(24, 0);
+    set_u32(out, 0, static_cast<std::uint32_t>(kind) << 16 | 0x66);
+    set_u32(out, 4, 6);
+    out[8] = 'D';
+    out[9] = 'X';
+    out[10] = 'I';
+    out[11] = 'L';
+    set_u32(out, 12, 0x106);
+    set_u32(out, 16, 16);
+    set_u32(out, 20, 0);
     return out;
 }
 
@@ -328,4 +464,97 @@ TEST(shader_tool_scans_and_deduplicates) {
     const auto failure = totals.failures.find("DXIL");
     CHECK(failure != totals.failures.end());
     if (failure != totals.failures.end()) CHECK(failure->second.count == 1);
+}
+
+TEST(shader_tool_reads_the_stage_with_placeholder_bitcode) {
+    const std::vector<std::uint8_t> code{0x00, 0x00, 0x80, 0xBF, 0x00, 0x00, 0x81, 0xBF};
+    const std::vector<std::uint8_t> part = native_part(1, HwStage::Vs, code);
+    CHECK(throws_parse([&] { DxilProgram::parse(part); }));
+    const std::vector<std::uint8_t> container = dxbc({{kDxil, part}});
+    ShaderScanner scanner;
+    const FileCounts counts = scanner.add_file(container);
+    CHECK(counts.containers == 1);
+    CHECK(counts.unique == 1);
+    const ShaderTotals& totals = scanner.totals();
+    const auto stage = totals.stages.find("vs");
+    CHECK(stage != totals.stages.end());
+    if (stage == totals.stages.end()) return;
+    CHECK(stage->second.total == 1);
+    CHECK(stage->second.failed == 0);
+    CHECK(stage->second.decoded + stage->second.translated == 1);
+    CHECK(totals.failures.find("DXIL") == totals.failures.end());
+    CHECK(totals.failures.find("native") == totals.failures.end());
+    CHECK(totals.failures.find("instruction") == totals.failures.end());
+}
+
+TEST(shader_tool_requires_a_native_program) {
+    const std::vector<std::uint8_t> container = dxbc({{kDxil, header_only_part(0)}});
+    ShaderScanner scanner;
+    scanner.add_file(container);
+    const ShaderTotals& totals = scanner.totals();
+    const auto stage = totals.stages.find("ps");
+    CHECK(stage != totals.stages.end());
+    if (stage == totals.stages.end()) return;
+    CHECK(stage->second.total == 1);
+    CHECK(stage->second.decoded == 0);
+    CHECK(stage->second.failed == 1);
+    const auto failure = totals.failures.find("native");
+    CHECK(failure != totals.failures.end());
+    if (failure != totals.failures.end()) CHECK(failure->second.first == "no native program");
+}
+
+TEST(shader_tool_requires_a_decodable_native_program) {
+    const std::vector<std::uint8_t> code{0x00, 0x00, 0x80, 0xBF, 0x00};
+    const std::vector<std::uint8_t> container = dxbc({{kDxil, native_part(5, HwStage::Cs, code)}});
+    ShaderScanner scanner;
+    scanner.add_file(container);
+    const ShaderTotals& totals = scanner.totals();
+    const auto stage = totals.stages.find("cs");
+    CHECK(stage != totals.stages.end());
+    if (stage == totals.stages.end()) return;
+    CHECK(stage->second.failed == 1);
+    CHECK(stage->second.decoded == 0);
+    const auto failure = totals.failures.find("instruction");
+    CHECK(failure != totals.failures.end());
+}
+
+TEST(shader_tool_counts_translation_failures_by_reason) {
+    const std::vector<std::uint8_t> code{0x00, 0x00, 0x80, 0xBF, 0x00, 0x00, 0x81, 0xBF};
+    const std::vector<std::uint8_t> container = dxbc({{kDxil, native_part(1, HwStage::Es, code)}});
+    ShaderScanner scanner;
+    scanner.add_file(container);
+    const ShaderTotals& totals = scanner.totals();
+    const auto stage = totals.stages.find("vs");
+    CHECK(stage != totals.stages.end());
+    if (stage == totals.stages.end()) return;
+    CHECK(stage->second.decoded == 1);
+    CHECK(stage->second.translated == 0);
+    CHECK(stage->second.failed == 0);
+    const auto failure = totals.failures.find("translation: I/O of this stage is not supported");
+    CHECK(failure != totals.failures.end());
+    if (failure != totals.failures.end()) CHECK(failure->second.count == 1);
+}
+
+TEST(shader_tool_hands_translated_containers_to_the_writer) {
+    const std::vector<std::uint8_t> code{0x00, 0x00, 0x80, 0xBF, 0x00, 0x00, 0x81, 0xBF};
+    const std::vector<std::uint8_t> container = dxbc({{kDxil, native_part(1, HwStage::Vs, code)}});
+    ShaderScanner scanner;
+    std::string hash;
+    std::vector<std::uint8_t> dxil;
+    scanner.set_translated_writer([&](std::string_view name, std::span<const std::uint8_t> bytes) {
+        hash = std::string(name);
+        dxil.assign(bytes.begin(), bytes.end());
+    });
+    scanner.add_file(container);
+    const ShaderTotals& totals = scanner.totals();
+    const auto stage = totals.stages.find("vs");
+    CHECK(stage != totals.stages.end());
+    if (stage == totals.stages.end()) return;
+    CHECK(stage->second.translated == 1);
+    CHECK(hash.size() == 16);
+    CHECK(std::all_of(hash.begin(), hash.end(), [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    }));
+    CHECK(dxil.size() > 4);
+    CHECK(std::equal(dxil.begin(), dxil.begin() + 4, std::array<std::uint8_t, 4>{'D', 'X', 'B', 'C'}.begin()));
 }

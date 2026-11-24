@@ -146,8 +146,6 @@
   Closes when: a mesh program needs one.
 - Packed shader records are found by their marker instead of through the file's header tables; a record whose two size fields disagree, whose unpacked size exceeds 64 MiB or whose container does not parse is skipped.
   Closes when: the header tables are decoded.
-- `g6shim-shader` reports translated as 0 because nothing writes translated counts yet.
-  Closes when: the translation pipeline writes its counts.
 
 # shader
 
@@ -256,3 +254,14 @@
   Closes when: a shared content hash is available.
 - The pipeline library and the early-pipeline list are written when the workers run dry (at most every 20 s) or on an explicit save, so a run that ends while pipelines are still being made can lose that last batch.
   Closes when: every run saves at shutdown.
+
+# shader
+
+## add Functional
+
+- `g6shim-shader --out` names every translated PC container after a 64-bit FNV-1a hash of the console container; when one console container yields PC containers for more than one stage, the later file overwrites the earlier one.
+  Closes when: a wider or per-program digest names the files.
+- `g6shim-shader --out` refuses a folder under a repository found from a `.git` entry above the working directory or the tool's folder; a repository found another way is not refused.
+  Closes when: the source root is passed in or compiled in.
+- `g6shim-shader` counts a container as translated when at least one of its native programs produced a PC container; the other programs' first errors are counted by reason under `-v`.
+  Closes when: every native program's outcome gets its own container count.

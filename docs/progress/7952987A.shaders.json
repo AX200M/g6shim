@@ -1,0 +1,11 @@
+{
+  "title_id": "7952987A",
+  "stages": {
+    "cs": {"total": 2734, "decoded": 2380, "translated": 354, "failed": 0},
+    "gs": {"total": 195, "decoded": 195, "translated": 0, "failed": 0},
+    "ms": {"total": 8765, "decoded": 8765, "translated": 0, "failed": 0},
+    "ps": {"total": 12069, "decoded": 9894, "translated": 2173, "failed": 2},
+    "unknown": {"total": 29, "decoded": 0, "translated": 0, "failed": 29},
+    "vs": {"total": 2193, "decoded": 1068, "translated": 1124, "failed": 1}
+  }
+}

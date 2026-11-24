@@ -4,10 +4,13 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "g6shim/shader/dxil.hpp"
@@ -65,8 +68,12 @@ struct FileCounts {
 
 class ShaderScanner {
 public:
+    using TranslatedWriter = std::function<void(std::string_view hash, std::span<const std::uint8_t> dxil)>;
+
     FileCounts add_file(std::span<const std::uint8_t> file);
     const ShaderTotals& totals() const { return totals_; }
+
+    void set_translated_writer(TranslatedWriter writer) { writer_ = std::move(writer); }
 
 private:
     struct Key {
@@ -81,11 +88,12 @@ private:
         std::size_t operator()(const Key& key) const;
     };
 
-    bool remember(std::span<const std::uint8_t> bytes);
-    void add_failure(const char* reason, const std::string& message);
+    bool remember(std::span<const std::uint8_t> bytes, std::string& hash);
+    void add_failure(const std::string& reason, const std::string& message);
 
     std::unordered_set<Key, KeyHash> seen_;
     ShaderTotals totals_;
+    TranslatedWriter writer_;
 };
 
 }  // namespace g6shim::shader
