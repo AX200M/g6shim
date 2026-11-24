@@ -119,11 +119,77 @@ std::vector<std::uint32_t> spread(const std::vector<std::uint32_t>& bits) {
     return offsets;
 }
 
+#include "gfx10_xor.inc"
+
+bool address_config_ok(const AddressConfig& config) {
+    const auto power = [](std::uint32_t value, std::uint32_t limit) {
+        return value >= 1 && value <= limit && std::has_single_bit(value);
+    };
+    if (!power(config.pipes, 64) || !power(config.packers, config.pipes)) return false;
+    if (config.pipes / config.packers > 4) return false;
+    const bool interleave = config.pipe_interleave == 256 || config.pipe_interleave == 512 ||
+                            config.pipe_interleave == 1024 || config.pipe_interleave == 2048;
+    const bool fragments = config.max_compressed_fragments == 1 || config.max_compressed_fragments == 2 ||
+                           config.max_compressed_fragments == 4 || config.max_compressed_fragments == 8;
+    return interleave && fragments;
+}
+
+std::uint32_t xor_key(const Desc& d) {
+    const std::uint32_t pipes = static_cast<std::uint32_t>(std::countr_zero(d.address.pipes));
+    const std::uint32_t packers = static_cast<std::uint32_t>(std::countr_zero(d.address.packers));
+    const std::uint32_t element = static_cast<std::uint32_t>(std::countr_zero(d.element_bytes));
+    const std::uint32_t samples = static_cast<std::uint32_t>(std::countr_zero(d.samples));
+    const bool thin_3d = is_z_order(d.swizzle) || d.swizzle == kSwizzle64KBRenderXor;
+    const std::uint32_t thick = d.dimension == Dimension::kTex3d && !thin_3d ? 1u : 0u;
+    const std::uint32_t dimension = d.dimension == Dimension::kTex3d ? 1u : 0u;
+    return pipes | (packers << 3) | (d.swizzle << 6) | (element << 11) | (samples << 14) | (thick << 16) |
+           (dimension << 17);
+}
+
+std::uint32_t mix_bits(std::uint32_t value, std::uint16_t mask) {
+    std::uint32_t mixed = 0;
+    while (mask != 0) {
+        if ((mask & 1u) != 0) mixed ^= value & 1u;
+        value >>= 1;
+        mask = static_cast<std::uint16_t>(mask >> 1);
+    }
+    return mixed;
+}
+
+std::uint32_t evaluate_xor(const XorMasks& masks, std::uint32_t x, std::uint32_t y, std::uint32_t z,
+                           std::uint32_t sample) {
+    const std::array<std::uint32_t, 4> coords{x, y, z, sample};
+    std::uint32_t offset = 0;
+    for (std::uint32_t bit = 0; bit < masks.bits; ++bit) {
+        std::uint32_t mixed = 0;
+        for (std::uint32_t channel = 0; channel < 4; ++channel)
+            mixed ^= mix_bits(coords[channel], masks.mask[channel][bit]);
+        offset |= mixed << bit;
+    }
+    return offset;
+}
+
+XorMasks lookup_xor(const Desc& d) {
+    XorMasks masks{};
+    if (!is_xor(d.swizzle) || d.address.pipe_interleave != kDefaultPipeInterleave) return masks;
+    const std::uint32_t key = xor_key(d);
+    const auto found = std::lower_bound(std::begin(kXorEquations), std::end(kXorEquations), key,
+                                         [](const XorEquation& equation, std::uint32_t wanted) {
+                                             return equation.key < wanted;
+                                         });
+    if (found == std::end(kXorEquations) || found->key != key) return masks;
+    masks.bits = found->bits;
+    for (std::uint32_t channel = 0; channel < 4; ++channel) {
+        for (std::uint32_t bit = 0; bit < 16; ++bit) masks.mask[channel][bit] = found->mask[channel][bit];
+    }
+    return masks;
+}
+
 }  // namespace
 
 std::optional<Layout> Layout::create(const Desc& d) {
     const std::optional<std::uint32_t> log2 = block_log2(d.swizzle);
-    if (!log2) return std::nullopt;
+    if (!log2 || !address_config_ok(d.address)) return std::nullopt;
     const bool swizzle_fits_3d =
         d.swizzle == kSwizzleLinear || d.swizzle == kSwizzle4KBStandard || d.swizzle == kSwizzle64KBStandard ||
         d.swizzle == kSwizzle64KBStandardTiled || d.swizzle == kSwizzle4KBStandardXor ||
@@ -313,7 +379,7 @@ Layout Layout::tiled(const Desc& d, std::uint32_t block_log2_value) {
     const std::uint64_t slab = thick ? block[2] : 1;
     const std::uint64_t total_slice = slice_size * slab;
     const std::uint32_t slice_count = slices / block[2];
-    const bool addressable = !is_xor(d.swizzle) && d.samples == 1;
+    const bool separable = !is_xor(d.swizzle) && d.samples == 1;
 
     Layout layout{};
     layout.desc = d;
@@ -325,16 +391,18 @@ Layout Layout::tiled(const Desc& d, std::uint32_t block_log2_value) {
     layout.alignment = block_bytes;
     layout.first_tail_mip = first_tail_mip;
     layout.mips = std::move(levels);
-    if (addressable) {
+    if (separable) {
         const std::size_t kind = thick ? 2 : (is_display(d.swizzle) ? 1 : 0);
         auto axes = address_pattern(kind, element_log2, block_log2_value);
         for (std::size_t axis = 0; axis < 3; ++axis) layout.pattern[axis] = spread(axes[axis]);
+    } else if (is_xor(d.swizzle)) {
+        layout.xor_masks = lookup_xor(d);
     }
     return layout;
 }
 
 bool Layout::addressable() const {
-    return desc.swizzle == kSwizzleLinear || !pattern[0].empty();
+    return desc.swizzle == kSwizzleLinear || !pattern[0].empty() || xor_masks.bits != 0;
 }
 
 std::pair<std::uint32_t, std::uint32_t> Layout::split(std::uint32_t z) const {
@@ -360,18 +428,26 @@ std::uint64_t Layout::column(const Mip& level, std::uint32_t x) const {
     return (static_cast<std::uint64_t>(x / block_width) << align_log2) + pattern[0][x % block_width];
 }
 
-OffsetResult Layout::offset(std::uint32_t mip, std::uint32_t x, std::uint32_t y, std::uint32_t z) const {
+OffsetResult Layout::offset(std::uint32_t mip, std::uint32_t x, std::uint32_t y, std::uint32_t z,
+                            std::uint32_t sample) const {
     if (mip >= mips.size()) return {Error::kInvalid, 0};
     const Mip& level = mips[mip];
     const std::uint32_t depth = desc.dimension == Dimension::kTex3d ? level.depth : slices;
-    const bool inside = x < level.width && y < level.height && z < depth;
+    const bool inside = x < level.width && y < level.height && z < depth && sample < desc.samples;
     if (!inside || !addressable())
         return {inside ? Error::kUnsupported : Error::kInvalid, 0};
     const auto [target_slice, inner] = split(z);
     const std::uint64_t base = static_cast<std::uint64_t>(target_slice) * slice_size + level.offset;
     if (desc.swizzle == kSwizzleLinear) {
         const std::uint64_t linear_row = static_cast<std::uint64_t>(y) * level.pitch + x;
-        return {Error::kOk, base + linear_row * desc.element_bytes};
+        return {Error::kOk, base + (linear_row * desc.samples + sample) * desc.element_bytes};
+    }
+    if (xor_masks.bits != 0) {
+        const std::uint32_t block_index = (y / block[1]) * (level.pitch / block[0]) + x / block[0];
+        const std::uint32_t ax = x + (level.in_tail ? level.tail.x : 0);
+        const std::uint32_t ay = y + (level.in_tail ? level.tail.y : 0);
+        const std::uint32_t low = evaluate_xor(xor_masks, ax, ay, z, sample);
+        return {Error::kOk, base + (static_cast<std::uint64_t>(block_index) << xor_masks.bits) + low};
     }
     return {Error::kOk, base + row(level, y, inner) + column(level, x)};
 }
@@ -446,6 +522,7 @@ std::optional<Texture> Texture::create(const TextureDesc& d) {
         out.block = element->block;
         out.samples = std::max(d.samples, 1u);
         out.swizzle = d.swizzle;
+        out.address = d.address;
         return out;
     };
 

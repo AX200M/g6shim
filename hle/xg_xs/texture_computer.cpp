@@ -173,7 +173,7 @@ std::optional<CopyArgs> copy_args(const Computer& computer, std::uint32_t plane,
     const std::uint32_t slice = subresource / computer.mips;
     if (mip >= layout.mips.size()) return std::nullopt;
     const gfx10::Mip& level = layout.mips[mip];
-    const std::size_t bytes = static_cast<std::size_t>(level.width) * layout.desc.element_bytes;
+    const std::size_t bytes = static_cast<std::size_t>(level.width) * layout.desc.element_bytes * layout.desc.samples;
     const std::size_t depths = layout.subresource_depth(mip);
     const std::size_t linear =
         (depths - 1) * depth + (static_cast<std::size_t>(level.height) - 1) * row + bytes;
@@ -269,14 +269,14 @@ HRESULT computer_tiling(Computer* self, std::uint32_t* tiles, PackedMips* packed
 }
 
 std::uint64_t computer_element_offset(Computer* self, std::uint32_t plane, std::uint32_t mip, std::uint64_t x,
-                                      std::uint32_t y, std::uint32_t z, std::uint32_t, std::uint32_t* bit) {
+                                      std::uint32_t y, std::uint32_t z, std::uint32_t sample, std::uint32_t* bit) {
     if (bit) *bit = 0;
     if (plane >= self->texture.planes.size()) return 0;
     const gfx10::Plane& plane_data = self->texture.planes[plane];
     const std::uint32_t x32 =
         x > std::numeric_limits<std::uint32_t>::max() ? std::numeric_limits<std::uint32_t>::max()
                                                       : static_cast<std::uint32_t>(x);
-    const gfx10::OffsetResult at = plane_data.layout.offset(mip, x32, y, z);
+    const gfx10::OffsetResult at = plane_data.layout.offset(mip, x32, y, z, sample);
     if (at.error == gfx10::Error::kOk) return plane_data.offset + at.offset;
     G6SHIM_WARN("xg_xs: texel outside its texture (error %u, mip %u, x %u, y %u, z %u)",
                 static_cast<unsigned>(at.error), mip, x32, y, z);
