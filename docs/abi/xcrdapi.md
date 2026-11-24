@@ -118,8 +118,6 @@
 | Table file bytes | 77982 |
 | Model frequencies | 128 x 9 u16; bucket `b` > 0 holds 2^(b-1) symbols |
 | Model shape | model `16 g + shape` uses `g + 2` buckets |
-| Model bucket starts | Derived: 10 u32 per model, each bucket's first slot, then 65536 past the last so a bucket always has a next start |
-| Model bucket windows | Derived: 256 u8 per model, the bucket holding the window's first slot, `window << 8` |
 | Rank tables | BC1 256, BC3 alpha 64, BC3 colour 256, BC4 64, BC5 64 |
 | BC7 control words | 512 u16 |
 | Dictionaries | 255 entries per format |

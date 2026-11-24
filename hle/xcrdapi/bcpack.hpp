@@ -64,8 +64,7 @@ public:
     static std::optional<Tables> parse(std::span<const std::uint8_t> bytes, BcpackError* error);
 
     std::array<std::array<std::uint32_t, kBcpackBuckets>, kBcpackModels> freq{};
-    std::array<std::array<std::uint32_t, kBcpackBuckets + 1>, kBcpackModels> start{};
-    std::array<std::array<std::uint8_t, 256>, kBcpackModels> bucket{};
+    std::array<std::array<std::uint32_t, kBcpackBuckets>, kBcpackModels> start{};
     std::array<std::array<std::uint64_t, kBcpackBuckets>, kBcpackModels> recip{};
     std::array<std::uint8_t, 256> rank1{};
     std::array<std::uint8_t, 64> rank3a{};
@@ -82,24 +81,6 @@ public:
 };
 
 using BcpackFetch = std::function<std::optional<std::uint8_t>(std::size_t)>;
-
-std::size_t bucket_of(const Tables& tables, std::uint8_t model, std::uint32_t slot);
-
-struct BcpackLane {
-    std::uint8_t width = 0;
-    std::uint8_t phase = 0;
-    bool long_fragment = false;
-    bool reset = false;
-    std::uint8_t model = 0;
-    bool need = false;
-    std::optional<std::uint8_t> latch;
-    std::optional<std::uint8_t> out;
-    bool stalled = false;
-    std::uint32_t x = 0;
-    std::uint32_t left = 0;
-
-    std::optional<BcpackError> step(const Tables& tables);
-};
 
 std::optional<BcpackError> decode(std::uint8_t bc, std::span<const std::uint8_t> src,
                                   std::span<std::uint8_t> dst, const Tables& tables);

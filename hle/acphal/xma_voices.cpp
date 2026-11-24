@@ -307,7 +307,7 @@ void xma_advance_read(std::uint32_t index, std::uint32_t blocks) {
         VoiceSlot& slot = *state().voices[index];
         std::lock_guard<std::mutex> voice_lock(slot.mutex);
         const std::uint32_t size = std::max(context->field(0, 22, 5), 1u);
-        const std::uint32_t read = (context->field(9, 0, 5) + blocks % size) % size;
+        const std::uint32_t read = (context->field(9, 0, 5) + blocks) % size;
         context->set_field(9, 0, 5, read);
         if (blocks > 0) context->set_field(1, 31, 1, 1);
         if (slot.voice) {
