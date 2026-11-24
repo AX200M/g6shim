@@ -144,3 +144,14 @@
   Closes when: a title's fetch results are not inputs.
 - A cross-lane operation in a mesh shader stops the translation: SM 6.6 has no mesh wave size.
   Closes when: a mesh program needs one.
+- Packed shader records are found by their marker instead of through the file's header tables; a record whose two size fields disagree, whose unpacked size exceeds 64 MiB or whose container does not parse is skipped.
+  Closes when: the header tables are decoded.
+- `g6shim-shader` reports translated as 0 because nothing writes translated counts yet.
+  Closes when: the translation pipeline writes its counts.
+
+# shader
+
+## add Functional
+
+- `g6shim-shader` guesses a packed record's name from the graphic bytes before its NUL and leaves the record unnamed when no length byte matches.
+  Closes when: the archive's name table is decoded.

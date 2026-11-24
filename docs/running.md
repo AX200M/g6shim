@@ -50,6 +50,7 @@ Each forwarder re-exports the whole DLL it replaces: names it does not translate
 | `g6shim-relink <input> -o <output> [--rename <dll>[=<new>]] [--keep-subsystem]` | Writes a patched copy with renamed imports and the Windows GUI subsystem. Refuses to write over its input. |
 | `g6shim-run <exe> [--timeout <s>] [-v] [--log <file>] [-- <args>]` | Starts the game under a minimal debugger and prints debug output, DLLs loaded from outside System32, exceptions as module+offset, stowed WinRT errors and the exit code. Default timeout 30 s. |
 | `g6shim-run -p <pid> -tid <tid> ...` | Attaches to a suspended process and resumes it, the way `plmdebug /enableDebug` starts a package debugger. |
+| `g6shim-shader <folder or files> [--json <out.json>] [--title-id <8 hex digits>] [-v]` | Finds the shader containers a game ships, counts unique shaders per stage and decodes their native programs. `--json` writes the unique per-stage counts for the progress maps. |
 
 ## Environment variables
 

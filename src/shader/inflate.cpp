@@ -15,12 +15,13 @@ namespace {
 constexpr unsigned kMaxCodeBits = 15;
 constexpr std::size_t kMaxSymbols = 288;
 constexpr std::size_t kFixedLiteralSymbols = 288;
-constexpr std::size_t kFixedDistanceSymbols = 30;
+constexpr std::size_t kFixedDistanceSymbols = 32;
 constexpr std::size_t kLengthSymbols = 29;
 constexpr std::size_t kDistanceSymbols = 30;
 constexpr std::size_t kCodeLengthSymbols = 19;
 constexpr std::size_t kMaxLiteralSymbols = 286;
 constexpr std::size_t kMaxDistanceSymbols = 30;
+constexpr std::size_t kMaxCodeLengthEntries = kMaxLiteralSymbols + kMaxDistanceSymbols;
 constexpr std::uint32_t kZlibModulus = 31;
 constexpr std::uint32_t kDeflateMethod = 8;
 constexpr std::uint32_t kDictionaryFlag = 0x20;
@@ -73,8 +74,12 @@ struct Huffman {
 };
 
 std::int32_t build(Huffman& table, const std::uint8_t* lengths, std::size_t symbols) {
+    if (symbols > table.symbol.size()) return -1;
     table.count.fill(0);
-    for (std::size_t i = 0; i < symbols; ++i) ++table.count[lengths[i]];
+    for (std::size_t i = 0; i < symbols; ++i) {
+        if (lengths[i] > kMaxCodeBits) return -1;
+        ++table.count[lengths[i]];
+    }
     if (table.count[0] == symbols) return 0;
     std::int32_t left = 1;
     for (unsigned len = 1; len <= kMaxCodeBits; ++len) {
@@ -85,8 +90,12 @@ std::int32_t build(Huffman& table, const std::uint8_t* lengths, std::size_t symb
     std::array<std::uint16_t, kMaxCodeBits + 1> offsets{};
     for (unsigned len = 1; len < kMaxCodeBits; ++len)
         offsets[len + 1] = static_cast<std::uint16_t>(offsets[len] + table.count[len]);
-    for (std::size_t symbol = 0; symbol < symbols; ++symbol)
-        if (lengths[symbol] != 0) table.symbol[offsets[lengths[symbol]]++] = static_cast<std::uint16_t>(symbol);
+    for (std::size_t symbol = 0; symbol < symbols; ++symbol) {
+        if (lengths[symbol] == 0) continue;
+        const std::size_t at = offsets[lengths[symbol]]++;
+        if (at >= table.symbol.size()) return -1;
+        table.symbol[at] = static_cast<std::uint16_t>(symbol);
+    }
     return left;
 }
 
@@ -185,12 +194,13 @@ void inflate_dynamic(std::vector<std::uint8_t>& out, std::size_t limit, BitReade
     const std::size_t code_count = reader.bits(4) + 4;
     if (literal_count > kMaxLiteralSymbols || distance_count > kMaxDistanceSymbols)
         detail::fail_malformed("compressed stream has an implausible tree size");
-    std::array<std::uint8_t, kMaxSymbols> lengths{};
+    std::array<std::uint8_t, kMaxCodeLengthEntries> lengths{};
     for (std::size_t i = 0; i < code_count; ++i) lengths[kCodeLengthOrder[i]] = static_cast<std::uint8_t>(reader.bits(3));
     Huffman code_table;
     if (build(code_table, lengths.data(), kCodeLengthSymbols) != 0)
         detail::fail_malformed("compressed stream has an invalid tree");
     const std::size_t total = literal_count + distance_count;
+    if (total > lengths.size()) detail::fail_malformed("compressed stream has an implausible tree size");
     std::size_t index = 0;
     while (index < total) {
         const int symbol = decode_symbol(code_table, reader);
@@ -223,18 +233,7 @@ void inflate_dynamic(std::vector<std::uint8_t>& out, std::size_t limit, BitReade
     inflate_codes(out, limit, reader, literals, distances);
 }
 
-}  // namespace
-
-std::vector<std::uint8_t> inflate_zlib(std::span<const std::uint8_t> stream, std::size_t limit) {
-    if (stream.size() < kZlibHeaderSize) detail::fail_malformed("compressed stream is truncated");
-    const std::uint32_t cmf = stream[0];
-    const std::uint32_t flg = stream[1];
-    if ((cmf * 256 + flg) % kZlibModulus != 0) detail::fail_malformed("compressed stream has a bad header check");
-    if ((cmf & 0x0F) != kDeflateMethod) detail::fail_malformed("compressed stream is not deflate");
-    if ((cmf >> 4) > 7) detail::fail_malformed("compressed stream asks for an oversized window");
-    if ((flg & kDictionaryFlag) != 0) detail::fail_malformed("compressed stream needs a dictionary");
-    std::vector<std::uint8_t> out;
-    BitReader reader(stream, kZlibHeaderSize);
+void inflate_blocks(std::vector<std::uint8_t>& out, std::size_t limit, BitReader& reader) {
     for (;;) {
         const bool last = reader.bits(1) != 0;
         const std::uint32_t type = reader.bits(2);
@@ -253,10 +252,32 @@ std::vector<std::uint8_t> inflate_zlib(std::span<const std::uint8_t> stream, std
         }
         if (last) break;
     }
+}
+
+}  // namespace
+
+std::vector<std::uint8_t> inflate_zlib(std::span<const std::uint8_t> stream, std::size_t limit) {
+    if (stream.size() < kZlibHeaderSize) detail::fail_malformed("compressed stream is truncated");
+    const std::uint32_t cmf = stream[0];
+    const std::uint32_t flg = stream[1];
+    if ((cmf * 256 + flg) % kZlibModulus != 0) detail::fail_malformed("compressed stream has a bad header check");
+    if ((cmf & 0x0F) != kDeflateMethod) detail::fail_malformed("compressed stream is not deflate");
+    if ((cmf >> 4) > 7) detail::fail_malformed("compressed stream asks for an oversized window");
+    if ((flg & kDictionaryFlag) != 0) detail::fail_malformed("compressed stream needs a dictionary");
+    std::vector<std::uint8_t> out;
+    BitReader reader(stream, kZlibHeaderSize);
+    inflate_blocks(out, limit, reader);
     reader.align();
     std::uint32_t stored = 0;
     for (int i = 0; i < 4; ++i) stored = stored << 8 | reader.bits(8);
     if (stored != adler32(out)) detail::fail_malformed("compressed stream checksum disagrees");
+    return out;
+}
+
+std::vector<std::uint8_t> inflate_raw(std::span<const std::uint8_t> stream, std::size_t limit) {
+    std::vector<std::uint8_t> out;
+    BitReader reader(stream, 0);
+    inflate_blocks(out, limit, reader);
     return out;
 }
 

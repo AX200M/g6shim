@@ -25,5 +25,6 @@ add_library(g6shim_shader STATIC
   ir.cpp
   native.cpp
   resource.cpp
+  scan.cpp
   structure.cpp)
 target_include_directories(g6shim_shader PUBLIC include)

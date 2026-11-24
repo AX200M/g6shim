@@ -239,3 +239,44 @@ lowest bits up.
 | 72-74 | 32, 32, 32 | uint, sint, float |
 | 75-77 | 32, 32, 32, 32 | uint, sint, float |
 
+## DXBC container
+
+| Offset | Content |
+|---|---|
+| 0x00 | `DXBC` |
+| 0x04 | digest[16] |
+| 0x14 | version major u16, minor u16 |
+| 0x18 | total size u32 |
+| 0x1C | part count u32 |
+| 0x20 | part offsets u32[count] |
+
+Each part is a FourCC[4], a size u32 and the part body. A container is its first `total size` bytes.
+
+## DXIL program
+
+| Offset | Content |
+|---|---|
+| 0x00 | version u32: shader kind << 16, major << 4, minor |
+| 0x04 | program size in dwords |
+| 0x08 | `DXIL` |
+| 0x0C | DXIL version u32 |
+| 0x10 | bitcode offset from 0x08 |
+| 0x14 | bitcode size u32 |
+
+Shader kinds: 0 ps, 1 vs, 2 gs, 3 hs, 4 ds, 5 cs, 13 ms, 14 as.
+
+## Packed shader record
+
+Found by its marker. Offsets relative to the marker:
+
+| Offset | Content |
+|---|---|
+| -6 | NUL after the name |
+| -5 | kind |
+| -4 | n u32 |
+| 0 | marker `0x000DDCE7` |
+| +4 | n u32 |
+| +8 | unpacked size u32, at most 64 MiB |
+| +12 | raw deflate stream, n - 12 bytes |
+
+Before the NUL: a length byte (with the NUL) and the name. The two `n` fields must agree and be at least 12.

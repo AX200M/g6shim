@@ -39,6 +39,8 @@ add_executable(g6shim_tests
   unit/shader_emit_wave_test.cpp
   unit/shader_emit_validator_test.cpp
   unit/shader_valu_test.cpp
+  unit/shader_tool_test.cpp
+  unit/shader_fuzz_test.cpp
   unit/title_memory_test.cpp
   unit/xmem_virtual_test.cpp
   unit/xmem_physical_test.cpp

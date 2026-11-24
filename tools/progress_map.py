@@ -44,13 +44,14 @@ MAX_SHADER_SQUARES = 120
 SHADER_STAGES = ("vs", "ps", "cs", "ms", "gs")
 FUNCTION_LEGEND = ("implemented", "forwarded", "stubbed", "missing")
 HLE_LEGEND = ("implemented", "stubbed")
-SHADER_LEGEND = ("translated", "failed", "not attempted")
+SHADER_LEGEND = ("translated", "decoded", "failed", "not attempted")
 COLOURS = {
     "implemented": "#2ea043",
     "forwarded": "#388bfd",
     "stubbed": "#d29922",
     "missing": "#57606a",
     "translated": "#2ea043",
+    "decoded": "#58a6ff",
     "failed": "#cf222e",
     "not attempted": "#57606a",
 }
@@ -61,7 +62,7 @@ FORWARDED_NOTE = "forwarded exports are counted after the squares"
 LEGEND_SENTENCE = (
     "Each square is one function: green implemented, blue forwarded, amber stubbed, grey missing; "
     "the replacement DLL map counts forwarded exports after the squares; "
-    "in the shader maps green is translated, red failed and grey not attempted."
+    "in the shader maps green is translated, blue decoded, red failed and grey not attempted."
 )
 
 
@@ -129,8 +130,9 @@ def scale_note(scale):
 def stage_counts(stage):
     total = max(0, int(stage.get("total", 0)))
     translated = min(total, max(0, int(stage.get("translated", 0))))
-    failed = min(total - translated, max(0, int(stage.get("failed", 0))))
-    return total, translated, failed
+    decoded = min(total - translated, max(0, int(stage.get("decoded", 0))))
+    failed = min(total - translated - decoded, max(0, int(stage.get("failed", 0))))
+    return total, translated, decoded, failed
 
 
 def shader_rows(shaders):
@@ -141,14 +143,18 @@ def shader_rows(shaders):
     scale = max(1, -(-widest // MAX_SHADER_SQUARES))
     rows = []
     for name in names:
-        total, translated, failed = stage_counts(stages[name])
+        total, translated, decoded, failed = stage_counts(stages[name])
         squares = -(-total // scale)
         green = min(squares, (translated + scale // 2) // scale)
-        red = min(squares - green, (failed + scale // 2) // scale)
+        blue = min(squares - green, (decoded + scale // 2) // scale)
+        red = min(squares - green - blue, (failed + scale // 2) // scale)
         rows.append({
             "label": name,
             "count": f"{translated}/{total}",
-            "items": ["translated"] * green + ["failed"] * red + ["not attempted"] * (squares - green - red),
+            "items": ["translated"] * green
+            + ["decoded"] * blue
+            + ["failed"] * red
+            + ["not attempted"] * (squares - green - blue - red),
         })
     return rows, scale
 
@@ -290,8 +296,9 @@ def generate(root):
                 shader_map, SHADER_LEGEND, f"Shader coverage for {title_id}", note=scale_note(scale)
             )
             translated = sum(stage_counts(stage)[1] for stage in (shaders.get("stages") or {}).values())
+            decoded = sum(stage_counts(stage)[2] for stage in (shaders.get("stages") or {}).values())
             total = sum(stage_counts(stage)[0] for stage in (shaders.get("stages") or {}).values())
-            shader_summary = f"shaders: {translated}/{total} translated"
+            shader_summary = f"shaders: {translated}/{total} translated, {decoded} decoded"
         else:
             texts[progress / f"{title_id}.shaders.svg"] = render_note(NO_SHADER_DATA, f"Shader coverage for {title_id}")
             shader_summary = f"shaders: {NO_SHADER_DATA}"

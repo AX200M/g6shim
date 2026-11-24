@@ -10,5 +10,6 @@
 namespace g6shim::shader {
 
 std::vector<std::uint8_t> inflate_zlib(std::span<const std::uint8_t> stream, std::size_t limit);
+std::vector<std::uint8_t> inflate_raw(std::span<const std::uint8_t> stream, std::size_t limit);
 
 }  // namespace g6shim::shader
