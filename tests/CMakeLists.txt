@@ -51,7 +51,7 @@ add_executable(g6shim_tests
   unit/xmem_physical_test.cpp
   unit/xmem_statistics_test.cpp
   unit/console_model_test.cpp
-  unit/acphal_test.cpp
+  unit/settings_test.cpp
   unit/xma_test.cpp
   unit/audio_dump_test.cpp
   unit/bcpack_test.cpp

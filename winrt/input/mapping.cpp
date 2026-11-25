@@ -8,6 +8,7 @@
 #include <xinput.h>
 
 #include <g6shim/log.hpp>
+#include <g6shim/settings.hpp>
 #include <g6shim/window.hpp>
 
 #include <algorithm>
@@ -311,10 +312,9 @@ void read_keyboard(Reading& r) {
 
 const std::vector<Press>& autopresses() {
     static const std::vector<Press> presses = [] {
-        char spec[kMaxSpec] = "";
-        const DWORD n = GetEnvironmentVariableA(kAutopressVariable, spec, sizeof spec);
-        if (n == 0 || n >= sizeof spec) return std::vector<Press>{};
-        std::vector<Press> out = parse_autopress(spec);
+        const std::optional<std::string> spec = settings::get(kAutopressVariable);
+        if (!spec || spec->size() >= kMaxSpec) return std::vector<Press>{};
+        std::vector<Press> out = parse_autopress(*spec);
         G6SHIM_INFO("input: %zu automatic press(es) from %s", out.size(), kAutopressVariable);
         return out;
     }();

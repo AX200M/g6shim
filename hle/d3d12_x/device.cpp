@@ -6,9 +6,8 @@
 #include "texture_shadow.hpp"
 
 #include <g6shim/log.hpp>
-
+#include <g6shim/settings.hpp>
 #include <atomic>
-#include <cstdlib>
 #include <cstring>
 #include <new>
 
@@ -354,10 +353,7 @@ using namespace g6shim::d3d12;
 
 std::atomic<UINT> g_process_debug_flags{0};
 
-bool debug_layer_requested() {
-    const char* value = std::getenv("G6SHIM_D3D_DEBUG");
-    return value && *value && *value != '0';
-}
+bool debug_layer_requested() { return g6shim::settings::enabled("G6SHIM_D3D_DEBUG"); }
 
 void log_parameters(const void* params) {
     std::uint32_t words[kCreateDeviceParametersBytes / 4];

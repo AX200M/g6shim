@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
 # SPDX-License-Identifier: GPL-3.0-or-later
-add_library(g6shim_runtime SHARED src/log.cpp src/window.cpp src/capture.cpp src/title_memory.cpp src/drives.cpp
-                                src/cpu_emulation.cpp src/console_model.cpp)
+add_library(g6shim_runtime SHARED src/log.cpp src/settings.cpp src/window.cpp src/capture.cpp src/title_memory.cpp
+                                src/drives.cpp src/cpu_emulation.cpp src/console_model.cpp)
 add_library(g6shim::runtime ALIAS g6shim_runtime)
 
 target_include_directories(g6shim_runtime PUBLIC include)

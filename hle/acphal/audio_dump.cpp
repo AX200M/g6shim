@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "audio_dump.hpp"
 
-#include <windows.h>
+#include <g6shim/settings.hpp>
 
+#include <windows.h>
 #include <cstdio>
 #include <cstring>
 #include <sstream>
@@ -32,7 +33,6 @@ constexpr std::size_t kBlockAlignOffset = 32;
 constexpr std::size_t kBitsOffset = 34;
 constexpr std::size_t kDataTagOffset = 36;
 constexpr std::size_t kDataSizeOffset = 40;
-constexpr wchar_t kDumpVariable[] = L"G6SHIM_XMA_DUMP";
 constexpr wchar_t kReportName[] = L"voices.txt";
 
 void put_u16(std::uint8_t* out, std::uint16_t value) {
@@ -163,12 +163,9 @@ std::optional<VoiceDump> VoiceDump::create(const std::filesystem::path& director
 }
 
 std::optional<std::filesystem::path> voice_dump_directory() {
-    std::vector<wchar_t> buffer(32768, L'\0');
-    const DWORD length =
-        GetEnvironmentVariableW(kDumpVariable, buffer.data(), static_cast<DWORD>(buffer.size()));
-    if (length == 0 || length >= buffer.size()) return std::nullopt;
-    if (buffer[0] == L'\0') return std::nullopt;
-    return std::filesystem::path(std::wstring(buffer.data(), length));
+    const std::optional<std::wstring> path = settings::get_wide("G6SHIM_XMA_DUMP");
+    if (!path || path->empty()) return std::nullopt;
+    return std::filesystem::path(*path);
 }
 
 void append_voice_report(const std::filesystem::path& directory, const VoiceReport& report) {
