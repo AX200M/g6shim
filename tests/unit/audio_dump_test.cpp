@@ -3,6 +3,7 @@
 #include "check.hpp"
 
 #include "acp.hpp"
+#include "audio_capture.hpp"
 #include "audio_dump.hpp"
 #include "shape_config.hpp"
 #include "xma.hpp"
@@ -268,4 +269,25 @@ TEST(audio_dump_records_a_decoded_voice) {
 
     std::error_code error;
     std::filesystem::remove_all(directory, error);
+}
+
+TEST(audio_capture_recorder_receives_its_environment) {
+    ::SetEnvironmentVariableW(L"G6SHIM_AUDIO_CAPTURE", L"stale.wav");
+    std::vector<wchar_t> environment =
+        g6shim::acphal::recorder_environment(4242, L"C:\\capture dir\\heard.wav");
+    ::SetEnvironmentVariableW(L"G6SHIM_AUDIO_CAPTURE", nullptr);
+    wchar_t system[MAX_PATH] = {};
+    CHECK(::GetSystemDirectoryW(system, MAX_PATH) > 0);
+    const std::wstring command = L"\"" + std::wstring(system) +
+                                 L"\\cmd.exe\" /d /c if \"%G6SHIM_AUDIO_CAPTURE_OF%\"==\"4242\" "
+                                 L"if \"%G6SHIM_AUDIO_CAPTURE%\"==\"C:\\capture dir\\heard.wav\" exit 7";
+    const HANDLE process = g6shim::acphal::start_with_environment(command, environment);
+    CHECK(process != nullptr);
+    if (process == nullptr) return;
+    constexpr DWORD kChildDeadlineMilliseconds = 10000;
+    CHECK(::WaitForSingleObject(process, kChildDeadlineMilliseconds) == WAIT_OBJECT_0);
+    DWORD code = 0;
+    CHECK(::GetExitCodeProcess(process, &code));
+    CHECK(code == 7);
+    ::CloseHandle(process);
 }

@@ -46,6 +46,7 @@ constexpr char kCaptureVariable[] = "G6SHIM_AUDIO_CAPTURE";
 constexpr wchar_t kCaptureVariableWide[] = L"G6SHIM_AUDIO_CAPTURE";
 constexpr wchar_t kTargetVariable[] = L"G6SHIM_AUDIO_CAPTURE_OF";
 constexpr wchar_t kRundll32[] = L"\\System32\\rundll32.exe";
+constexpr DWORD kRecorderCreationFlags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT;
 
 std::optional<std::wstring> environment_variable(const wchar_t* name) {
     std::vector<wchar_t> buffer(32768, L'\0');
@@ -77,7 +78,9 @@ bool assignment_of(const wchar_t* entry, const wchar_t* name) {
     return _wcsnicmp(entry, name, length) == 0 && entry[length] == L'=';
 }
 
-std::vector<wchar_t> environment_for(std::uint32_t target, const std::wstring& capture_path) {
+}  // namespace
+
+std::vector<wchar_t> recorder_environment(std::uint32_t target, const std::wstring& capture_path) {
     std::vector<wchar_t> block;
     const wchar_t* current = GetEnvironmentStringsW();
     if (current) {
@@ -99,20 +102,28 @@ std::vector<wchar_t> environment_for(std::uint32_t target, const std::wstring& c
     return block;
 }
 
-bool spawn_recorder(const std::wstring& dll, const std::wstring& exe, const std::wstring& capture_path) {
-    std::wstring command = L"\"" + exe + L"\" \"" + dll + L"\"," + std::wstring(kRecorderExport);
-    std::vector<wchar_t> environment = environment_for(GetCurrentProcessId(), capture_path);
+HANDLE start_with_environment(std::wstring command, std::vector<wchar_t>& environment) {
     STARTUPINFOW startup{};
     startup.cb = sizeof startup;
     PROCESS_INFORMATION process{};
-    const BOOL started = CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
-                                        environment.data(), nullptr, &startup, &process);
-    if (!started) {
+    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, kRecorderCreationFlags,
+                        environment.data(), nullptr, &startup, &process))
+        return nullptr;
+    CloseHandle(process.hThread);
+    return process.hProcess;
+}
+
+namespace {
+
+bool spawn_recorder(const std::wstring& dll, const std::wstring& exe, const std::wstring& capture_path) {
+    std::vector<wchar_t> environment = recorder_environment(GetCurrentProcessId(), capture_path);
+    const HANDLE process =
+        start_with_environment(L"\"" + exe + L"\" \"" + dll + L"\"," + std::wstring(kRecorderExport), environment);
+    if (process == nullptr) {
         G6SHIM_WARN("audio capture not started: error %lu", GetLastError());
         return false;
     }
-    CloseHandle(process.hThread);
-    CloseHandle(process.hProcess);
+    CloseHandle(process);
     return true;
 }
 
