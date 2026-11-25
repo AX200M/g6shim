@@ -93,6 +93,7 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/src/tools/run/frames.cpp"
   unit/cpu_emulation_test.cpp
   "${PROJECT_SOURCE_DIR}/runtime/src/cpu_emulation.cpp"
+  unit/timer_resolution_test.cpp
   unit/d3d12_xs_object_test.cpp
   unit/d3d12_xs_device_test.cpp
   unit/d3d12_xs_dxgi_test.cpp

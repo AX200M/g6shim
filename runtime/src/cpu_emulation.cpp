@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "g6shim/cpu_emulation.hpp"
 
+#include "timer_resolution.hpp"
+
 #include <g6shim/log.hpp>
 
 #include <algorithm>
@@ -308,7 +310,10 @@ void install_amd_emulation() {
 
 #if defined(G6SHIM_RUNTIME_BUILD)
 extern "C" BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID) {
-    if (reason == DLL_PROCESS_ATTACH) g6shim::cpu::install_amd_emulation();
+    if (reason == DLL_PROCESS_ATTACH) {
+        g6shim::cpu::install_amd_emulation();
+        g6shim::timer::use_console_resolution();
+    }
     return TRUE;
 }
 #endif
