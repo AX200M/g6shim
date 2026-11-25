@@ -184,12 +184,18 @@ HRESULT STDMETHODCALLTYPE CreateWithConsoleLayout(void* self, void* a, void* b, 
     if constexpr (Slot == device_slot::kCreateBuffer)
         if (SUCCEEDED(hr) && out) forget_placement(*out);
     if (FAILED(hr)) {
-        if (Slot == device_slot::kCreateBuffer && a)
-            log_failed_buffer(static_cast<const D3D11_BUFFER_DESC*>(a), hr);
-        else if (L == Layout::View && a)
-            log_failed_view(Slot, static_cast<ID3D11Resource*>(a), b, hr);
-        else
-            G6SHIM_WARN("device slot %zu (creates a resource or view) -> 0x%08lX", Slot, static_cast<unsigned long>(hr));
+        if constexpr (Slot == device_slot::kCreateBuffer) {
+            if (a) {
+                log_failed_buffer(static_cast<const D3D11_BUFFER_DESC*>(a), hr);
+                return hr;
+            }
+        } else if constexpr (L == Layout::View) {
+            if (a) {
+                log_failed_view(Slot, static_cast<ID3D11Resource*>(a), b, hr);
+                return hr;
+            }
+        }
+        G6SHIM_WARN("device slot %zu (creates a resource or view) -> 0x%08lX", Slot, static_cast<unsigned long>(hr));
     }
     return hr;
 }
