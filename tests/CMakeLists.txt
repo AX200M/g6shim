@@ -86,6 +86,7 @@ add_executable(g6shim_tests
   unit/d3d12_xs_resource_test.cpp
   unit/d3d12_xs_sampler_test.cpp
   unit/d3d12_xs_host_test.cpp
+  unit/d3d12_xs_capture_test.cpp
   unit/bvh_reference_test.cpp
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh/format.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh/reference.cpp"

@@ -207,8 +207,6 @@
   Closes when: a diagnostics build with the same switches is added.
 - Presentation logs frames per second and milliseconds per frame only; draw counts, dropped commands and indirect counts wait for the command list and draw parts.
   Closes when: the draw and queue parts land.
-- Frames shown on the host are not saved through the runtime's capture hook.
-  Closes when: presentation is wired to the capture API.
 - Buffer copies cover only the ranges draws are known to read; a buffer read through a directly indexed heap keeps what its first use copied.
   Closes when: descriptor tables name the ranges they read.
 - Shader writes to a buffer's host copy are found by keeping the range's bytes before the submission and comparing them after it.

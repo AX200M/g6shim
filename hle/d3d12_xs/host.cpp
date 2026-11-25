@@ -8,6 +8,7 @@
 #include "watch.hpp"
 #include "window.hpp"
 
+#include <g6shim/capture.hpp>
 #include <g6shim/log.hpp>
 #include <g6shim/settings.hpp>
 #include <g6shim/window.hpp>
@@ -36,6 +37,79 @@ std::optional<DXGI_FORMAT> swap_format(int format) {
     if (format >= 23 && format <= 25) return DXGI_FORMAT_R10G10B10A2_UNORM;
     if (format >= 9 && format <= 14) return DXGI_FORMAT_R16G16B16A16_FLOAT;
     return std::nullopt;
+}
+
+struct Capture {
+    Microsoft::WRL::ComPtr<ID3D12Resource> readback;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+    PixelOrder order = PixelOrder::Bgra;
+};
+
+std::optional<PixelOrder> capture_order(DXGI_FORMAT format) {
+    switch (format) {
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return PixelOrder::Rgba;
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return PixelOrder::Bgra;
+    default: return std::nullopt;
+    }
+}
+
+bool begin_capture(ID3D12Device* device, ID3D12GraphicsCommandList* list, ID3D12Resource* texture,
+                   const D3D12_RESOURCE_DESC& desc, Capture& capture) {
+    const std::optional<PixelOrder> order = capture_order(desc.Format);
+    if (!order) {
+        G6SHIM_WARN("d3d12_xs: capture: back buffer format %d not supported", static_cast<int>(desc.Format));
+        return false;
+    }
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.SampleDesc.Count != 1 || desc.Width == 0 ||
+        desc.Height == 0) {
+        G6SHIM_WARN("d3d12_xs: capture: back buffer is not a single-sampled 2D texture");
+        return false;
+    }
+    UINT64 bytes = 0;
+    device->GetCopyableFootprints(&desc, 0, 1, 0, &capture.footprint, nullptr, nullptr, &bytes);
+    if (bytes == 0) {
+        G6SHIM_WARN("d3d12_xs: capture: back buffer has no copyable footprint");
+        return false;
+    }
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = D3D12_HEAP_TYPE_READBACK;
+    D3D12_RESOURCE_DESC buffer{};
+    buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    buffer.Width = bytes;
+    buffer.Height = 1;
+    buffer.DepthOrArraySize = 1;
+    buffer.MipLevels = 1;
+    buffer.SampleDesc.Count = 1;
+    buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    const HRESULT made = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer,
+                                                         D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                         IID_PPV_ARGS(&capture.readback));
+    if (FAILED(made)) {
+        G6SHIM_WARN("d3d12_xs: capture: no readback buffer of %llu bytes (0x%08lX)",
+                    static_cast<unsigned long long>(bytes), static_cast<unsigned long>(made));
+        return false;
+    }
+    D3D12_TEXTURE_COPY_LOCATION destination{capture.readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+    destination.PlacedFootprint = capture.footprint;
+    D3D12_TEXTURE_COPY_LOCATION source{texture, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+    source.SubresourceIndex = 0;
+    list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+    capture.order = *order;
+    return true;
+}
+
+void finish_capture(unsigned frame, const D3D12_RESOURCE_DESC& desc, Capture& capture) {
+    void* data = nullptr;
+    const HRESULT mapped = capture.readback->Map(0, nullptr, &data);
+    if (FAILED(mapped)) {
+        G6SHIM_WARN("d3d12_xs: capture: readback not mapped (0x%08lX)", static_cast<unsigned long>(mapped));
+        return;
+    }
+    save_captured_frame(frame, data, static_cast<unsigned>(desc.Width), desc.Height,
+                        capture.footprint.Footprint.RowPitch, capture.order);
+    capture.readback->Unmap(0, nullptr);
 }
 
 bool read_process(const std::uint8_t* source, std::uint8_t* destination, std::size_t bytes) {
@@ -506,7 +580,6 @@ std::unique_ptr<Host::Presenter> Host::make_presenter(std::uint32_t width, std::
 }
 
 std::optional<bool> Host::present(ID3D12Resource* texture, std::uint32_t state, std::uint64_t frame) {
-    (void)frame;
     if (texture == nullptr) return std::nullopt;
     const D3D12_RESOURCE_DESC desc = texture->GetDesc();
     const auto format = swap_format(static_cast<int>(desc.Format));
@@ -543,12 +616,16 @@ std::optional<bool> Host::present(ID3D12Resource* texture, std::uint32_t state, 
     };
     list->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
     list->CopyResource(back.Get(), texture);
+    const auto number = static_cast<unsigned>(frame);
+    Capture capture;
+    const bool capturing = capture_requested(number) && begin_capture(device_.Get(), list, texture, desc, capture);
     barriers[0] = transition(texture, D3D12_RESOURCE_STATE_COPY_SOURCE, wanted);
     barriers[1] = transition(back.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
     list->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
     presenter->copy->close();
     execute({presenter->copy.get()});
     presenter->swap_chain->Present(kPresentInterval, 0);
+    if (capturing) finish_capture(number, desc, capture);
     presenter->meter.frame(presenter->hwnd);
     return false;
 }
