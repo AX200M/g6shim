@@ -136,6 +136,7 @@ void for_pieces(std::size_t start, std::size_t bytes, std::size_t step, Work wor
 struct Meter {
     std::chrono::steady_clock::time_point since = std::chrono::steady_clock::now();
     std::uint32_t frames = 0;
+    std::uint64_t evicted = 0;
     std::chrono::steady_clock::time_point logged = std::chrono::steady_clock::now();
 
     void frame(HWND hwnd);
@@ -151,7 +152,11 @@ void Meter::frame(HWND hwnd) {
     const double ms = seconds * 1000.0 / frames;
     if (std::chrono::duration<double>(now - logged).count() >= 5.0) {
         logged = now;
-        G6SHIM_INFO("d3d12_xs: %.1f fps, %.1f ms/frame", fps, ms);
+        const shadow::LooseStats loose = shadow::loose_stats();
+        G6SHIM_INFO("d3d12_xs: %.1f fps, %.1f ms/frame, loose title memory %zu windows %llu MiB, %llu evicted", fps,
+                    ms, loose.windows, static_cast<unsigned long long>(loose.bytes >> 20),
+                    static_cast<unsigned long long>(loose.evicted - evicted));
+        evicted = loose.evicted;
     }
     window::show_frame_rate(hwnd, window::FrameRate{fps, ms});
     frames = 0;
@@ -410,8 +415,9 @@ void Host::execute(const std::vector<HostList*>& runs) {
     ++submitted_;
     queue_->ExecuteCommandLists(static_cast<UINT>(lists.size()), lists.data());
     const HRESULT signalled = queue_->Signal(fence_.Get(), submitted_);
+    bool waited = false;
     if (SUCCEEDED(signalled) && SUCCEEDED(fence_->SetEventOnCompletion(submitted_, event_))) {
-        ::WaitForSingleObject(event_, INFINITE);
+        waited = ::WaitForSingleObject(event_, INFINITE) == WAIT_OBJECT_0;
     } else {
         G6SHIM_WARN("d3d12_xs: host submission not waited for (0x%08lX)", static_cast<unsigned long>(signalled));
     }
@@ -436,6 +442,7 @@ void Host::execute(const std::vector<HostList*>& runs) {
         for (const WriteStep& write : list->deferred_.writes) write.written.write(write.destination, write.bytes);
     }
     log_messages();
+    if (waited) shadow::submission_completed();
 }
 
 std::optional<std::string> Host::log_messages() {

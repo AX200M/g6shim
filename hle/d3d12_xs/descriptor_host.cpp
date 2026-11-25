@@ -441,6 +441,7 @@ HostHeap::HostHeap(Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap, std::uint6
       sampler_(sampler),
       made_(count, 0),
       kept_(static_cast<std::size_t>(count) + dynamic),
+      window_generation_(static_cast<std::size_t>(count) + dynamic),
       taken_(dynamic, false) {}
 
 std::unique_ptr<HostHeap> HostHeap::create(bool sampler, std::uint32_t count) {
@@ -538,8 +539,30 @@ D3D12_CPU_DESCRIPTOR_HANDLE HostHeap::cpu(std::uint32_t index) const {
 void HostHeap::null_sampler(std::uint32_t index) { create_null_sampler(cpu(index)); }
 
 void HostHeap::keep(std::uint32_t index, Microsoft::WRL::ComPtr<ID3D12Resource> resource) {
+    const std::uint64_t stamp =
+        resource && shadow::live_loose(resource.Get()) ? shadow::eviction_generation() + 1 : kNoWindow;
     std::lock_guard<std::mutex> lock(kept_mutex_);
-    if (index < kept_.size()) kept_[index] = std::move(resource);
+    if (index >= kept_.size()) return;
+    kept_[index] = std::move(resource);
+    window_generation_[index].store(stamp, std::memory_order_relaxed);
+}
+
+Microsoft::WRL::ComPtr<ID3D12Resource> HostHeap::kept(std::uint32_t index) {
+    std::lock_guard<std::mutex> lock(kept_mutex_);
+    return index < kept_.size() ? kept_[index] : Microsoft::WRL::ComPtr<ID3D12Resource>();
+}
+
+bool HostHeap::window_evicted(std::uint32_t index) {
+    const std::uint64_t stamp = window_generation_[index].load(std::memory_order_relaxed);
+    if (stamp == kNoWindow) return false;
+    const std::uint64_t current = shadow::eviction_generation() + 1;
+    if (stamp == current) return false;
+    std::lock_guard<std::mutex> lock(kept_mutex_);
+    if (shadow::live_loose(kept_[index].Get())) {
+        window_generation_[index].store(current, std::memory_order_relaxed);
+        return false;
+    }
+    return true;
 }
 
 std::optional<std::uint32_t> HostHeap::dynamic(std::uint32_t count) {
@@ -621,6 +644,7 @@ std::optional<descriptor::View> HostHeap::mirror(std::uint32_t index, std::uint6
         }
         return std::nullopt;
     }
+    if (made_[index] == key && window_evicted(index)) made_[index] = 0;
     if (made_[index] != key) {
         const bool later = !for_draw && view_is_buffer(*view);
         made_[index] = later ? 0 : key;
