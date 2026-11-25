@@ -54,6 +54,7 @@ add_executable(g6shim_tests
   unit/xmem_physical_test.cpp
   unit/xmem_statistics_test.cpp
   unit/console_model_test.cpp
+  unit/advapi32_test.cpp
   unit/settings_test.cpp
   unit/xma_test.cpp
   unit/bcpack_test.cpp
@@ -151,7 +152,8 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/acphal/xma.cpp"
   "${PROJECT_SOURCE_DIR}/hle/acphal/xma_voices.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xcrdapi/bcpack.cpp"
-  "${PROJECT_SOURCE_DIR}/hle/xcrdapi/dstorage.cpp")
+  "${PROJECT_SOURCE_DIR}/hle/xcrdapi/dstorage.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/g6shim_advapi32/registry.cpp")
 target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim_shader g6shim::winrt Opus::opus d3d12 dxgi d3dcompiler onecore)
 target_link_options(g6shim_tests PRIVATE "/EXPORT:__XMemAllocationHooks__,DATA" "/EXPORT:g6shim_xmem_map_alias")
 foreach(forwarder IN ITEMS hle_g6shim_file hle_g6shim_file2 hle_g6shim_crtfs hle_g6shim_kernel32

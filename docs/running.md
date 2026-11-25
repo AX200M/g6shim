@@ -38,10 +38,11 @@ g6shim-relink D:\original\Game.exe -o D:\work\Game\Game.exe ^
   --rename api-ms-win-crt-filesystem-l1-1-0.dll=g6shim_crtfs.dll ^
   --rename api-ms-win-crt-stdio-l1-1-0.dll=g6shim_crtstdio.dll ^
   --rename api-ms-win-crt-time-l1-1-0.dll=g6shim_crttime.dll ^
-  --rename kernel32.dll=g6shim_kernel32.dll
+  --rename kernel32.dll=g6shim_kernel32.dll ^
+  --rename advapi32.dll=g6shim_advapi32.dll
 ```
 
-Each forwarder re-exports the whole DLL it replaces: names it does not translate reach Windows unchanged, and the path-taking ones rewrite `G:\` to the folder of the executable. `G:\common.rpf` is `<exe folder>\common.rpf`. Build and deploy the forwarders like the other replacement DLLs.
+Each forwarder re-exports the whole DLL it replaces: names it does not translate reach Windows unchanged, and the path-taking ones rewrite `G:\` to the folder of the executable. `G:\common.rpf` is `<exe folder>\common.rpf`. Build and deploy the forwarders like the other replacement DLLs. `g6shim_advapi32.dll` reports the selected console model as the OEM `ConsoleMode` registry value, so code that reads it does not mistake the host for a PC.
 
 The two library-loader forwarders make `LoadLibraryExW`/`LoadLibraryW` of `xgameruntime.dll` load g6shim's offline runtime `g6shim_xgameruntime.dll` from the folder of the executable instead of the PC's runtime, so the title asks g6shim for its runtime services ([abi/xgameruntime.md](abi/xgameruntime.md)).
 
