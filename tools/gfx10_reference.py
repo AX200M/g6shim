@@ -17,20 +17,15 @@ GENERATOR = Path(__file__).with_name("gfx10_reference_gen.cpp")
 MESA_VERSION = "26.2.7"
 MESA_SHA256 = "04294f75d22e9f61cd1e050206bc48b3d39366e788f1803a3368e3d5a872ce18"
 MESA_URL = f"https://archive.mesa3d.org/mesa-{MESA_VERSION}.tar.xz"
-NOTE = "Reference addresses from AMD's address library, licence MIT."
 SPDX = (
-    "// SPDX-FileCopyrightText: 2026 gookie and g6shim contributors\n"
-    "// SPDX-License-Identifier: GPL-3.0-or-later\n"
+    "// SPDX-FileCopyrightText: 2007-2026 Advanced Micro Devices, Inc.\n"
+    "// SPDX-License-Identifier: MIT\n"
 )
 SAMPLE_LOG2 = {1: 0, 2: 1, 4: 2, 8: 3}
 
 
 class ReferenceError(Exception):
     pass
-
-
-def note_line():
-    return f'inline constexpr char kAddressLibraryNote[] = "{NOTE}";\n'
 
 
 def parse_dump(text):
@@ -79,7 +74,7 @@ def equation_key(nums):
 
 
 def render_equations(equations):
-    lines = [SPDX.rstrip("\n"), note_line().rstrip("\n"), "struct XorEquation {", "    std::uint32_t key;",
+    lines = [SPDX.rstrip("\n"), "struct XorEquation {", "    std::uint32_t key;",
              "    std::uint8_t bits;", "    std::uint16_t mask[4][16];", "};",
              "const XorEquation kXorEquations[] = {"]
     ordered = sorted(equations, key=lambda item: equation_key(item[0]))
@@ -95,7 +90,7 @@ def row_text(row, wide):
 
 
 def render_reference(sizes, mips, addresses):
-    lines = [SPDX.rstrip("\n"), note_line().rstrip("\n"), "struct ReferenceSize {",
+    lines = [SPDX.rstrip("\n"), "struct ReferenceSize {",
              "    std::uint32_t pipes_log2, packers_log2, fragments_log2, swizzle, dimension, element_log2, samples;",
              "    std::uint32_t width, height, depth, mips;", "    std::uint64_t bytes, slice;",
              "    std::uint32_t pitch, rows, block_w, block_h, block_d, alignment, first_tail;", "};",

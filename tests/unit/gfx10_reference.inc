@@ -1,6 +1,5 @@
-// SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
-// SPDX-License-Identifier: GPL-3.0-or-later
-inline constexpr char kAddressLibraryNote[] = "Reference addresses from AMD's address library, licence MIT.";
+// SPDX-FileCopyrightText: 2007-2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
 struct ReferenceSize {
     std::uint32_t pipes_log2, packers_log2, fragments_log2, swizzle, dimension, element_log2, samples;
     std::uint32_t width, height, depth, mips;

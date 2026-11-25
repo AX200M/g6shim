@@ -49,14 +49,15 @@ class RenderTests(unittest.TestCase):
         equations, sizes, mips, addresses, _missing = gr.parse_dump(DUMP)
         text = gr.render_equations(equations)
         self.assertTrue(text.startswith(gr.SPDX))
-        self.assertIn("licence MIT", text)
+        self.assertIn("SPDX-License-Identifier: MIT", text)
+        self.assertNotIn("kAddressLibraryNote", text)
         self.assertLess(text.find("2 |"), text.find("4 |") if "4 |" in text else len(text))
         keys = [line for line in text.splitlines() if line.startswith("    {")]
         self.assertEqual(len(keys), 2)
         reference = gr.render_reference(sizes, mips, addresses)
         self.assertIn("kReferenceAddresses", reference)
         self.assertIn("52ull", reference)
-        self.assertIn("licence MIT", reference)
+        self.assertTrue(reference.startswith(gr.SPDX))
 
 
 class MainTests(unittest.TestCase):

@@ -1,6 +1,5 @@
-// SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
-// SPDX-License-Identifier: GPL-3.0-or-later
-inline constexpr char kAddressLibraryNote[] = "Reference addresses from AMD's address library, licence MIT.";
+// SPDX-FileCopyrightText: 2007-2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
 struct XorEquation {
     std::uint32_t key;
     std::uint8_t bits;
