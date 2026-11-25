@@ -6,6 +6,7 @@
 
 #include <g6shim/drives.hpp>
 #include <g6shim/log.hpp>
+#include <g6shim/settings.hpp>
 #include <g6shim/shader/error.hpp>
 #include <g6shim/shader/inflate.hpp>
 
@@ -93,20 +94,10 @@ std::atomic<std::uint64_t>& reading_time() {
     return time;
 }
 
-constexpr wchar_t kTablesVariable[] = L"G6SHIM_BCPACK_TABLES";
 constexpr wchar_t kTablesFileName[] = L"bcpack-tables.bin";
 constexpr std::uint64_t kMaxTableFileBytes = 4u << 20;
 
-std::optional<std::wstring> tables_variable_path() {
-    const DWORD needed = GetEnvironmentVariableW(kTablesVariable, nullptr, 0);
-    if (needed == 0) return std::nullopt;
-    std::wstring value(needed, L'\0');
-    const DWORD written = GetEnvironmentVariableW(kTablesVariable, value.data(), needed);
-    if (written == 0 || written >= needed) return std::nullopt;
-    value.resize(written);
-    if (value.empty()) return std::nullopt;
-    return value;
-}
+std::optional<std::wstring> tables_variable_path() { return settings::get_wide("G6SHIM_BCPACK_TABLES"); }
 
 std::wstring module_folder() {
     HMODULE module = nullptr;

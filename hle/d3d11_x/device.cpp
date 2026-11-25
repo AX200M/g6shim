@@ -4,7 +4,7 @@
 #include <d3d11.h>
 
 #include <g6shim/log.hpp>
-
+#include <g6shim/settings.hpp>
 #include "console_layout.hpp"
 #include "context.hpp"
 #include "dxgi.hpp"
@@ -129,8 +129,8 @@ void hook_query_interface(ID3D11Device* device, ID3D11DeviceContext* context) {
 }
 
 bool debug_layer_requested() {
-    char debug[8] = "";
-    return GetEnvironmentVariableA(kDebugVariable, debug, sizeof debug) && debug[0] == '1';
+    const std::optional<std::string> debug = settings::get(kDebugVariable);
+    return debug && !debug->empty() && debug->front() == '1';
 }
 
 }  // namespace

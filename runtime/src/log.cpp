@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "g6shim/log.hpp"
+#include "g6shim/settings.hpp"
 
 #include "log_format.hpp"
 
@@ -9,11 +10,16 @@
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
-#include <cstdlib>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
+
+namespace g6shim::settings {
+void hold_warnings(bool hold);
+void flush_warnings();
+}
 
 namespace g6shim {
 
@@ -22,15 +28,16 @@ namespace {
 constexpr char kLogVariable[] = "G6SHIM_LOG";
 constexpr char kStderrVariable[] = "G6SHIM_LOG_STDERR";
 constexpr char kTraceVariable[] = "G6SHIM_TRACE";
-constexpr char kDefaultLog[] = "g6shim.log";
+constexpr wchar_t kDefaultLog[] = L"g6shim.log";
 constexpr std::size_t kMaxMessage = 2048;
 constexpr std::size_t kMaxLine = kMaxMessage + 256;
 constexpr unsigned long long kThreadTagModulus = 100000;
 
+
 bool flag(const char* name, bool fallback) {
-    const char* value = std::getenv(name);
-    if (!value || !*value) return fallback;
-    return value[0] != '0';
+    const std::optional<std::string> value = settings::get(name);
+    if (!value || value->empty()) return fallback;
+    return value->front() != '0';
 }
 
 struct Sink {
@@ -40,14 +47,20 @@ struct Sink {
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
 
     Sink() {
-        const char* path = std::getenv(kLogVariable);
-        file = std::fopen(path && *path ? path : kDefaultLog, "a");
+        const std::optional<std::wstring> path = settings::get_wide(kLogVariable);
+        file = _wfopen(path && !path->empty() ? path->c_str() : kDefaultLog, L"a");
         to_stderr = flag(kStderrVariable, true);
     }
 };
 
 Sink& sink() {
-    static Sink* s = new Sink();
+    static Sink* s = [] {
+        settings::hold_warnings(true);
+        Sink* created = new Sink();
+        settings::hold_warnings(false);
+        settings::flush_warnings();
+        return created;
+    }();
     return *s;
 }
 

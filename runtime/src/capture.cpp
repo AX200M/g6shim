@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "g6shim/capture.hpp"
+#include <g6shim/settings.hpp>
 
 #include <windows.h>
 
 #include <cstdint>
 #include <cstdlib>
+#include <optional>
 #include <cstring>
 #include <set>
 #include <string>
@@ -29,9 +31,11 @@ constexpr std::uint8_t kOpaque = 0xFF;
 const std::set<unsigned>& requested_frames() {
     static const std::set<unsigned> frames = [] {
         std::set<unsigned> out;
-        char spec[kMaxSpec] = "";
-        if (!GetEnvironmentVariableA(kFramesVariable, spec, sizeof spec)) return out;
-        for (char* p = spec; *p;) {
+        const std::optional<std::string> value = settings::get(kFramesVariable);
+        if (!value) return out;
+        std::string spec = *value;
+        if (spec.size() >= kMaxSpec) spec.resize(kMaxSpec - 1);
+        for (char* p = spec.data(); *p;) {
             char* next = nullptr;
             const unsigned long n = std::strtoul(p, &next, 10);
             if (next == p) {

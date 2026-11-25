@@ -3,6 +3,7 @@
 #include "shader_cache.hpp"
 
 #include <g6shim/log.hpp>
+#include <g6shim/settings.hpp>
 #include <g6shim/shader/emit/container.hpp>
 
 #include <windows.h>
@@ -155,8 +156,8 @@ std::string executable_name() {
 }
 
 std::optional<std::filesystem::path> default_root() {
-    if (const std::wstring override = environment(L"G6SHIM_CACHE_DIR"); !override.empty())
-        return std::filesystem::path(override);
+    if (const std::optional<std::wstring> override = settings::get_wide("G6SHIM_CACHE_DIR"))
+        return std::filesystem::path(*override);
     const std::wstring local = environment(L"LOCALAPPDATA");
     if (local.empty()) {
         G6SHIM_WARN("d3d12_xs: no LOCALAPPDATA and no G6SHIM_CACHE_DIR; translated shaders and host pipelines "

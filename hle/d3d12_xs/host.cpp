@@ -9,6 +9,7 @@
 #include "window.hpp"
 
 #include <g6shim/log.hpp>
+#include <g6shim/settings.hpp>
 #include <g6shim/window.hpp>
 
 #include <algorithm>
@@ -29,11 +30,6 @@ constexpr std::size_t kPieceBytes = 64 << 10;
 constexpr std::size_t kFinePieceBytes = 4 << 10;
 constexpr DWORD kDeviceRemoved = 0x887A0005u;
 
-bool environment_set(const char* name) {
-    char value[8] = {};
-    const DWORD length = ::GetEnvironmentVariableA(name, value, sizeof value);
-    return length > 0 && length < sizeof value && value[0] != '0';
-}
 
 std::optional<DXGI_FORMAT> swap_format(int format) {
     if (format >= 27 && format <= 32) return DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -251,7 +247,7 @@ void Batch::flush() {
 }
 
 Host::Host() {
-    const bool debug = environment_set("G6SHIM_D3D_DEBUG");
+    const bool debug = settings::enabled("G6SHIM_D3D_DEBUG");
     if (debug) {
         Microsoft::WRL::ComPtr<ID3D12Debug> layer;
         if (SUCCEEDED(::D3D12GetDebugInterface(IID_PPV_ARGS(&layer))))
@@ -260,7 +256,7 @@ Host::Host() {
             G6SHIM_WARN("d3d12_xs: no host D3D12 debug layer");
     }
     HRESULT made = E_FAIL;
-    if (environment_set("G6SHIM_D3D_WARP")) {
+    if (settings::enabled("G6SHIM_D3D_WARP")) {
         Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
         Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
         if (SUCCEEDED(::CreateDXGIFactory2(0, IID_PPV_ARGS(&factory))) &&

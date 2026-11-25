@@ -56,25 +56,41 @@ The two library-loader forwarders make `LoadLibraryExW`/`LoadLibraryW` of `xgame
 | `g6shim-run -p <pid> -tid <tid> ...` | Attaches to a suspended process and resumes it, the way `plmdebug /enableDebug` starts a package debugger. |
 | `g6shim-shader <folder or files> [--json <out.json>] [--title-id <8 hex digits>] [--out <dir>] [-v]` | Finds the shader containers a game ships, decodes their native programs, translates them and counts unique shaders per stage. `--json` writes the unique per-stage counts for the progress maps. `--out` writes each translated PC container as `<hash>.dxil` into that folder; a folder inside the repository is refused. |
 
-## Environment variables
+## Settings
 
-| Variable | Effect |
-|---|---|
-| `G6SHIM_LOG=<path>` | Log file. Default `g6shim.log` in the working directory (the game folder under `g6shim-run`). |
-| `G6SHIM_LOG_STDERR=0` | Stop copying the log to stderr. The log always goes to the debugger output too. |
-| `G6SHIM_TRACE=1` | Verbose diagnostics: repeated activations and queries, first calls of fast-table entries and draws, packet kinds, topology values. Graphics objects also remember their last 32 calls, and a command list that fails to close logs them. |
-| `G6SHIM_CONSOLE=series-s` | Console model the title sees: `series-s` for the lighter console (7,776 MiB of title memory, Series S adapter memory and analytics), or `series-x` (default). An unknown value is logged and the default used. |
-| `G6SHIM_CAPTURE_FRAMES=300,600` | Save the back buffer of those presented frames (counted from 1) as `g6shim_frame_<n>.bmp` next to the executable. Works with the window hidden or the desktop locked. |
-| `G6SHIM_AUDIO_CAPTURE=<file.wav>` | Record what the title plays through WASAPI as a 48 kHz stereo 16-bit WAV, with silence where nothing played. The recorder runs in a helper process and stops with the title; it starts when `AcpHal.dll` is first used. |
-| `G6SHIM_XMA_DUMP=<folder>` | Write each XMA voice's output ring from enable to disable as `voice_<index>_<sequence>.wav` at the voice's rate and channel count, and one line per voice in `voices.txt` ([abi/acphal.md](abi/acphal.md)). |
-| `G6SHIM_D3D_DEBUG=1` | Create the device with the Direct3D debug layer; invalid calls appear as debug output. |
-| `G6SHIM_D3D_DRED=1` | Record GPU progress and page faults, so the log says where the GPU stopped when the device is removed. The reason for a removal is logged without it. |
-| `G6SHIM_WINDOW=<width>x<height>` | Client size of the presentation window, whatever the title renders at; the picture is scaled to it. By default the window takes the title's size and is shrunk to the monitor's work area when that is larger. |
-| `G6SHIM_FULLSCREEN=1` | Borderless fullscreen: the presentation window covers the whole monitor it opens on, including the taskbar. |
-| `G6SHIM_INPUT_AUTOPRESS=6:Menu,9:A` | Hold buttons for 0.2 s at those seconds after the first controller read. Buttons: `Menu View A B X Y Up Down Left Right`. |
-| `G6SHIM_BCPACK_TABLES=<path>` | BCPack constant tables for DirectStorage texture decompression. Default: `bcpack-tables.bin` next to `XCRDAPI.dll`. Without a table file BCPack requests fail; zlib and plain requests still run. |
-| `G6SHIM_DXIL=<path>` | `dxil.dll` the shader translator and its tests validate and sign DXIL with. Default: the newest `Windows Kits\10\bin\<version>\x64\dxil.dll`. Without one the validator tests are skipped; when the variable is set and the file cannot be loaded, they fail. CI sets it to the Windows SDK's copy. |
-| `G6SHIM_CACHE_DIR=<folder>` | Folder for translated shaders and compiled host pipelines. Default `%LOCALAPPDATA%\g6shim\cache\<title ID or exe name>`. |
+`g6shim.ini` next to the executable is read once, as UTF-8. A missing file changes nothing. A set environment variable overrides the file, including a value of `0`; an unset or empty variable does not. A flag is on when its value is non-empty and does not start with `0`. Unknown sections, unknown keys and malformed lines are logged once and ignored. Section and key names are case-insensitive.
+
+| Section | Key | Variable | Default | Effect |
+|---|---|---|---|---|
+| `log` | `file` | `G6SHIM_LOG` | `g6shim.log` in the working directory | Log file. Under `g6shim-run` the working directory is the game folder. |
+| `log` | `stderr` | `G6SHIM_LOG_STDERR` | on | `0` stops copying the log to stderr. The log always goes to the debugger output too. |
+| `log` | `trace` | `G6SHIM_TRACE` | off | Verbose diagnostics: repeated activations and queries, first calls of fast-table entries and draws, packet kinds, topology values. Graphics objects also remember their last 32 calls, and a command list that fails to close logs them. |
+| `console` | `model` | `G6SHIM_CONSOLE` | `series-x` | Console model the title sees. `series-s` is the lighter console (7,776 MiB of title memory, Series S adapter memory and analytics). An unknown value is logged and the default used. |
+| `window` | `size` | `G6SHIM_WINDOW` | the title's size, fitted to the work area | Client size `widthxheight`, positive, at most 32767. The picture is scaled to it. A forced size is not fitted, and the window keeps its position. |
+| `window` | `fullscreen` | `G6SHIM_FULLSCREEN` | off | Borderless fullscreen: the presentation window covers the whole monitor it opens on, including the taskbar. |
+| `graphics` | `capture_frames` | `G6SHIM_CAPTURE_FRAMES` | none | Save the back buffer of those presented frames (counted from 1), comma-separated, as `g6shim_frame_<n>.bmp` next to the executable. Works with the window hidden or the desktop locked. |
+| `graphics` | `d3d_debug` | `G6SHIM_D3D_DEBUG` | off | Create the device with the Direct3D debug layer; invalid calls appear as debug output. The D3D11 device enables the layer only when the value is `1`. |
+| `graphics` | `d3d_dred` | `G6SHIM_D3D_DRED` | off | Record GPU progress and page faults, so the log says where the GPU stopped when the device is removed. The reason for a removal is logged without it. |
+| `graphics` | `d3d_warp` | `G6SHIM_D3D_WARP` | the default adapter | Create the host device on the software adapter. |
+| `graphics` | `cache_dir` | `G6SHIM_CACHE_DIR` | `%LOCALAPPDATA%\g6shim\cache\<title ID or exe name>` | Folder for translated shaders and compiled host pipelines. |
+| `audio` | `capture` | `G6SHIM_AUDIO_CAPTURE` | off | Record what the title plays through WASAPI as a 48 kHz stereo 16-bit WAV, with silence where nothing played. The recorder runs in a helper process and stops with the title; it starts when `AcpHal.dll` is first used. The helper is given the resolved path. |
+| `audio` | `xma_dump` | `G6SHIM_XMA_DUMP` | off | Write each XMA voice's output ring from enable to disable as `voice_<index>_<sequence>.wav` at the voice's rate and channel count, and one line per voice in `voices.txt` ([abi/acphal.md](abi/acphal.md)). |
+| `input` | `autopress` | `G6SHIM_INPUT_AUTOPRESS` | none | Hold buttons for 0.2 s at those seconds after the first controller read, for example `6:Menu,9:A`. Buttons: `Menu View A B X Y Up Down Left Right`. |
+| `storage` | `bcpack_tables` | `G6SHIM_BCPACK_TABLES` | `bcpack-tables.bin` next to `XCRDAPI.dll` | BCPack constant tables for DirectStorage texture decompression. Without a table file BCPack requests fail; zlib and plain requests still run. |
+| — | — | `G6SHIM_DXIL` | the newest `Windows Kits\10\bin\<version>\x64\dxil.dll` | Environment only, not read from `g6shim.ini`. `dxil.dll` the shader translator and its tests validate and sign DXIL with. Without one the validator tests are skipped; when the variable is set and the file cannot be loaded, they fail. CI sets it to the Windows SDK's copy. |
+
+```ini
+[window]
+size = 1920x1080
+fullscreen = 1
+
+[graphics]
+capture_frames = 300,600
+d3d_debug = 1
+
+[audio]
+capture = D:\capture.wav
+```
 
 ## Caches
 
@@ -85,12 +101,13 @@ Translated shaders and compiled host pipelines are kept outside the game folder 
 | `%LOCALAPPDATA%\g6shim\cache\<title ID or exe name>\shaders` | one entry per translated shader container |
 | `%LOCALAPPDATA%\g6shim\cache\<title ID or exe name>\pipelines` | the host pipeline library and the list of title pipelines to start early |
 
-`G6SHIM_CACHE_DIR` replaces the `<title ID or exe name>` folder. A changed build, adapter or driver discards the entries it cannot use; deleting the folders is always safe.
+`G6SHIM_CACHE_DIR`, or `[graphics] cache_dir`, replaces the `<title ID or exe name>` folder. A changed build, adapter or driver discards the entries it cannot use; deleting the folders is always safe.
 
 ## Files next to the executable
 
 | File | Content |
 |---|---|
+| `g6shim.ini` | Settings. Environment variables override it. |
 | `g6shim.log` | The log, appended on every run. |
 | `g6shim_input.ini` | Keyboard and controller mapping, written with defaults on first start. XInput controllers need no mapping. |
 | `g6shim_saves\<container>\<blob>` | Saves. Files larger than 64 MiB are treated as damaged. |

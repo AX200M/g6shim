@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "window_geometry.hpp"
-
-#include <windows.h>
+#include <g6shim/settings.hpp>
 
 #include <algorithm>
 #include <charconv>
@@ -33,17 +32,6 @@ std::optional<std::int32_t> dimension(std::string_view text) {
     return value;
 }
 
-std::string environment(const char* name) {
-    char value[64] = {};
-    const DWORD length = ::GetEnvironmentVariableA(name, value, sizeof value);
-    if (length == 0 || length >= sizeof value) return {};
-    return std::string(value, length);
-}
-
-bool environment_set(const char* name) {
-    const std::string value = environment(name);
-    return !value.empty() && value[0] != '0';
-}
 
 }  // namespace
 
@@ -82,9 +70,9 @@ std::optional<Size> parse_size(std::string_view text) noexcept {
 }
 
 std::optional<Size> forced_size() noexcept {
-    const std::string text = environment("G6SHIM_WINDOW");
-    if (text.empty()) return std::nullopt;
-    return parse_size(text);
+    const std::optional<std::string> text = settings::get("G6SHIM_WINDOW");
+    if (!text) return std::nullopt;
+    return parse_size(*text);
 }
 
 Size requested_size(Size wanted) noexcept {
@@ -92,7 +80,7 @@ Size requested_size(Size wanted) noexcept {
     return forced ? *forced : wanted;
 }
 
-bool fullscreen_requested() noexcept { return environment_set("G6SHIM_FULLSCREEN"); }
+bool fullscreen_requested() noexcept { return settings::enabled("G6SHIM_FULLSCREEN"); }
 
 Placement fullscreen_placement(const Rect& monitor) noexcept {
     return Placement{monitor.left, monitor.top,

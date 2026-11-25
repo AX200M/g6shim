@@ -5,7 +5,7 @@
 #include "audio_dump.hpp"
 
 #include <g6shim/log.hpp>
-
+#include <g6shim/settings.hpp>
 #include <windows.h>
 
 #include <audioclient.h>
@@ -42,7 +42,8 @@ constexpr std::uint64_t kTicksPerSecond = 10'000'000;
 constexpr std::uint64_t kGapFrames = kRate / 500;
 constexpr std::size_t kSilenceChunkBytes = 64 * 1024;
 constexpr wchar_t kRecorderExport[] = L"g6shim_audio_capture_recorder";
-constexpr wchar_t kCaptureVariable[] = L"G6SHIM_AUDIO_CAPTURE";
+constexpr char kCaptureVariable[] = "G6SHIM_AUDIO_CAPTURE";
+constexpr wchar_t kCaptureVariableWide[] = L"G6SHIM_AUDIO_CAPTURE";
 constexpr wchar_t kTargetVariable[] = L"G6SHIM_AUDIO_CAPTURE_OF";
 constexpr wchar_t kRundll32[] = L"\\System32\\rundll32.exe";
 
@@ -71,28 +72,36 @@ std::wstring system_rundll32() {
     return root + kRundll32;
 }
 
-std::vector<wchar_t> environment_for(std::uint32_t target) {
+bool assignment_of(const wchar_t* entry, const wchar_t* name) {
+    const std::size_t length = std::wcslen(name);
+    return _wcsnicmp(entry, name, length) == 0 && entry[length] == L'=';
+}
+
+std::vector<wchar_t> environment_for(std::uint32_t target, const std::wstring& capture_path) {
     std::vector<wchar_t> block;
     const wchar_t* current = GetEnvironmentStringsW();
     if (current) {
         for (const wchar_t* entry = current; *entry;) {
             const std::size_t length = std::wcslen(entry);
-            if (_wcsnicmp(entry, kTargetVariable, std::size(kTargetVariable) - 1) != 0)
+            if (!assignment_of(entry, kTargetVariable) && !assignment_of(entry, kCaptureVariableWide))
                 block.insert(block.end(), entry, entry + length + 1);
             entry += length + 1;
         }
         FreeEnvironmentStringsW(const_cast<wchar_t*>(current));
     }
-    const std::wstring value = std::wstring(kTargetVariable) + L"=" + std::to_wstring(target);
-    block.insert(block.end(), value.begin(), value.end());
+    const std::wstring target_value = std::wstring(kTargetVariable) + L"=" + std::to_wstring(target);
+    block.insert(block.end(), target_value.begin(), target_value.end());
+    block.push_back(L'\0');
+    const std::wstring capture_value = std::wstring(kCaptureVariableWide) + L"=" + capture_path;
+    block.insert(block.end(), capture_value.begin(), capture_value.end());
     block.push_back(L'\0');
     block.push_back(L'\0');
     return block;
 }
 
-bool spawn_recorder(const std::wstring& dll, const std::wstring& exe) {
+bool spawn_recorder(const std::wstring& dll, const std::wstring& exe, const std::wstring& capture_path) {
     std::wstring command = L"\"" + exe + L"\" \"" + dll + L"\"," + std::wstring(kRecorderExport);
-    std::vector<wchar_t> environment = environment_for(GetCurrentProcessId());
+    std::vector<wchar_t> environment = environment_for(GetCurrentProcessId(), capture_path);
     STARTUPINFOW startup{};
     startup.cb = sizeof startup;
     PROCESS_INFORMATION process{};
@@ -122,14 +131,15 @@ void start_timing_probe() {
 
 void start_audio_capture_once() {
     start_timing_probe();
-    const auto path = environment_variable(kCaptureVariable);
+    const auto path = settings::get_wide(kCaptureVariable);
     if (!path || path->empty()) return;
     const auto dll = module_path(reinterpret_cast<const void*>(&start_audio_capture_once));
     if (!dll) {
         G6SHIM_WARN("audio capture not started: this module has no path");
         return;
     }
-    if (spawn_recorder(*dll, system_rundll32())) G6SHIM_INFO("audio capture: recording to %ls", path->c_str());
+    if (spawn_recorder(*dll, system_rundll32(), *path))
+        G6SHIM_INFO("audio capture: recording to %ls", path->c_str());
 }
 
 class ActivationHandler final : public IActivateAudioInterfaceCompletionHandler {
@@ -332,7 +342,7 @@ void record(std::uint32_t pid, const std::wstring& path) {
 
 void run_recorder() {
     const auto target = environment_variable(kTargetVariable);
-    const auto path = environment_variable(kCaptureVariable);
+    const auto path = settings::get_wide(kCaptureVariable);
     if (!target || !path || path->empty()) return;
     const std::uint32_t pid = static_cast<std::uint32_t>(std::wcstoul(target->c_str(), nullptr, 10));
     if (pid == 0) return;
