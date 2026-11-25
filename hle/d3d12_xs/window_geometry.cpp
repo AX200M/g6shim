@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cstddef>
+#include <cwchar>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -14,6 +15,8 @@
 namespace g6shim::d3d12_xs::window {
 
 namespace {
+
+constexpr std::size_t kFrameRateChars = 96;
 
 std::string_view trimmed(std::string_view text) {
     const std::size_t begin = text.find_first_not_of(" \t");
@@ -85,6 +88,21 @@ bool fullscreen_requested() noexcept { return settings::enabled("G6SHIM_FULLSCRE
 Placement fullscreen_placement(const Rect& monitor) noexcept {
     return Placement{monitor.left, monitor.top,
                      Size{monitor.right - monitor.left, monitor.bottom - monitor.top}};
+}
+
+std::wstring caption(std::wstring_view base, Size render, Size client, std::optional<FrameRate> rate) {
+    std::wstring text(base);
+    if (render.width > 0 && render.height > 0) {
+        text += L" - " + std::to_wstring(render.width) + L"x" + std::to_wstring(render.height);
+        if (client.width > 0 && client.height > 0 && client != render)
+            text += L" (window " + std::to_wstring(client.width) + L"x" + std::to_wstring(client.height) + L")";
+    }
+    if (rate) {
+        wchar_t suffix[kFrameRateChars] = {};
+        std::swprintf(suffix, kFrameRateChars, L" | g6shim %.0f fps %.1f ms/frame", rate->fps, rate->milliseconds);
+        text += suffix;
+    }
+    return text;
 }
 
 }  // namespace g6shim::d3d12_xs::window

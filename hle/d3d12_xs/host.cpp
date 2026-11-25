@@ -17,7 +17,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <cwchar>
 #include <thread>
 
 namespace g6shim::d3d12_xs::host {
@@ -64,36 +63,9 @@ struct Meter {
     std::chrono::steady_clock::time_point since = std::chrono::steady_clock::now();
     std::uint32_t frames = 0;
     std::chrono::steady_clock::time_point logged = std::chrono::steady_clock::now();
-    std::optional<std::wstring> caption;
 
     void frame(HWND hwnd);
 };
-
-void set_caption(HWND hwnd, std::wstring text) {
-    static std::mutex mutex;
-    static std::optional<std::pair<HWND, std::wstring>> pending;
-    static std::once_flag once;
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        pending = std::make_pair(hwnd, std::move(text));
-    }
-    std::call_once(once, [] {
-        std::thread([] {
-            for (;;) {
-                std::optional<std::pair<HWND, std::wstring>> next;
-                {
-                    std::lock_guard<std::mutex> lock(mutex);
-                    next = std::move(pending);
-                    pending.reset();
-                }
-                if (next)
-                    ::SetWindowTextW(next->first, next->second.c_str());
-                else
-                    ::Sleep(100);
-            }
-        }).detach();
-    });
-}
 
 void Meter::frame(HWND hwnd) {
     ++frames;
@@ -107,14 +79,7 @@ void Meter::frame(HWND hwnd) {
         logged = now;
         G6SHIM_INFO("d3d12_xs: %.1f fps, %.1f ms/frame", fps, ms);
     }
-    if (!caption) {
-        wchar_t buffer[512] = {};
-        const int length = ::InternalGetWindowText(hwnd, buffer, 512);
-        caption = std::wstring(buffer, static_cast<std::size_t>(length > 0 ? length : 0));
-    }
-    wchar_t suffix[96] = {};
-    std::swprintf(suffix, 96, L" | g6shim %.0f fps %.1f ms/frame", fps, ms);
-    set_caption(hwnd, *caption + suffix);
+    window::show_frame_rate(hwnd, window::FrameRate{fps, ms});
     frames = 0;
     since = now;
 }
@@ -536,6 +501,7 @@ std::unique_ptr<Host::Presenter> Host::make_presenter(std::uint32_t width, std::
     ::GetClientRect(hwnd, &client);
     G6SHIM_INFO("d3d12_xs: presenting %ux%u on a %ldx%ld client window %p", width, height,
                 client.right - client.left, client.bottom - client.top, hwnd);
+    window::show_render_size(hwnd, width, height);
     return made;
 }
 
@@ -563,6 +529,7 @@ std::optional<bool> Host::present(ID3D12Resource* texture, std::uint32_t state, 
         presenter->width = width;
         presenter->height = height;
         presenter->format = *format;
+        window::show_render_size(presenter->hwnd, width, height);
     }
     const auto wanted = static_cast<D3D12_RESOURCE_STATES>(state);
     const UINT index = presenter->swap_chain->GetCurrentBackBufferIndex();

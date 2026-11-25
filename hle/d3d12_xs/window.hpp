@@ -23,5 +23,7 @@ void end_title(const char* why);
 
 HWND create(std::uint32_t width, std::uint32_t height);
 void adopt(HWND hwnd);
+void show_render_size(HWND hwnd, std::uint32_t width, std::uint32_t height);
+void show_frame_rate(HWND hwnd, FrameRate rate);
 
 }  // namespace g6shim::d3d12_xs::window

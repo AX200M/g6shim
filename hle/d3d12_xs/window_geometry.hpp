@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string>
 #include <string_view>
 
 namespace g6shim::d3d12_xs::window {
@@ -41,5 +42,12 @@ std::optional<Size> forced_size() noexcept;
 Size requested_size(Size wanted) noexcept;
 bool fullscreen_requested() noexcept;
 Placement fullscreen_placement(const Rect& monitor) noexcept;
+
+struct FrameRate {
+    double fps = 0.0;
+    double milliseconds = 0.0;
+};
+
+std::wstring caption(std::wstring_view base, Size render, Size client, std::optional<FrameRate> rate);
 
 }  // namespace g6shim::d3d12_xs::window

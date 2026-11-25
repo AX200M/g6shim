@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <string>
 #include <thread>
 
 using namespace g6shim::d3d12_xs::window;
@@ -154,6 +155,71 @@ TEST(d3d12_xs_window_adopting_a_busy_title_window_does_not_wait_for_its_thread) 
     title.join();
     CHECK(resized.load());
     unset("G6SHIM_WINDOW");
+    ::CloseHandle(created);
+    ::CloseHandle(released);
+}
+
+TEST(d3d12_xs_window_caption_shows_the_render_resolution) {
+    CHECK(caption(L"g6shim", Size{3840, 2160}, Size{3840, 2160}, std::nullopt) == L"g6shim - 3840x2160");
+    CHECK(caption(L"g6shim", Size{3840, 2160}, Size{2511, 1392}, std::nullopt) ==
+          L"g6shim - 3840x2160 (window 2511x1392)");
+    CHECK(caption(L"g6shim", Size{3840, 2160}, Size{0, 0}, std::nullopt) == L"g6shim - 3840x2160");
+    CHECK(caption(L"g6shim", Size{0, 0}, Size{1280, 720}, std::nullopt) == L"g6shim");
+    CHECK(caption(L"", Size{1280, 720}, Size{1280, 720}, std::nullopt) == L" - 1280x720");
+    CHECK(caption(L"t", Size{3840, 2160}, Size{1920, 1080}, FrameRate{30.04, 33.29}) ==
+          L"t - 3840x2160 (window 1920x1080) | g6shim 30 fps 33.3 ms/frame");
+    CHECK(caption(L"t", Size{0, 0}, Size{1920, 1080}, FrameRate{60.0, 16.67}) == L"t | g6shim 60 fps 16.7 ms/frame");
+}
+
+TEST(d3d12_xs_window_caption_is_set_on_the_window_thread) {
+    unset("G6SHIM_WINDOW");
+    unset("G6SHIM_FULLSCREEN");
+    const HANDLE created = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    const HANDLE released = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    std::atomic<HWND> window{nullptr};
+    std::atomic<bool> captioned{false};
+    std::thread title([&] {
+        WNDCLASSEXW window_class{};
+        window_class.cbSize = sizeof window_class;
+        window_class.lpfnWndProc = &DefWindowProcW;
+        window_class.hInstance = ::GetModuleHandleW(nullptr);
+        window_class.lpszClassName = kBusyTitleClass;
+        ::RegisterClassExW(&window_class);
+        const HWND made = ::CreateWindowExW(0, kBusyTitleClass, L"title", WS_OVERLAPPEDWINDOW, 0, 0, 320, 240,
+                                            nullptr, nullptr, window_class.hInstance, nullptr);
+        window = made;
+        ::SetEvent(created);
+        ::WaitForSingleObject(released, INFINITE);
+        if (made == nullptr) return;
+        const Size client = client_of(made);
+        const std::wstring wanted = L"title - 1280x720 (window " + std::to_wstring(client.width) + L"x" +
+                                    std::to_wstring(client.height) + L")";
+        const auto deadline = std::chrono::steady_clock::now() + kResizeDeadline;
+        while (!captioned && std::chrono::steady_clock::now() < deadline) {
+            MSG message{};
+            while (::PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) ::DispatchMessageW(&message);
+            wchar_t text[128]{};
+            ::GetWindowTextW(made, text, 128);
+            captioned = wanted == text;
+            ::Sleep(1);
+        }
+        ::DestroyWindow(made);
+    });
+    ::WaitForSingleObject(created, INFINITE);
+    CHECK(window.load() != nullptr);
+    std::atomic<bool> shown{false};
+    std::thread caller([&] {
+        adopt(window.load());
+        show_render_size(window.load(), 1280, 720);
+        shown = true;
+    });
+    const auto deadline = std::chrono::steady_clock::now() + kAdoptDeadline;
+    while (!shown && std::chrono::steady_clock::now() < deadline) ::Sleep(1);
+    CHECK(shown.load());
+    ::SetEvent(released);
+    caller.join();
+    title.join();
+    CHECK(captioned.load());
     ::CloseHandle(created);
     ::CloseHandle(released);
 }

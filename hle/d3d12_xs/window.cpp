@@ -12,6 +12,8 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -26,6 +28,7 @@ constexpr wchar_t kTitleProcProperty[] = L"g6shim.title_proc";
 constexpr DWORD kWindowStyle = WS_OVERLAPPEDWINDOW;
 constexpr WPARAM kCommandMask = 0xFFF0;
 constexpr std::uint8_t kQuiesced = 1;
+constexpr wchar_t kCaptionMessageName[] = L"g6shim.caption";
 
 struct Registration {
     std::size_t id = 0;
@@ -52,7 +55,64 @@ void finish(const char* how) {
     });
 }
 
+struct Shown {
+    HWND window = nullptr;
+    Size render;
+    std::optional<FrameRate> rate;
+    bool captured = false;
+    std::wstring base;
+};
+
+std::mutex g_shown_mutex;
+Shown g_shown;
+
+UINT caption_message() {
+    static const UINT message = ::RegisterWindowMessageW(kCaptionMessageName);
+    return message;
+}
+
+std::wstring window_text(HWND hwnd) {
+    const int length = ::GetWindowTextLengthW(hwnd);
+    if (length <= 0) return {};
+    std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
+    const int copied = ::GetWindowTextW(hwnd, text.data(), length + 1);
+    text.resize(static_cast<std::size_t>(copied > 0 ? copied : 0));
+    return text;
+}
+
+Size client_size(HWND hwnd);
+
+void update_caption(HWND hwnd) {
+    std::wstring text;
+    {
+        std::lock_guard<std::mutex> lock(g_shown_mutex);
+        if (g_shown.window != hwnd) return;
+        if (!g_shown.captured) {
+            g_shown.base = window_text(hwnd);
+            g_shown.captured = true;
+        }
+        text = caption(g_shown.base, g_shown.render, client_size(hwnd), g_shown.rate);
+    }
+    if (text != window_text(hwnd)) ::SetWindowTextW(hwnd, text.c_str());
+}
+
+LRESULT forward(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    const HANDLE previous = ::GetPropW(hwnd, kTitleProcProperty);
+    if (message == WM_NCDESTROY) ::RemovePropW(hwnd, kTitleProcProperty);
+    if (previous == nullptr) return ::DefWindowProcW(hwnd, message, wparam, lparam);
+    return ::CallWindowProcW(reinterpret_cast<WNDPROC>(previous), hwnd, message, wparam, lparam);
+}
+
 LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (message == caption_message()) {
+        update_caption(hwnd);
+        return 0;
+    }
+    if (message == WM_SIZE) {
+        const LRESULT result = forward(hwnd, message, wparam, lparam);
+        update_caption(hwnd);
+        return result;
+    }
     if (message == WM_SYSCOMMAND && (wparam & kCommandMask) == static_cast<WPARAM>(SC_CLOSE)) {
         end_title("window closed");
         return 0;
@@ -62,10 +122,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         end_title("window closed");
         return 0;
     }
-    const HANDLE previous = ::GetPropW(hwnd, kTitleProcProperty);
-    if (message == WM_NCDESTROY) ::RemovePropW(hwnd, kTitleProcProperty);
-    if (previous == nullptr) return ::DefWindowProcW(hwnd, message, wparam, lparam);
-    return ::CallWindowProcW(reinterpret_cast<WNDPROC>(previous), hwnd, message, wparam, lparam);
+    return forward(hwnd, message, wparam, lparam);
 }
 
 void hook(HWND hwnd) {
@@ -234,6 +291,26 @@ HWND create(std::uint32_t width, std::uint32_t height) {
     std::unique_lock<std::mutex> lock(shared->mutex);
     shared->ready.wait(lock, [&shared] { return shared->done; });
     return shared->window;
+}
+
+void show_render_size(HWND hwnd, std::uint32_t width, std::uint32_t height) {
+    if (hwnd == nullptr) return;
+    {
+        std::lock_guard<std::mutex> lock(g_shown_mutex);
+        if (g_shown.window != hwnd) g_shown = Shown{hwnd};
+        g_shown.render = Size{static_cast<std::int32_t>(width), static_cast<std::int32_t>(height)};
+    }
+    ::PostMessageW(hwnd, caption_message(), 0, 0);
+}
+
+void show_frame_rate(HWND hwnd, FrameRate rate) {
+    if (hwnd == nullptr) return;
+    {
+        std::lock_guard<std::mutex> lock(g_shown_mutex);
+        if (g_shown.window != hwnd) g_shown = Shown{hwnd};
+        g_shown.rate = rate;
+    }
+    ::PostMessageW(hwnd, caption_message(), 0, 0);
 }
 
 void adopt(HWND hwnd) {
