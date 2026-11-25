@@ -108,7 +108,12 @@ private:
     std::optional<std::pair<std::size_t, std::uint8_t>> find_input(std::uint8_t row,
                                                                    std::uint8_t channel);
     Val load_input(std::size_t id, std::uint8_t col);
-    Val load_any_input(std::size_t id, std::uint8_t col);
+    Val load_any_input(std::size_t id, std::uint8_t col,
+                       std::optional<std::uint32_t> vertex = std::nullopt);
+    std::optional<std::pair<std::size_t, std::uint8_t>> geometry_slot(std::vector<SigElement>& elements,
+                                                                      std::uint32_t dword, bool input);
+    void geometry_ring(const IrInst& inst, std::size_t b, std::size_t i);
+    void geometry_message(const IrInst& inst, std::size_t b, std::size_t i);
     Val get(Value v);
     V i32_of(Value v);
     Val user(std::size_t param, std::uint32_t dword);

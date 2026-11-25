@@ -164,13 +164,14 @@ HostShader translate(std::span<const std::uint8_t> container) {
     const NativeProgram* native = nullptr;
     for (const NativeProgram& program : programs) {
         if (program.stage == HwStage::Vs || program.stage == HwStage::Ps ||
-            program.stage == HwStage::Cs || program.stage == HwStage::Ms) {
+            program.stage == HwStage::Cs || program.stage == HwStage::Ms ||
+            program.stage == HwStage::Gs) {
             native = &program;
             break;
         }
     }
     if (native == nullptr)
-        detail::fail_unsupported(0, "a container without a vertex, pixel, compute or mesh program");
+        detail::fail_unsupported(0, "a container without a vertex, pixel, compute, mesh or geometry program");
     const Program program = ::g6shim::shader::build(native->patched_code(), native->wave64, native->vgprs);
     std::exception_ptr structure_failure;
     std::optional<Structured> structured;
@@ -197,7 +198,7 @@ HostShader emit(const Container& container, const NativeProgram& native, const P
     std::vector<SigElement> inputs = sig(kIsg1);
     std::vector<SigElement> outputs = sig(kOsg1);
     std::vector<SigElement>& interpolated = pixel ? inputs : outputs;
-    for (SigElement& e : interpolated) {
+    const auto assign_interp = [](SigElement& e) {
         const std::uint8_t kind = e.kind;
         const std::uint8_t comp = e.comp;
         if (kind == 3) e.interp = 4;
@@ -205,7 +206,10 @@ HostShader emit(const Container& container, const NativeProgram& native, const P
         else if ((kind == 0 || kind == 6 || kind == 7) && comp == 9) e.interp = 2;
         else if (kind == 0) e.interp = 1;
         else e.interp = 0;
-    }
+    };
+    for (SigElement& e : interpolated) assign_interp(e);
+    if (native.stage == HwStage::Gs)
+        for (SigElement& e : inputs) assign_interp(e);
     if (pixel && std::any_of(outputs.begin(), outputs.end(),
                              [](const SigElement& e) { return e.kind == 18 || e.kind == 19; })) {
         for (SigElement& e : inputs)

@@ -348,10 +348,13 @@ std::optional<HostPipeline> HostPipeline::make(const std::vector<std::shared_ptr
     const bool compute = shaders.size() == 1 && shaders.front()->stage == "compute";
     if (!compute) {
         for (const auto& shader : shaders)
-            if (shader->stage != "vertex" && shader->stage != "pixel" && shader->stage != "mesh")
-                return refuse("only vertex, mesh, pixel and compute stages are translated", shaders);
+            if (shader->stage != "vertex" && shader->stage != "pixel" && shader->stage != "mesh" &&
+                shader->stage != "geometry")
+                return refuse("only vertex, mesh, pixel, geometry and compute stages are translated", shaders);
     }
     const std::shared_ptr<Shader> mesh = find("mesh");
+    const std::shared_ptr<Shader> geometry = find("geometry");
+    if (mesh && geometry) return refuse("a mesh and geometry shader together", shaders);
     std::vector<std::pair<std::shared_ptr<Shader>, D3D12_SHADER_VISIBILITY>> chosen;
     if (compute) {
         chosen.emplace_back(shaders.front(), D3D12_SHADER_VISIBILITY_ALL);
@@ -359,6 +362,7 @@ std::optional<HostPipeline> HostPipeline::make(const std::vector<std::shared_ptr
         const std::shared_ptr<Shader> first = mesh ? mesh : find("vertex");
         if (!first) return refuse("no vertex or mesh shader", shaders);
         chosen.emplace_back(first, mesh ? D3D12_SHADER_VISIBILITY_MESH : D3D12_SHADER_VISIBILITY_VERTEX);
+        if (geometry) chosen.emplace_back(geometry, D3D12_SHADER_VISIBILITY_GEOMETRY);
         if (const std::shared_ptr<Shader> pixel = find("pixel"); pixel)
             chosen.emplace_back(pixel, D3D12_SHADER_VISIBILITY_PIXEL);
     }
@@ -505,8 +509,20 @@ std::optional<HostPipeline> HostPipeline::make(const std::vector<std::shared_ptr
     const std::vector<D3D12_INPUT_ELEMENT_DESC> elements = graphics->element_descs();
     D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
     desc.pRootSignature = root->root.Get();
-    desc.VS = code(0);
-    desc.PS = code(1);
+    const auto bytecode = [&](D3D12_SHADER_VISIBILITY visibility) {
+        D3D12_SHADER_BYTECODE out{};
+        for (const auto& entry : chosen) {
+            if (entry.second != visibility) continue;
+            const Translated* translated = entry.first->translated();
+            out.pShaderBytecode = translated->host.dxil.data();
+            out.BytecodeLength = translated->host.dxil.size();
+            break;
+        }
+        return out;
+    };
+    desc.VS = bytecode(D3D12_SHADER_VISIBILITY_VERTEX);
+    desc.GS = bytecode(D3D12_SHADER_VISIBILITY_GEOMETRY);
+    desc.PS = bytecode(D3D12_SHADER_VISIBILITY_PIXEL);
     desc.BlendState = graphics->blend;
     desc.SampleMask = graphics->sample_mask;
     desc.RasterizerState = graphics->rasterizer;
@@ -522,8 +538,9 @@ std::optional<HostPipeline> HostPipeline::make(const std::vector<std::shared_ptr
     desc.DSVFormat = graphics->depth_format;
     desc.SampleDesc = graphics->samples;
     const std::vector<std::uint8_t> vertex_code = bytecode_bytes(desc.VS);
+    const std::vector<std::uint8_t> geometry_code = bytecode_bytes(desc.GS);
     const std::vector<std::uint8_t> pixel_code = bytecode_bytes(desc.PS);
-    const std::array<std::span<const std::uint8_t>, 2> codes{vertex_code, pixel_code};
+    const std::array<std::span<const std::uint8_t>, 3> codes{vertex_code, geometry_code, pixel_code};
     const std::string name = pipeline_library::name("graphics", root->blob, codes, state);
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
     const HRESULT made = pipeline_library::pipeline(

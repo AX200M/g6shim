@@ -237,7 +237,7 @@
 
 ## add Functional
 
-- Only vertex, mesh, pixel and compute stages get host pipelines; descriptions with domain, hull, geometry or amplification stages, and plain graphics descriptions, keep their shader containers only, and the 32-byte packet after a pipeline's header stays zero.
+- Only vertex, mesh, pixel, geometry and compute stages get host pipelines; descriptions with domain, hull or amplification stages, and plain graphics descriptions, keep their shader containers only, and the 32-byte packet after a pipeline's header stays zero.
   Closes when: the other stages and the plain description are translated into host pipelines.
 - Host pipelines are made on worker threads and waited for at most 500 ms per title frame; a draw or dispatch whose pipeline is not ready is dropped, so a pass run once whose pipeline takes longer is lost.
   Closes when: the wait budget is derived from a measurement rather than a guess.

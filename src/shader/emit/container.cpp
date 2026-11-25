@@ -255,6 +255,15 @@ std::vector<std::uint8_t> psv(const Psv& p) {
     info[22] = static_cast<std::uint8_t>(max_wave >> 16);
     info[23] = static_cast<std::uint8_t>(max_wave >> 24);
     info[24] = p.stage;
+    if (p.geometry) {
+        const Geometry& geometry = *p.geometry;
+        write_u32(info, 0, geometry.input_primitive);
+        write_u32(info, 4, geometry.output_topology);
+        write_u32(info, 8, geometry.stream_mask);
+        write_u32(info, 12, p.flag ? 1u : 0u);
+        info[26] = static_cast<std::uint8_t>(geometry.max_vertices);
+        info[27] = static_cast<std::uint8_t>(geometry.max_vertices >> 8);
+    }
     for (std::size_t k = 0; k < p.threads.size(); ++k) {
         const std::uint32_t value = p.threads[k];
         for (std::size_t byte = 0; byte < 4; ++byte)

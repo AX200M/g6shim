@@ -148,7 +148,8 @@ const Translated* Shader::translated() const {
                     if (program.stage == g6shim::shader::HwStage::Vs ||
                         program.stage == g6shim::shader::HwStage::Ps ||
                         program.stage == g6shim::shader::HwStage::Ms ||
-                        program.stage == g6shim::shader::HwStage::Cs) {
+                        program.stage == g6shim::shader::HwStage::Cs ||
+                        program.stage == g6shim::shader::HwStage::Gs) {
                         done.used = program.used;
                         break;
                     }

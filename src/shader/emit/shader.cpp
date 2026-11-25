@@ -33,6 +33,7 @@ constexpr std::uint32_t kFeatureAtomicInt64OnTypedResource = 0x400000;
 constexpr std::uint32_t kFeatureAtomicInt64OnHeapResource = 0x10000000;
 constexpr std::uint32_t kComparisonSampler = 0x8000;
 constexpr std::uint32_t kUnallocatedRow = UINT32_MAX;
+constexpr std::uint32_t kGsStateTag = 1;
 
 void append_u32(std::vector<std::uint8_t>& out, std::uint32_t value) {
     out.push_back(static_cast<std::uint8_t>(value));
@@ -268,12 +269,27 @@ std::vector<std::uint8_t> Shader::finish() {
     if (graphics) {
         const std::uint32_t ni = signature_width(inputs);
         const std::uint32_t no = signature_width(outputs);
-        std::vector<std::uint32_t> view = {ni, no};
-        if (mesh) view.push_back(signature_width(prims));
-        for (std::uint32_t i = 0; i < ni; ++i) {
-            for (std::uint32_t k = 0; k < (no + 31) / 32; ++k) {
-                const std::uint32_t bits = std::min(no - 32 * k, 32u);
-                view.push_back(bits == 32 ? UINT32_MAX : (1u << bits) - 1u);
+        std::vector<std::uint32_t> view;
+        if (geometry) {
+            view.push_back(ni);
+            view.push_back(no);
+            const std::uint32_t in_mask = ni >= 32 ? UINT32_MAX : (ni == 0 ? 0u : (1u << ni) - 1u);
+            const std::uint32_t in_dwords = ni == 0 ? 0u : (ni + 31) / 32;
+            for (std::uint32_t output = 0; output < no; ++output)
+                for (std::uint32_t dword = 0; dword < in_dwords; ++dword)
+                    view.push_back(dword == 0 ? in_mask : 0u);
+            if (no > 0) {
+                const std::uint32_t out_dwords = (no + 31) / 32;
+                for (std::uint32_t dword = 0; dword < out_dwords; ++dword) view.push_back(0);
+            }
+        } else {
+            view = {ni, no};
+            if (mesh) view.push_back(signature_width(prims));
+            for (std::uint32_t i = 0; i < ni; ++i) {
+                for (std::uint32_t k = 0; k < (no + 31) / 32; ++k) {
+                    const std::uint32_t bits = std::min(no - 32 * k, 32u);
+                    view.push_back(bits == 32 ? UINT32_MAX : (1u << bits) - 1u);
+                }
             }
         }
         const Ty array = m.array(static_cast<std::uint32_t>(view.size()), t.i32);
@@ -322,6 +338,12 @@ std::vector<std::uint8_t> Shader::finish() {
             props.push_back(thread_group);
         }
     }
+    if (geometry) {
+        props.push_back(i32c(kGsStateTag));
+        props.push_back(m.md_node({i32c(geometry->input_primitive), i32c(geometry->max_vertices),
+                                   i32c(geometry->stream_mask), i32c(geometry->output_topology),
+                                   i32c(geometry->instances)}));
+    }
     if (wave_size) {
         props.push_back(i32c(11));
         props.push_back(m.md_node({i32c(*wave_size)}));
@@ -347,6 +369,9 @@ std::vector<std::uint8_t> Shader::finish() {
     if (mesh) {
         program_name = "ms";
         program_kind = 13;
+    } else if (geometry) {
+        program_name = "gs";
+        program_kind = 2;
     } else if (threads) {
         program_name = "cs";
         program_kind = 5;
@@ -406,6 +431,7 @@ std::vector<std::uint8_t> Shader::finish() {
         outputs,
         prims,
         mesh_psv,
+        geometry,
         bindings,
         threads.value_or(std::array<std::uint32_t, 3>{0, 0, 0}),
         wave_size,
