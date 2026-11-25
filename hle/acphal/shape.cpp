@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 #include "shape_contexts.hpp"
 
-#include "audio_capture.hpp"
 #include "xma_voices.hpp"
 
 #include <g6shim/log.hpp>
@@ -39,7 +38,6 @@ void log_allocation(const void* config, HRESULT hr) {
 }  // namespace
 
 extern "C" HRESULT WINAPI g6shim_AcpHalAllocateShapeContexts(void* config) {
-    start_audio_capture();
     const HRESULT hr = shape_contexts().allocate(config);
     log_allocation(config, hr);
     if (SUCCEEDED(hr)) {
