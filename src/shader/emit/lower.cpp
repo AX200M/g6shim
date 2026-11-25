@@ -40,6 +40,14 @@ constexpr std::uint8_t kGsOpEmitCut = 3;
 constexpr std::uint32_t kEmitStream = 97;
 constexpr std::uint32_t kCutStream = 98;
 
+Why mask_data_reason(const Bools& bools, Bool bits) {
+    for (const Atom& atom : bools.support(bits)) {
+        if (atom.kind == Atom::Kind::Quad) return kQuadMask;
+        if (atom.kind == Atom::Kind::Opaque) return kOpaqueMask;
+    }
+    return kLaneMaskElsewhere;
+}
+
 constexpr Numeric kNorm[] = {Numeric::Unorm, Numeric::Snorm, Numeric::Uscaled,
                              Numeric::Sscaled, Numeric::Uint, Numeric::Sint};
 constexpr Numeric kAll[] = {Numeric::Unorm, Numeric::Snorm, Numeric::Uscaled,
@@ -252,7 +260,8 @@ Lower::Lower(const Parts& parts, const std::unordered_map<Value, Why, ValueHash>
         const std::uint64_t product = static_cast<std::uint64_t>(cs->threads[0]) * cs->threads[1] *
                                       cs->threads[2];
         const bool one_wave = product <= wave_size;
-        if (console_lanes_ || (one_wave && s_.lds_dwords > 0)) s_.wave_size = wave_size;
+        const bool host_picks = std::getenv("G6SHIM_HOST_WAVE") != nullptr;
+        if (!host_picks && (console_lanes_ || (one_wave && s_.lds_dwords > 0))) s_.wave_size = wave_size;
     }
     if (const auto* ms = std::get_if<MeshIo>(&parts.native->io)) {
         s_.prims = parts.prims;
@@ -649,11 +658,12 @@ Lowered Lower::run() {
             }
             ++i;
         }
-        mask_ok_ = mask_data_ == MaskData::Console;
+        mask_ok_ = mask_data_ != MaskData::None;
         tail_[b] = cur_;
         exit(b);
     }
     fill_phis();
+    fill_mask_words();
     s_.samplers = static_cast<std::uint32_t>(samplers_.size());
     if (s_.geometry) {
         std::uint32_t scalars = 1;
@@ -974,48 +984,174 @@ Val Lower::user(std::size_t param, std::uint32_t dword) {
 }
 
 V Lower::mask_dword(Value v) {
+    const std::pair<V, V> words = mask_pair(v);
+    const bool high = x_->st->highs.contains(v);
+    return high ? words.second : words.first;
+}
+
+std::pair<V, V> Lower::mask_pair(Value v) {
     Value lo = v;
-    bool high = false;
-    const auto high_found = x_->st->highs.find(v);
-    if (high_found != x_->st->highs.end()) {
+    if (const auto high_found = x_->st->highs.find(v); high_found != x_->st->highs.end())
         lo = high_found->second;
-        high = true;
-    }
     const auto mask = x_->st->masks.find(lo);
     if (mask == x_->st->masks.end()) fail(kLaneMask);
-    if (!x_->st->active.contains(lo)) fail("a lane mask holding lanes elsewhere read as data");
-    std::pair<V, V> xy;
-    const auto ballot = ballots_.find(lo);
-    if (ballot != ballots_.end()) {
-        xy = ballot->second;
-    } else {
-        std::size_t at = s_.entry;
-        const auto def = def_block_.find(lo);
-        if (def != def_block_.end()) {
-            if (def->second == cur_ir_) {
-                at = cur_;
-            } else {
-                if (!tail_[def->second]) fail("a lane mask written after its use");
-                at = *tail_[def->second];
-            }
-        }
-        if (!balloting_.insert(lo).second) fail("a lane mask whose lanes depend on its own value");
-        std::optional<V> bit;
-        try {
-            bit = boolean(mask->second, at);
-        } catch (...) {
-            balloting_.erase(lo);
-            throw;
-        }
+    if (const auto ballot = ballots_.find(lo); ballot != ballots_.end()) return ballot->second;
+    if (!x_->st->lane_data.contains(lo)) fail(mask_data_reason(x_->st->bools, mask->second));
+    if (!balloting_.insert(lo).second) fail("a lane mask whose lanes depend on its own value");
+    std::pair<V, V> words;
+    try {
+        const std::size_t at = mask_site(lo);
+        if (x_->st->active.contains(lo)) words = active_ballot(mask->second, at);
+        else words = combine_mask(mask->second, at);
+    } catch (...) {
         balloting_.erase(lo);
-        const Ty i32t = s_.t.i32;
-        const Ty four = s_.m.named_struct("dx.types.fouri32", {i32t, i32t, i32t, i32t});
-        const V r = s_.op(at, "waveActiveBallot", Attr::NoUnwind, four, 116, {*bit});
-        s_.flags |= feature::kWaveOps;
-        xy = {s_.m.extract(at, r, 0), s_.m.extract(at, r, 1)};
-        ballots_[lo] = xy;
+        throw;
     }
-    return high ? xy.second : xy.first;
+    balloting_.erase(lo);
+    ballots_[lo] = words;
+    return words;
+}
+
+std::size_t Lower::mask_site(Value lo) {
+    std::size_t at = s_.entry;
+    const auto def = def_block_.find(lo);
+    if (def == def_block_.end()) return at;
+    if (def->second == cur_ir_) return cur_;
+    if (!tail_[def->second]) fail("a lane mask written after its use");
+    return *tail_[def->second];
+}
+
+std::pair<V, V> Lower::active_ballot(Bool bits, std::size_t at) {
+    const V bit = boolean(bits, at);
+    const Ty i32t = s_.t.i32;
+    const Ty four = s_.m.named_struct("dx.types.fouri32", {i32t, i32t, i32t, i32t});
+    const V r = s_.op(at, "waveActiveBallot", Attr::NoUnwind, four, 116, {bit});
+    s_.flags |= feature::kWaveOps;
+    return {s_.m.extract(at, r, 0), s_.m.extract(at, r, 1)};
+}
+
+std::pair<V, V> Lower::mask_ones() {
+    const V lo = s_.m.i32(0xFFFFFFFFu);
+    const V hi = s_.m.i32(x_->native->wave64 ? 0xFFFFFFFFu : 0u);
+    return {lo, hi};
+}
+
+std::pair<V, V> Lower::mask_bin(Bin op, std::pair<V, V> a, std::pair<V, V> b, std::size_t at) {
+    return {s_.m.bin(at, op, a.first, b.first), s_.m.bin(at, op, a.second, b.second)};
+}
+
+std::pair<V, V> Lower::combine_mask(Bool bits, std::size_t at) {
+    if (bits == kFalse) return {s_.m.i32(0), s_.m.i32(0)};
+    if (bits == kTrue) return mask_ones();
+    const auto key = std::pair<std::uint32_t, std::size_t>{bits.index, at};
+    if (const auto found = mask_words_.find(key); found != mask_words_.end()) return found->second;
+    const std::optional<std::tuple<Atom, Bool, Bool>> node = x_->st->bools.node(bits);
+    if (!node) std::abort();
+    const Atom& atom_value = std::get<0>(*node);
+    const Bool low = std::get<1>(*node);
+    const Bool high = std::get<2>(*node);
+    const std::pair<V, V> a = atom_mask(atom_value, at);
+    std::pair<V, V> words;
+    if (low == kFalse && high == kTrue) {
+        words = a;
+    } else if (low == kTrue && high == kFalse) {
+        words = mask_bin(Bin::Xor, a, mask_ones(), at);
+    } else if (low == kFalse) {
+        words = mask_bin(Bin::And, a, combine_mask(high, at), at);
+    } else if (high == kTrue) {
+        words = mask_bin(Bin::Or, a, combine_mask(low, at), at);
+    } else {
+        const std::pair<V, V> on_false = combine_mask(low, at);
+        const std::pair<V, V> on_true = combine_mask(high, at);
+        const std::pair<V, V> flipped = mask_bin(Bin::Xor, a, mask_ones(), at);
+        words = mask_bin(Bin::Or, mask_bin(Bin::And, a, on_true, at),
+                         mask_bin(Bin::And, flipped, on_false, at), at);
+    }
+    mask_words_[key] = words;
+    return words;
+}
+
+std::pair<V, V> Lower::atom_mask(const Atom& atom_value, std::size_t at) {
+    switch (atom_value.kind) {
+        case Atom::Kind::Lane: {
+            if (const auto found = lane_ballots_.find(atom_value.value); found != lane_ballots_.end())
+                return found->second;
+            const auto bit = lane_bits_.find(atom_value.value);
+            if (bit == lane_bits_.end()) {
+                const auto reason = lane_fail_.find(atom_value.value);
+                if (reason != lane_fail_.end()) fail(reason->second);
+                fail("a lane mask from a carry");
+            }
+            const std::size_t born = mask_site(atom_value.value);
+            const Ty i32t = s_.t.i32;
+            const Ty four = s_.m.named_struct("dx.types.fouri32", {i32t, i32t, i32t, i32t});
+            const V r = s_.op(born, "waveActiveBallot", Attr::NoUnwind, four, 116, {bit->second});
+            s_.flags |= feature::kWaveOps;
+            const std::pair<V, V> out = {s_.m.extract(born, r, 0), s_.m.extract(born, r, 1)};
+            lane_ballots_[atom_value.value] = out;
+            return out;
+        }
+        case Atom::Kind::Constant: {
+            const V lo = s_.m.i32(static_cast<std::uint32_t>(atom_value.constant));
+            const V hi = s_.m.i32(static_cast<std::uint32_t>(atom_value.constant >> 32));
+            return {lo, hi};
+        }
+        case Atom::Kind::Uniform: {
+            const V bit = atom(atom_value, at);
+            return {s_.m.select(at, bit, mask_ones().first, s_.m.i32(0)),
+                    s_.m.select(at, bit, mask_ones().second, s_.m.i32(0))};
+        }
+        case Atom::Kind::Phi: {
+            const Value id = atom_value.value;
+            if (const auto known = mask_phi_words_.find(id); known != mask_phi_words_.end())
+                return known->second;
+            const auto location = phi_at_.find(id);
+            if (location == phi_at_.end()) fail("a lane-mask join without a phi");
+            const std::size_t block = location->second.first;
+            if (!block_[block]) fail("an unreachable join");
+            const V lo = s_.m.phi(*block_[block], s_.t.i32);
+            const V hi = s_.m.phi(*block_[block], s_.t.i32);
+            const std::pair<V, V> words = {lo, hi};
+            mask_phi_words_[id] = words;
+            pending_mask_words_.push_back(id);
+            return words;
+        }
+        case Atom::Kind::Quad:
+            fail(kQuadMask);
+        case Atom::Kind::Opaque:
+            fail(kOpaqueMask);
+    }
+    fail(kOpaqueMask);
+}
+
+void Lower::fill_mask_words() {
+    while (!pending_mask_words_.empty()) {
+        const Value id = pending_mask_words_.back();
+        pending_mask_words_.pop_back();
+        const std::pair<V, V> words = mask_phi_words_.at(id);
+        const auto location = phi_at_.at(id);
+        const std::size_t block = location.first;
+        const Phi& phi = x_->p->blocks[block].phis[location.second];
+        const std::size_t offset = x_->p->blocks[block].offset;
+        std::vector<std::pair<V, std::size_t>> lo_in;
+        std::vector<std::pair<V, std::size_t>> hi_in;
+        for (std::size_t n = 0; n < x_->p->blocks[block].preds.size(); ++n) {
+            const std::size_t q = x_->p->blocks[block].preds[n];
+            if (!tail_[q]) continue;
+            const std::size_t qb = edges_.contains({q, block}) ? edges_.at({q, block}) : *tail_[q];
+            if (n >= phi.args.size()) fail("a lane-mask join of an untracked mask");
+            const Value arg = phi.args[n];
+            if (arg == id) fail("a lane mask whose lanes depend on its own value");
+            if (!(x_->st->masks.contains(arg) || x_->st->highs.contains(arg)))
+                fail("a lane-mask join of an untracked mask");
+            const std::pair<V, V> incoming =
+                stop_at(offset, [&]() { return mask_pair(arg); });
+            lo_in.emplace_back(incoming.first, qb);
+            hi_in.emplace_back(incoming.second, qb);
+        }
+        s_.m.set_phi(words.first, lo_in);
+        s_.m.set_phi(words.second, hi_in);
+    }
 }
 
 V Lower::operand(const IrInst& inst, const Operand& op) {
@@ -1558,7 +1694,7 @@ void Lower::cross_lane(bool quad) {
 }
 
 Val Lower::thread_id(std::uint8_t c) {
-    if (!console_lanes_) return compute_id("threadIdInGroup.i32", 95, c);
+    if (!console_lanes_ || !s_.wave_size) return compute_id("threadIdInGroup.i32", 95, c);
     const std::array<std::uint32_t, 3> threads = *s_.threads;
     const std::uint32_t x = threads[0];
     const std::uint32_t y = threads[1];
@@ -1665,12 +1801,8 @@ void Lower::inst(std::size_t b, std::size_t i) {
     const std::string_view name = inst_value.name();
     switch (mask_data_) {
         case MaskData::Console:
-            mask_ok_ = true;
-            break;
         case MaskData::Host:
-            mask_ok_ = name.starts_with("s_bcnt1_i32_") || name.starts_with("s_ff1_i32_") ||
-                       name.starts_with("v_mbcnt_") || name == "s_cmp_eq_u32" ||
-                       name == "s_cmp_lg_u32" || name == "s_cmp_eq_u64" || name == "s_cmp_lg_u64";
+            mask_ok_ = true;
             break;
         case MaskData::None:
             mask_ok_ = false;
@@ -1874,6 +2006,9 @@ void Lower::fill_phis() {
             } else if (found != vals_.end() && found->second.kind == Val::Kind::Bit && !bit &&
                        read) {
                 throw Stop::retry(phi.value, "an SCC joined with SGPR values");
+            } else if (!bit && read &&
+                       (x_->st->masks.contains(arg) || x_->st->highs.contains(arg))) {
+                x = stop_at(p.blocks[b].offset, [&]() { return mask_dword(arg); });
             } else if (found != vals_.end() && found->second.kind == Val::Kind::Missing && read) {
                 throw Stop::retry(phi.value, found->second.why);
             } else if (read) {

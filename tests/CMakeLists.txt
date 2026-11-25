@@ -46,6 +46,7 @@ add_executable(g6shim_tests
   unit/shader_fixtures_test.cpp
   unit/shader_image_atomic_test.cpp
   unit/shader_geometry_test.cpp
+  unit/shader_lane_mask_test.cpp
   unit/shader_waterfall_test.cpp
   unit/shader_tool_test.cpp
   unit/shader_fuzz_test.cpp
