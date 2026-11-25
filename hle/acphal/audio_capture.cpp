@@ -157,7 +157,8 @@ class ActivationHandler final : public IActivateAudioInterfaceCompletionHandler 
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** out) override {
         if (!out) return E_POINTER;
-        if (riid == __uuidof(IUnknown) || riid == __uuidof(IActivateAudioInterfaceCompletionHandler)) {
+        if (riid == __uuidof(IUnknown) || riid == __uuidof(IAgileObject) ||
+            riid == __uuidof(IActivateAudioInterfaceCompletionHandler)) {
             *out = static_cast<IActivateAudioInterfaceCompletionHandler*>(this);
             AddRef();
             return S_OK;
@@ -207,7 +208,8 @@ WAVEFORMATEX capture_format() {
     return format;
 }
 
-IAudioClient* activate_client(std::uint32_t pid) {
+IAudioClient* activate_client(std::uint32_t pid, HRESULT* result) {
+    *result = E_OUTOFMEMORY;
     ActivationHandler* handler = ActivationHandler::create();
     if (!handler) return nullptr;
     ProcessLoopbackActivation activation(pid);
@@ -215,6 +217,7 @@ IAudioClient* activate_client(std::uint32_t pid) {
     HRESULT hr = ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, __uuidof(IAudioClient),
                                              &activation.variant, handler, &operation);
     handler->Release();
+    *result = hr;
     if (FAILED(hr) || !operation) {
         if (operation) operation->Release();
         return nullptr;
@@ -235,6 +238,7 @@ IAudioClient* activate_client(std::uint32_t pid) {
         Sleep(kPollMilliseconds);
     }
     operation->Release();
+    *result = hr;
     return SUCCEEDED(hr) ? client : nullptr;
 }
 
@@ -256,9 +260,11 @@ void record(std::uint32_t pid, const std::wstring& path) {
         if (com) CoUninitialize();
         return;
     }
-    IAudioClient* client = activate_client(pid);
+    HRESULT activated = E_FAIL;
+    IAudioClient* client = activate_client(pid, &activated);
     if (!client) {
-        G6SHIM_WARN("audio capture stopped: process loopback is not available");
+        G6SHIM_WARN("audio capture stopped: process loopback is not available (0x%08lX)",
+                    static_cast<unsigned long>(activated));
         CloseHandle(target);
         if (com) CoUninitialize();
         return;
