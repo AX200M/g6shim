@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <thread>
 
 namespace g6shim::d3d12_xs::host {
@@ -188,6 +189,23 @@ std::wstring widen(const std::string& text) {
     if (length > 0)
         ::MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(), length);
     return wide;
+}
+
+enum class PresenterFailure : std::uint8_t { kWindow, kFactory, kSwapChain, kQuery, kCopy, kCount };
+
+void log_presenter_failure(PresenterFailure which, const char* what, std::optional<HRESULT> hr = std::nullopt) {
+    static std::array<std::once_flag, static_cast<std::size_t>(PresenterFailure::kCount)> logged;
+    std::call_once(logged[static_cast<std::size_t>(which)], [what, hr] {
+        if (hr)
+            G6SHIM_WARN("d3d12_xs: presentation could not start: %s (0x%08lX)", what, static_cast<unsigned long>(*hr));
+        else
+            G6SHIM_WARN("d3d12_xs: presentation could not start: %s", what);
+    });
+}
+
+void log_presentation_skipped() {
+    static std::once_flag logged;
+    std::call_once(logged, [] { G6SHIM_WARN("d3d12_xs: presentation skipped, no presenter"); });
 }
 
 }  // namespace
@@ -553,9 +571,16 @@ std::unique_ptr<Host::Presenter> Host::make_presenter(std::uint32_t width, std::
         window::adopt(hwnd);
     else
         hwnd = window::create(width, height);
-    if (hwnd == nullptr) return nullptr;
+    if (hwnd == nullptr) {
+        log_presenter_failure(PresenterFailure::kWindow, "no window");
+        return nullptr;
+    }
     Microsoft::WRL::ComPtr<IDXGIFactory2> factory;
-    if (FAILED(::CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)))) return nullptr;
+    HRESULT hr = ::CreateDXGIFactory2(0, IID_PPV_ARGS(&factory));
+    if (FAILED(hr)) {
+        log_presenter_failure(PresenterFailure::kFactory, "DXGI factory", hr);
+        return nullptr;
+    }
     DXGI_SWAP_CHAIN_DESC1 desc{};
     desc.Width = width;
     desc.Height = height;
@@ -567,12 +592,22 @@ std::unique_ptr<Host::Presenter> Host::make_presenter(std::uint32_t width, std::
     desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     desc.Scaling = DXGI_SCALING_STRETCH;
     Microsoft::WRL::ComPtr<IDXGISwapChain1> swap_chain;
-    if (FAILED(factory->CreateSwapChainForHwnd(queue_.Get(), hwnd, &desc, nullptr, nullptr, &swap_chain)))
+    hr = factory->CreateSwapChainForHwnd(queue_.Get(), hwnd, &desc, nullptr, nullptr, &swap_chain);
+    if (FAILED(hr)) {
+        log_presenter_failure(PresenterFailure::kSwapChain, "CreateSwapChainForHwnd", hr);
         return nullptr;
+    }
     auto made = std::make_unique<Presenter>();
-    if (FAILED(swap_chain.As(&made->swap_chain))) return nullptr;
+    hr = swap_chain.As(&made->swap_chain);
+    if (FAILED(hr)) {
+        log_presenter_failure(PresenterFailure::kQuery, "swap chain query", hr);
+        return nullptr;
+    }
     made->copy = new_list();
-    if (!made->copy) return nullptr;
+    if (!made->copy) {
+        log_presenter_failure(PresenterFailure::kCopy, "copy list");
+        return nullptr;
+    }
     made->copy->close();
     made->width = width;
     made->height = height;
@@ -599,7 +634,10 @@ std::optional<bool> Host::present(ID3D12Resource* texture, std::uint32_t state, 
     std::lock_guard<std::mutex> lock(presenter_mutex_);
     if (!presenter_) presenter_ = make_presenter(width, height, *format);
     Presenter* presenter = presenter_.get();
-    if (presenter == nullptr) return std::nullopt;
+    if (presenter == nullptr) {
+        log_presentation_skipped();
+        return std::nullopt;
+    }
     if (presenter->width != width || presenter->height != height || presenter->format != *format) {
         if (FAILED(presenter->swap_chain->ResizeBuffers(kSwapChainBuffers, width, height, *format,
                                                         DXGI_SWAP_CHAIN_FLAG(0)))) {

@@ -11,6 +11,8 @@
 #include "d3d12_xs/watch.hpp"
 #include "xmem/private.hpp"
 
+#include <g6shim/window.hpp>
+
 #include <windows.h>
 
 #include <array>
@@ -18,6 +20,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -75,6 +78,31 @@ Object* create_buffer(std::uint64_t width) {
     CHECK(resource::create_committed(nullptr, &properties, 0, &desc, 0, nullptr, &resource::kResourceIids[0],
                                       &resource) == S_OK);
     return resource;
+}
+
+std::string log_bytes() {
+    wchar_t path[MAX_PATH] = {};
+    const DWORD n = ::GetEnvironmentVariableW(L"G6SHIM_LOG", path, MAX_PATH);
+    const wchar_t* name = n > 0 && n < MAX_PATH ? path : L"g6shim.log";
+    HANDLE file = ::CreateFileW(name, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return {};
+    const DWORD size = ::GetFileSize(file, nullptr);
+    std::string bytes(size == INVALID_FILE_SIZE ? 0 : static_cast<std::size_t>(size), '\0');
+    DWORD read = 0;
+    if (!bytes.empty() && ::ReadFile(file, bytes.data(), size, &read, nullptr) == 0) read = 0;
+    bytes.resize(read);
+    ::CloseHandle(file);
+    return bytes;
+}
+
+std::size_t count_of(const std::string& bytes, const char* needle) {
+    std::size_t count = 0;
+    const std::size_t n = std::strlen(needle);
+    if (n == 0 || bytes.size() < n) return 0;
+    for (std::size_t at = 0; at + n <= bytes.size(); ++at)
+        if (std::memcmp(bytes.data() + at, needle, n) == 0) ++count;
+    return count;
 }
 
 }  // namespace
@@ -429,4 +457,53 @@ TEST(d3d12_xs_host_page_mapper_is_resolved_from_xmem) {
     const auto exports = g6shim::xmem::private_api::resolve();
     CHECK(exports.map_alias != nullptr);
     if (exports.map_alias != nullptr) CHECK(exports.map_alias(0x1000, 0, 0) != 0);
+}
+
+TEST(d3d12_xs_host_logs_why_presentation_could_not_start) {
+    host::Host* gpu = test_host();
+    if (gpu == nullptr) return;
+    void* previous = g6shim::main_window();
+    const HWND window = ::CreateWindowExW(0, L"STATIC", L"g6shim", WS_OVERLAPPED, 0, 0, 64, 64, nullptr, nullptr,
+                                           nullptr, nullptr);
+    CHECK(window != nullptr);
+    if (window == nullptr) return;
+    CHECK(::DestroyWindow(window) != 0);
+    g6shim::set_main_window(window);
+
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = 8;
+    desc.Height = 4;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    Microsoft::WRL::ComPtr<ID3D12Resource> texture;
+    const HRESULT created =
+        gpu->device()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON,
+                                                nullptr, IID_PPV_ARGS(&texture));
+    CHECK(created == S_OK);
+    if (created != S_OK) {
+        g6shim::set_main_window(previous);
+        return;
+    }
+
+    const char* failure = "presentation could not start: CreateSwapChainForHwnd (0x";
+    const char* skipped = "presentation skipped, no presenter";
+    const std::string before = log_bytes();
+    const std::size_t failures_before = count_of(before, failure);
+    const std::size_t skipped_before = count_of(before, skipped);
+    const auto first =
+        gpu->present(texture.Get(), static_cast<std::uint32_t>(D3D12_RESOURCE_STATE_COMMON), 1);
+    const auto second =
+        gpu->present(texture.Get(), static_cast<std::uint32_t>(D3D12_RESOURCE_STATE_COMMON), 2);
+    g6shim::set_main_window(previous);
+    CHECK(!first.has_value());
+    CHECK(!second.has_value());
+    const std::string after = log_bytes();
+    CHECK(count_of(after, failure) == failures_before + 1);
+    CHECK(count_of(after, skipped) == skipped_before + 1);
+    CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
 }
