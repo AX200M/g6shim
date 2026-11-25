@@ -248,6 +248,22 @@ Newer queues move every slot from 0x70 on two later: `Signal` 0x80, frequency 0x
 
 Page size is 64 KiB.
 
+`PresentX` is `HRESULT (queue, plane count, planes, parameters)`. Plane records are 72 bytes (`kPlaneRecordBytes` in `queue.hpp`), measured on `7952987A` with the Series S model, which presents two planes per frame. Both records carry the same token.
+
+| Offset | Field |
+|---|---|
+| 0 | `UINT64` token |
+| 8 | `UINT32` resource count |
+| 12 | padding |
+| 16 | `Object* const*` resources |
+| 24 | pointer, differs per plane (not read) |
+| 32 | pointer, the same for both planes (not read) |
+| 40 | zero in every observed call |
+
+The parameters block holds `1920, 1080` at byte 40 and `3840, 2160` at byte 56 (two `UINT32` each) in the same calls; not read.
+
+A plane with a zero count, a null resource list, a null first resource or no host texture is skipped. At most 4 planes are taken. The first plane sizes and formats the swap chain. One plane is copied. Two or more are drawn over it, each scaled to that back buffer; a requested capture then saves the composed back buffer.
+
 ## Console primitives
 
 | Number | Topology | Host |

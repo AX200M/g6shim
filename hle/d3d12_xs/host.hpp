@@ -45,6 +45,14 @@ namespace host {
 
 inline constexpr std::uint32_t kPcStateMask = 0x01ff'ffff;
 inline constexpr std::uint32_t kRtvRing = 1024;
+inline constexpr std::uint32_t kPresentFramesInFlight = 2;
+
+struct PresentedPlane {
+    ID3D12Resource* texture = nullptr;
+    std::uint32_t state = 0;
+};
+
+bool compose(ID3D12GraphicsCommandList* list, std::span<const PresentedPlane> planes, ID3D12Resource* target);
 inline constexpr std::uint64_t kScratchChunk = 4 << 20;
 inline constexpr std::uint64_t kTimestampFrequency = 100'000'000;
 
@@ -155,11 +163,22 @@ public:
         std::uint64_t bytes);
 
     std::optional<bool> present(ID3D12Resource* texture, std::uint32_t state, std::uint64_t frame);
+    std::optional<bool> present(std::span<const PresentedPlane> planes, std::uint64_t frame);
 
 private:
     Host();
 
     struct Presenter;
+    friend bool compose(ID3D12GraphicsCommandList* list, std::span<const PresentedPlane> planes,
+                        ID3D12Resource* target);
+    bool composition_available(DXGI_FORMAT format);
+    bool compose_planes(ID3D12GraphicsCommandList* list, std::span<const PresentedPlane> planes,
+                        ID3D12Resource* target);
+    void log_composition_failure();
+    ID3D12PipelineState* pipeline_locked(DXGI_FORMAT format);
+    bool ensure_composer_locked(DXGI_FORMAT format);
+
+    struct Composer;
     std::unique_ptr<Presenter> make_presenter(std::uint32_t width, std::uint32_t height, DXGI_FORMAT format);
 
     Microsoft::WRL::ComPtr<ID3D12Device> device_;
@@ -177,6 +196,9 @@ private:
     std::atomic<std::uint32_t> next_rtv_{0};
     std::mutex presenter_mutex_;
     std::unique_ptr<Presenter> presenter_;
+    std::mutex composer_mutex_;
+    std::unique_ptr<Composer> composer_;
+    bool composition_failed_ = false;
 };
 
 class HostList {

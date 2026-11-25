@@ -119,6 +119,10 @@ function(g6shim_find_dxc out_var)
 endfunction()
 
 function(g6shim_add_compute_dxil symbol hlsl entry)
+  set(profile cs_6_0)
+  if(ARGC GREATER 3 AND NOT "${ARGV3}" STREQUAL "")
+    set(profile "${ARGV3}")
+  endif()
   set(header "${CMAKE_BINARY_DIR}/generated/${symbol}.h")
   get_property(ready GLOBAL PROPERTY G6SHIM_DXIL_${symbol})
   if(NOT ready)
@@ -126,7 +130,7 @@ function(g6shim_add_compute_dxil symbol hlsl entry)
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated")
     add_custom_command(
       OUTPUT "${header}"
-      COMMAND "${dxc}" -T cs_6_0 -E ${entry} -WX -HV 2021 -Fh "${header}" -Vn ${symbol} "${hlsl}"
+      COMMAND "${dxc}" -T ${profile} -E ${entry} -WX -HV 2021 -Fh "${header}" -Vn ${symbol} "${hlsl}"
       DEPENDS "${hlsl}"
       COMMENT "Compiling ${hlsl}"
       VERBATIM)

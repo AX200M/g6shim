@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "host.hpp"
 
+#include "g_present_plane_ps.h"
+#include "g_present_plane_vs.h"
+#include "queue.hpp"
 #include "resource.hpp"
 #include "shadow.hpp"
 #include "texture.hpp"
@@ -388,6 +391,131 @@ struct Host::Presenter {
     Meter meter;
 };
 
+namespace {
+
+constexpr std::uint32_t kPresentPipelineSlots = 4;
+
+static_assert(queue::kMaxPresentedPlanes == 4);
+
+DXGI_FORMAT colour_view_format(DXGI_FORMAT format) {
+    switch (format) {
+    case DXGI_FORMAT_R16G16B16A16_TYPELESS: return DXGI_FORMAT_R16G16B16A16_UNORM;
+    case DXGI_FORMAT_R10G10B10A2_TYPELESS: return DXGI_FORMAT_R10G10B10A2_UNORM;
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS: return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case DXGI_FORMAT_R16G16_TYPELESS: return DXGI_FORMAT_R16G16_UNORM;
+    case DXGI_FORMAT_R8G8_TYPELESS: return DXGI_FORMAT_R8G8_UNORM;
+    case DXGI_FORMAT_R16_TYPELESS: return DXGI_FORMAT_R16_UNORM;
+    case DXGI_FORMAT_R8_TYPELESS: return DXGI_FORMAT_R8_UNORM;
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS: return DXGI_FORMAT_B8G8R8A8_UNORM;
+    case DXGI_FORMAT_B8G8R8X8_TYPELESS: return DXGI_FORMAT_B8G8R8X8_UNORM;
+    case DXGI_FORMAT_BC1_TYPELESS: return DXGI_FORMAT_BC1_UNORM;
+    case DXGI_FORMAT_BC2_TYPELESS: return DXGI_FORMAT_BC2_UNORM;
+    case DXGI_FORMAT_BC3_TYPELESS: return DXGI_FORMAT_BC3_UNORM;
+    case DXGI_FORMAT_BC4_TYPELESS: return DXGI_FORMAT_BC4_UNORM;
+    case DXGI_FORMAT_BC5_TYPELESS: return DXGI_FORMAT_BC5_UNORM;
+    case DXGI_FORMAT_BC7_TYPELESS: return DXGI_FORMAT_BC7_UNORM;
+    case DXGI_FORMAT_R32G32B32A32_TYPELESS: return DXGI_FORMAT_R32G32B32A32_FLOAT;
+    case DXGI_FORMAT_R32G32B32_TYPELESS: return DXGI_FORMAT_R32G32B32_FLOAT;
+    case DXGI_FORMAT_R32G32_TYPELESS: return DXGI_FORMAT_R32G32_FLOAT;
+    case DXGI_FORMAT_R32_TYPELESS: return DXGI_FORMAT_R32_FLOAT;
+    default: return format;
+    }
+}
+
+bool make_compose_root(ID3D12Device* device, Microsoft::WRL::ComPtr<ID3D12RootSignature>& root) {
+    D3D12_DESCRIPTOR_RANGE range{};
+    range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    range.NumDescriptors = queue::kMaxPresentedPlanes;
+    range.BaseShaderRegister = 0;
+    range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    D3D12_ROOT_PARAMETER parameters[2]{};
+    parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    parameters[0].DescriptorTable.NumDescriptorRanges = 1;
+    parameters[0].DescriptorTable.pDescriptorRanges = &range;
+    parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    parameters[1].Constants.Num32BitValues = 1;
+    parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_STATIC_SAMPLER_DESC sampler{};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.MaxAnisotropy = 1;
+    sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    sampler.MaxLOD = 0;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_ROOT_SIGNATURE_DESC signature{};
+    signature.NumParameters = 2;
+    signature.pParameters = parameters;
+    signature.NumStaticSamplers = 1;
+    signature.pStaticSamplers = &sampler;
+    Microsoft::WRL::ComPtr<ID3DBlob> blob;
+    Microsoft::WRL::ComPtr<ID3DBlob> error;
+    if (FAILED(D3D12SerializeRootSignature(&signature, D3D_ROOT_SIGNATURE_VERSION_1, blob.GetAddressOf(),
+                                           error.GetAddressOf())))
+        return false;
+    return SUCCEEDED(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(),
+                                                 IID_PPV_ARGS(&root)));
+}
+
+bool make_compose_pipeline(ID3D12Device* device, ID3D12RootSignature* root, DXGI_FORMAT format,
+                           Microsoft::WRL::ComPtr<ID3D12PipelineState>& pipeline) {
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
+    desc.pRootSignature = root;
+    desc.VS.pShaderBytecode = g_present_plane_vs;
+    desc.VS.BytecodeLength = sizeof(g_present_plane_vs);
+    desc.PS.pShaderBytecode = g_present_plane_ps;
+    desc.PS.BytecodeLength = sizeof(g_present_plane_ps);
+    desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    desc.SampleMask = UINT_MAX;
+    desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    desc.NumRenderTargets = 1;
+    desc.RTVFormats[0] = format;
+    desc.SampleDesc.Count = 1;
+    return SUCCEEDED(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipeline)));
+}
+
+bool sampleable(ID3D12Resource* texture) {
+    if (texture == nullptr) return false;
+    const D3D12_RESOURCE_DESC desc = texture->GetDesc();
+    return desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && desc.SampleDesc.Count == 1 && desc.Width != 0 &&
+           desc.Height != 0;
+}
+
+struct BarrierBatch {
+    std::array<D3D12_RESOURCE_BARRIER, queue::kMaxPresentedPlanes + 1> barriers{};
+    UINT count = 0;
+
+    void add(ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
+        if (resource == nullptr || before == after || count >= barriers.size()) return;
+        barriers[count++] = transition(resource, before, after);
+    }
+
+    void record(ID3D12GraphicsCommandList* list) {
+        if (count == 0) return;
+        list->ResourceBarrier(count, barriers.data());
+        count = 0;
+    }
+};
+
+}  // namespace
+
+struct Host::Composer {
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> root;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> views;
+    std::uint32_t increment = 0;
+    std::uint32_t ring = 0;
+    struct Pipeline {
+        DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> state;
+        bool failed = false;
+    };
+    std::array<Pipeline, kPresentPipelineSlots> pipelines{};
+};
+
 Host::~Host() = default;
 
 Host* Host::get() {
@@ -671,6 +799,201 @@ std::optional<bool> Host::present(ID3D12Resource* texture, std::uint32_t state, 
     execute({presenter->copy.get()});
     presenter->swap_chain->Present(kPresentInterval, 0);
     if (capturing) finish_capture(number, desc, capture);
+    presenter->meter.frame(presenter->hwnd);
+    return false;
+}
+
+void Host::log_composition_failure() {
+    if (composition_failed_) return;
+    composition_failed_ = true;
+    G6SHIM_WARN("d3d12_xs: plane composition unavailable; showing the first plane");
+}
+
+ID3D12PipelineState* Host::pipeline_locked(DXGI_FORMAT format) {
+    for (auto& cached : composer_->pipelines) {
+        if (cached.format != format) continue;
+        return cached.failed ? nullptr : cached.state.Get();
+    }
+    Composer::Pipeline* slot = nullptr;
+    for (auto& cached : composer_->pipelines) {
+        if (cached.format == DXGI_FORMAT_UNKNOWN) {
+            slot = &cached;
+            break;
+        }
+    }
+    if (slot == nullptr) slot = &composer_->pipelines[0];
+    slot->format = format;
+    slot->state.Reset();
+    if (!make_compose_pipeline(device_.Get(), composer_->root.Get(), format, slot->state)) {
+        slot->failed = true;
+        log_composition_failure();
+        return nullptr;
+    }
+    slot->failed = false;
+    return slot->state.Get();
+}
+
+bool Host::ensure_composer_locked(DXGI_FORMAT format) {
+    if (composition_failed_ || !device_) return false;
+    if (!composer_) composer_ = std::make_unique<Composer>();
+    if (!composer_->root && !make_compose_root(device_.Get(), composer_->root)) {
+        log_composition_failure();
+        return false;
+    }
+    if (!composer_->views) {
+        D3D12_DESCRIPTOR_HEAP_DESC heap{};
+        heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        heap.NumDescriptors = queue::kMaxPresentedPlanes * kPresentFramesInFlight;
+        heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        if (FAILED(device_->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&composer_->views)))) {
+            log_composition_failure();
+            return false;
+        }
+        composer_->increment =
+            device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    }
+    return pipeline_locked(format) != nullptr;
+}
+
+bool Host::composition_available(DXGI_FORMAT format) {
+    std::lock_guard<std::mutex> lock(composer_mutex_);
+    return ensure_composer_locked(format);
+}
+
+bool Host::compose_planes(ID3D12GraphicsCommandList* list, std::span<const PresentedPlane> planes,
+                          ID3D12Resource* target) {
+    if (list == nullptr || target == nullptr || planes.empty() || planes.size() > queue::kMaxPresentedPlanes)
+        return false;
+    for (const PresentedPlane& plane : planes) {
+        if (!sampleable(plane.texture)) return false;
+    }
+    if (!sampleable(target)) return false;
+    const D3D12_RESOURCE_DESC target_desc = target->GetDesc();
+    std::lock_guard<std::mutex> lock(composer_mutex_);
+    if (!ensure_composer_locked(target_desc.Format)) return false;
+    ID3D12PipelineState* pipeline = pipeline_locked(target_desc.Format);
+    if (pipeline == nullptr || composer_->views == nullptr) return false;
+
+    const std::uint32_t base = composer_->ring * queue::kMaxPresentedPlanes;
+    composer_->ring = (composer_->ring + 1) % kPresentFramesInFlight;
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu = composer_->views->GetCPUDescriptorHandleForHeapStart();
+    cpu.ptr += static_cast<SIZE_T>(base) * composer_->increment;
+    for (std::uint32_t slot = 0; slot < queue::kMaxPresentedPlanes; ++slot) {
+        ID3D12Resource* texture = slot < planes.size() ? planes[slot].texture : planes[0].texture;
+        D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+        view.Format = colour_view_format(texture->GetDesc().Format);
+        view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        view.Texture2D.MipLevels = 1;
+        device_->CreateShaderResourceView(texture, &view, cpu);
+        cpu.ptr += composer_->increment;
+    }
+    D3D12_GPU_DESCRIPTOR_HANDLE table = composer_->views->GetGPUDescriptorHandleForHeapStart();
+    table.ptr += static_cast<UINT64>(base) * composer_->increment;
+    const auto width = static_cast<std::uint32_t>(target_desc.Width);
+    const auto height = target_desc.Height;
+    D3D12_VIEWPORT viewport{};
+    viewport.Width = static_cast<float>(width);
+    viewport.Height = static_cast<float>(height);
+    viewport.MaxDepth = 1.0f;
+    const D3D12_RECT scissor{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+    const D3D12_CPU_DESCRIPTOR_HANDLE render_target = rtv(target, nullptr);
+    ID3D12DescriptorHeap* heap = composer_->views.Get();
+    list->SetDescriptorHeaps(1, &heap);
+    list->SetGraphicsRootSignature(composer_->root.Get());
+    list->SetPipelineState(pipeline);
+    list->SetGraphicsRootDescriptorTable(0, table);
+    list->SetGraphicsRoot32BitConstant(1, static_cast<UINT>(planes.size()), 0);
+    list->RSSetViewports(1, &viewport);
+    list->RSSetScissorRects(1, &scissor);
+    list->OMSetRenderTargets(1, &render_target, FALSE, nullptr);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->DrawInstanced(3, 1, 0, 0);
+    return true;
+}
+
+bool compose(ID3D12GraphicsCommandList* list, std::span<const PresentedPlane> planes, ID3D12Resource* target) {
+    Host* gpu = host();
+    if (gpu == nullptr) return false;
+    return gpu->compose_planes(list, planes, target);
+}
+
+std::optional<bool> Host::present(std::span<const PresentedPlane> planes, std::uint64_t frame) {
+    if (planes.empty() || planes[0].texture == nullptr) return std::nullopt;
+    const std::size_t count = std::min(planes.size(), static_cast<std::size_t>(queue::kMaxPresentedPlanes));
+    const auto shown = planes.first(count);
+    const D3D12_RESOURCE_DESC desc = shown[0].texture->GetDesc();
+    const auto format = swap_format(static_cast<int>(desc.Format));
+    const bool composable = format && count > 1 && std::all_of(shown.begin(), shown.end(), [](const PresentedPlane& plane) {
+                                return sampleable(plane.texture);
+                            }) &&
+                            composition_available(*format);
+    if (!composable) return present(shown[0].texture, shown[0].state, frame);
+
+    const std::uint32_t width = static_cast<std::uint32_t>(desc.Width);
+    const std::uint32_t height = desc.Height;
+    std::lock_guard<std::mutex> lock(presenter_mutex_);
+    if (!presenter_) presenter_ = make_presenter(width, height, *format);
+    Presenter* presenter = presenter_.get();
+    if (presenter == nullptr) return std::nullopt;
+    if (presenter->width != width || presenter->height != height || presenter->format != *format) {
+        if (FAILED(presenter->swap_chain->ResizeBuffers(kSwapChainBuffers, width, height, *format,
+                                                        DXGI_SWAP_CHAIN_FLAG(0)))) {
+            G6SHIM_WARN("d3d12_xs: swap chain not resized to %ux%u", width, height);
+            return std::nullopt;
+        }
+        presenter->width = width;
+        presenter->height = height;
+        presenter->format = *format;
+        window::show_render_size(presenter->hwnd, width, height);
+    }
+    const UINT index = presenter->swap_chain->GetCurrentBackBufferIndex();
+    Microsoft::WRL::ComPtr<ID3D12Resource> back;
+    if (FAILED(presenter->swap_chain->GetBuffer(index, IID_PPV_ARGS(&back)))) return std::nullopt;
+    presenter->copy->reset();
+    ID3D12GraphicsCommandList* list = presenter->copy->list();
+    BarrierBatch barriers;
+    for (const PresentedPlane& plane : shown)
+        barriers.add(plane.texture, static_cast<D3D12_RESOURCE_STATES>(plane.state),
+                     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    barriers.add(back.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    barriers.record(list);
+    const bool composed = compose_planes(list, shown, back.Get());
+    const auto number = static_cast<unsigned>(frame);
+    Capture capture;
+    bool capturing = false;
+    D3D12_RESOURCE_DESC capture_desc = desc;
+    if (!composed) {
+        for (const PresentedPlane& plane : shown)
+            barriers.add(plane.texture, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        barriers.add(back.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST);
+        barriers.record(list);
+        list->CopyResource(back.Get(), shown[0].texture);
+        capturing = capture_requested(number) && begin_capture(device_.Get(), list, shown[0].texture, desc, capture);
+        for (const PresentedPlane& plane : shown)
+            barriers.add(plane.texture, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                         static_cast<D3D12_RESOURCE_STATES>(plane.state));
+        barriers.add(back.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
+        barriers.record(list);
+    } else {
+        D3D12_RESOURCE_STATES back_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        capture_desc = back->GetDesc();
+        if (capture_requested(number)) {
+            barriers.add(back.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            barriers.record(list);
+            back_state = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            capturing = begin_capture(device_.Get(), list, back.Get(), capture_desc, capture);
+        }
+        for (const PresentedPlane& plane : shown)
+            barriers.add(plane.texture, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                         static_cast<D3D12_RESOURCE_STATES>(plane.state));
+        barriers.add(back.Get(), back_state, D3D12_RESOURCE_STATE_PRESENT);
+        barriers.record(list);
+    }
+    presenter->copy->close();
+    execute({presenter->copy.get()});
+    presenter->swap_chain->Present(kPresentInterval, 0);
+    if (capturing) finish_capture(number, capture_desc, capture);
     presenter->meter.frame(presenter->hwnd);
     return false;
 }

@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -23,6 +24,7 @@ namespace {
 constexpr unsigned kCapturedRgbaFrame = 990001;
 constexpr unsigned kCapturedBgraFrame = 990002;
 constexpr unsigned kSkippedFrame = 990003;
+constexpr unsigned kComposedFrame = 990004;
 constexpr UINT kWidth = 8;
 constexpr UINT kHeight = 4;
 constexpr std::size_t kBytesPerPixel = 4;
@@ -32,7 +34,7 @@ constexpr DWORD kQueueTimeout = 5000;
 struct CaptureEnvironment {
     CaptureEnvironment() {
         ::SetEnvironmentVariableA("G6SHIM_D3D_WARP", "1");
-        ::SetEnvironmentVariableA("G6SHIM_CAPTURE_FRAMES", "990001,990002");
+        ::SetEnvironmentVariableA("G6SHIM_CAPTURE_FRAMES", "990001,990002,990004");
     }
 };
 
@@ -209,4 +211,49 @@ TEST(d3d12_xs_present_skips_frames_not_requested) {
     CHECK(presented.has_value());
     CHECK(!exists(path));
     CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
+}
+
+TEST(d3d12_xs_present_captures_the_composed_planes) {
+    host::Host* gpu = host::host();
+    if (gpu == nullptr) {
+        std::printf("  skipped: no WARP device\n");
+        return;
+    }
+    const std::wstring path = frame_path(kComposedFrame);
+    ::DeleteFileW(path.c_str());
+    std::vector<std::uint8_t> scene(kWidth * kHeight * kBytesPerPixel, 0);
+    std::vector<std::uint8_t> overlay(kWidth * kHeight * kBytesPerPixel, 0);
+    for (std::size_t i = 0; i < scene.size(); i += kBytesPerPixel) {
+        scene[i] = 0;
+        scene[i + 1] = 0;
+        scene[i + 2] = 255;
+        scene[i + 3] = 255;
+        overlay[i] = 255;
+        overlay[i + 1] = 0;
+        overlay[i + 2] = 0;
+        overlay[i + 3] = 255;
+    }
+    const auto scene_texture = make_texture(gpu->device(), gpu->queue(), DXGI_FORMAT_R8G8B8A8_UNORM, scene);
+    const auto overlay_texture = make_texture(gpu->device(), gpu->queue(), DXGI_FORMAT_R8G8B8A8_UNORM, overlay);
+    CHECK(scene_texture != nullptr);
+    CHECK(overlay_texture != nullptr);
+    if (!scene_texture || !overlay_texture) return;
+    const host::PresentedPlane planes[] = {
+        {scene_texture.Get(), static_cast<std::uint32_t>(D3D12_RESOURCE_STATE_COMMON)},
+        {overlay_texture.Get(), static_cast<std::uint32_t>(D3D12_RESOURCE_STATE_COMMON)},
+    };
+    const auto presented = gpu->present(planes, kComposedFrame);
+    CHECK(presented.has_value());
+    CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
+    const std::vector<std::uint8_t> bytes = read_bytes(path);
+    CHECK(bytes.size() == kHeaderBytes + scene.size());
+    if (bytes.size() != kHeaderBytes + scene.size()) {
+        ::DeleteFileW(path.c_str());
+        return;
+    }
+    const std::uint8_t* pixel = bytes.data() + kHeaderBytes;
+    CHECK(pixel[0] == 0);
+    CHECK(pixel[1] == 0);
+    CHECK(pixel[2] == 255);
+    ::DeleteFileW(path.c_str());
 }

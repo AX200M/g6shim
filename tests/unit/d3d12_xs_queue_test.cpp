@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstring>
 #include <thread>
+#include <vector>
 
 using namespace g6shim::d3d12_xs;
 
@@ -102,4 +103,55 @@ TEST(d3d12_xs_submitted_lists_run_on_the_host) {
     CHECK(slot<std::uint32_t (*)(Object*)>(queue_object, 0x10)(queue_object) == 0);
     CHECK(slot<std::uint32_t (*)(Object*)>(commands, 0x10)(commands) == 0);
     CHECK(slot<std::uint32_t (*)(Object*)>(allocator, 0x10)(allocator) == 0);
+}
+
+void write_plane(std::vector<std::uint8_t>& bytes, std::uint32_t index, std::uint64_t token, std::uint32_t count,
+                 Object* const* resources) {
+    const std::size_t at = static_cast<std::size_t>(index) * queue::kPlaneRecordBytes;
+    std::memcpy(bytes.data() + at + queue::kPlaneTokenOffset, &token, sizeof token);
+    std::memcpy(bytes.data() + at + queue::kPlaneCountOffset, &count, sizeof count);
+    std::memcpy(bytes.data() + at + queue::kPlaneResourcesOffset, &resources, sizeof resources);
+}
+
+TEST(d3d12_xs_present_plane_records_are_read_at_their_stride) {
+    constexpr std::uint32_t kRecords = 8;
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(kRecords) * queue::kPlaneRecordBytes, 0xCD);
+    Object* resource1 = reinterpret_cast<Object*>(static_cast<std::uintptr_t>(0x1000));
+    Object* resource3 = reinterpret_cast<Object*>(static_cast<std::uintptr_t>(0x3000));
+    Object* resource6 = reinterpret_cast<Object*>(static_cast<std::uintptr_t>(0x6000));
+    Object* resource7 = reinterpret_cast<Object*>(static_cast<std::uintptr_t>(0x7000));
+    Object* resource8 = reinterpret_cast<Object*>(static_cast<std::uintptr_t>(0x8000));
+    Object* missing = nullptr;
+    Object* list1[] = {resource1};
+    Object* list3[] = {resource3};
+    Object* list_null[] = {missing};
+    Object* list6[] = {resource6};
+    Object* list7[] = {resource7};
+    Object* list8[] = {resource8};
+    write_plane(bytes, 0, 1, 1, list1);
+    write_plane(bytes, 1, 2, 1, nullptr);
+    write_plane(bytes, 2, 3, 1, list3);
+    write_plane(bytes, 3, 4, 0, list3);
+    write_plane(bytes, 4, 5, 1, list_null);
+    write_plane(bytes, 5, 6, 1, list6);
+    write_plane(bytes, 6, 7, 1, list7);
+    write_plane(bytes, 7, 8, 1, list8);
+
+    std::array<queue::PlaneRecord, 8> out{};
+    CHECK(queue::read_plane_records(bytes.data(), 3, out.data(), 8) == 2);
+    CHECK(out[0].token == 1);
+    CHECK(out[0].resources == list1);
+    CHECK(out[0].resources[0] == resource1);
+    CHECK(out[1].token == 3);
+    CHECK(out[1].resources[0] == resource3);
+
+    CHECK(queue::read_plane_records(bytes.data(), kRecords, out.data(), 8) == queue::kMaxPresentedPlanes);
+    CHECK(out[0].token == 1);
+    CHECK(out[1].token == 3);
+    CHECK(out[2].token == 6);
+    CHECK(out[2].resources[0] == resource6);
+    CHECK(out[3].token == 7);
+    CHECK(out[3].resources[0] == resource7);
+    CHECK(queue::read_plane_records(nullptr, kRecords, out.data(), 8) == 0);
+    CHECK(queue::read_plane_records(bytes.data(), 0, out.data(), 8) == 0);
 }

@@ -14,6 +14,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstring>
 #include <mutex>
 #include <utility>
 #include <vector>
@@ -94,19 +95,37 @@ HRESULT present(Object*, std::uint32_t planes, const Plane* plane_parameters, co
                     static_cast<unsigned long long>(draw::drawn()), static_cast<unsigned long long>(dispatches),
                     static_cast<unsigned long long>(draw::dispatched()));
     }
-    if (planes > 0 && plane_parameters != nullptr && plane_parameters[0].count > 0 &&
-        plane_parameters[0].resources != nullptr) {
-        constexpr std::uint32_t kCopySource = 0x800;
-        Object* resource = plane_parameters[0].resources[0];
+    if (planes == 0 || plane_parameters == nullptr) return S_OK;
+    std::array<PlaneRecord, kMaxPresentedPlanes> records{};
+    const std::uint32_t found = read_plane_records(plane_parameters, planes, records.data(), kMaxPresentedPlanes);
+    host::Host* gpu = host::host();
+    if (gpu == nullptr || found == 0) return S_OK;
+    constexpr std::uint32_t kCopySource = 0x800;
+    constexpr std::uint32_t kPixelShaderResource = 0x80;
+    std::array<host::PresentedPlane, kMaxPresentedPlanes> host_planes{};
+    std::array<Object*, kMaxPresentedPlanes> resources{};
+    std::uint32_t count = 0;
+    for (std::uint32_t index = 0; index < found; ++index) {
+        Object* resource = records[index].resources[0];
         ID3D12Resource* texture = texture::host_texture(resource);
-        host::Host* gpu = host::host();
-        if (texture != nullptr && gpu != nullptr) {
-            std::uint32_t state = kCopySource;
-            if (const auto changed = resource::host_transition(resource, kCopySource)) state = changed->second;
-            gpu->present(texture, state, frame);
-            resource::host_transition(resource, state);
-        }
+        if (texture == nullptr) continue;
+        resources[count] = resource;
+        host_planes[count].texture = texture;
+        ++count;
     }
+    if (count == 0) return S_OK;
+    const std::uint32_t wanted = count == 1 ? kCopySource : kPixelShaderResource;
+    for (std::uint32_t index = 0; index < count; ++index) {
+        std::uint32_t state = wanted;
+        if (const auto changed = resource::host_transition(resources[index], wanted)) state = changed->second;
+        host_planes[index].state = state;
+    }
+    if (count == 1)
+        gpu->present(host_planes[0].texture, host_planes[0].state, frame);
+    else
+        gpu->present({host_planes.data(), count}, frame);
+    for (std::uint32_t index = 0; index < count; ++index)
+        resource::host_transition(resources[index], host_planes[index].state);
     return S_OK;
 }
 
@@ -186,6 +205,23 @@ std::array<const void*, 36> make_table(bool newer) {
 }
 
 }  // namespace
+std::uint32_t read_plane_records(const void* parameters, std::uint32_t planes, PlaneRecord* out,
+                                 std::uint32_t capacity) {
+    if (parameters == nullptr || out == nullptr || planes == 0 || capacity == 0) return 0;
+    const auto* bytes = static_cast<const std::uint8_t*>(parameters);
+    const std::uint32_t accept = capacity < kMaxPresentedPlanes ? capacity : kMaxPresentedPlanes;
+    std::uint32_t written = 0;
+    for (std::uint32_t index = 0; index < planes && written < accept; ++index) {
+        const auto* record = bytes + static_cast<std::size_t>(index) * kPlaneRecordBytes;
+        PlaneRecord plane{};
+        std::memcpy(&plane.token, record + kPlaneTokenOffset, sizeof plane.token);
+        std::memcpy(&plane.count, record + kPlaneCountOffset, sizeof plane.count);
+        std::memcpy(&plane.resources, record + kPlaneResourcesOffset, sizeof plane.resources);
+        if (plane.count == 0 || plane.resources == nullptr || plane.resources[0] == nullptr) continue;
+        out[written++] = plane;
+    }
+    return written;
+}
 
 const std::array<const void*, 36>& functions(bool newer) {
     static const std::array<const void*, 36> earlier = make_table(false);

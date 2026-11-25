@@ -5,6 +5,7 @@
 #include "object.hpp"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 namespace g6shim::d3d12_xs::queue {
@@ -38,6 +39,24 @@ struct Plane {
     Object* const* resources;
 };
 static_assert(sizeof(Plane) == 24);
+
+inline constexpr std::size_t kPlaneRecordBytes = 72;
+inline constexpr std::uint32_t kMaxPresentedPlanes = 4;
+inline constexpr std::size_t kPlaneTokenOffset = 0;
+inline constexpr std::size_t kPlaneCountOffset = 8;
+inline constexpr std::size_t kPlaneResourcesOffset = 16;
+
+struct PlaneRecord {
+    std::uint64_t token = 0;
+    std::uint32_t count = 0;
+    Object* const* resources = nullptr;
+};
+
+std::uint32_t read_plane_records(const void* parameters, std::uint32_t planes, PlaneRecord* out,
+                                 std::uint32_t capacity);
+static_assert(offsetof(Plane, token) == kPlaneTokenOffset);
+static_assert(offsetof(Plane, count) == kPlaneCountOffset);
+static_assert(offsetof(Plane, resources) == kPlaneResourcesOffset);
 
 struct PageRange {
     std::uint32_t kind;

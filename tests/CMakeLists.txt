@@ -105,6 +105,7 @@ add_executable(g6shim_tests
   unit/d3d12_xs_sampler_test.cpp
   unit/d3d12_xs_host_test.cpp
   unit/d3d12_xs_capture_test.cpp
+  unit/d3d12_xs_present_test.cpp
   unit/bvh_reference_test.cpp
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh/format.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh/reference.cpp"
@@ -203,7 +204,11 @@ target_include_directories(g6shim_tests PRIVATE
   "${PROJECT_SOURCE_DIR}/src/tools/run"
   "${PROJECT_SOURCE_DIR}/winrt")
 g6shim_add_compute_dxil(g_bvh_build_dxil "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh/build.hlsl" main)
+g6shim_add_compute_dxil(g_present_plane_vs "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/present.hlsl" present_vs vs_6_0)
+g6shim_add_compute_dxil(g_present_plane_ps "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/present.hlsl" present_ps ps_6_0)
 g6shim_target_compute_dxil(g6shim_tests g_bvh_build_dxil)
+g6shim_target_compute_dxil(g6shim_tests g_present_plane_vs)
+g6shim_target_compute_dxil(g6shim_tests g_present_plane_ps)
 add_test(NAME unit COMMAND g6shim_tests)
 set_tests_properties(unit PROPERTIES TIMEOUT 30
   ENVIRONMENT "G6SHIM_LOG=${CMAKE_CURRENT_BINARY_DIR}/unit.log;G6SHIM_LOG_STDERR=0")
