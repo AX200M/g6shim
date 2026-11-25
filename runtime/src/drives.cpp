@@ -4,16 +4,16 @@
 
 #include <g6shim/log.hpp>
 
+#include "drives_remove.hpp"
+
 #include <windows.h>
 
 #include <algorithm>
 #include <climits>
 #include <cstring>
-#include <filesystem>
 #include <mutex>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <vector>
 
 namespace g6shim::drives {
@@ -307,8 +307,7 @@ struct TemporaryFolder {
     TemporaryFolder& operator=(const TemporaryFolder&) = delete;
     ~TemporaryFolder() {
         if (root.empty()) return;
-        std::error_code ignored;
-        std::filesystem::remove_all(root, ignored);
+        detail::remove_folder_with_retries(root);
     }
 };
 

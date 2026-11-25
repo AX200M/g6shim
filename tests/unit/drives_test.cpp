@@ -4,6 +4,8 @@
 
 #include <g6shim/drives.hpp>
 
+#include "drives_remove.hpp"
+
 #include <windows.h>
 
 #include <io.h>
@@ -13,6 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 using g6shim::drives::mount_drive;
@@ -502,4 +505,41 @@ TEST(drives_mount_temporary_storage_and_remove_it_on_exit) {
     CHECK(!child_root.empty());
     CHECK(child_root != root);
     CHECK(!folder_exists(child_root));
+}
+
+TEST(drives_remove_a_folder_held_without_delete_sharing) {
+    wchar_t base[MAX_PATH] = L"";
+    CHECK(GetTempPathW(MAX_PATH, base) != 0);
+    const std::wstring root = std::wstring(base) + L"g6shim_remove_" + std::to_wstring(GetCurrentProcessId()) + L"_" +
+                              std::to_wstring(GetTickCount64());
+    CHECK(CreateDirectoryW(root.c_str(), nullptr));
+    const std::wstring file = root + L"\\held.bin";
+    const HANDLE created =
+        CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    CHECK(created != INVALID_HANDLE_VALUE);
+    if (created != INVALID_HANDLE_VALUE) CloseHandle(created);
+
+    const HANDLE opened = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    CHECK(opened != nullptr);
+    if (opened == nullptr) return;
+    constexpr DWORD kHoldWithoutDeleteMs = 100;
+    std::thread holder([&] {
+        const HANDLE held =
+            CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (held == INVALID_HANDLE_VALUE) return;
+        SetEvent(opened);
+        Sleep(kHoldWithoutDeleteMs);
+        CloseHandle(held);
+    });
+    const DWORD wait = WaitForSingleObject(opened, 5000);
+    g6shim::drives::detail::remove_folder_with_retries(root);
+    holder.join();
+    CloseHandle(opened);
+    const bool gone = !folder_exists(root);
+    if (!gone) {
+        DeleteFileW(file.c_str());
+        RemoveDirectoryW(root.c_str());
+    }
+    CHECK(wait == WAIT_OBJECT_0);
+    CHECK(gone);
 }
