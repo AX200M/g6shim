@@ -101,7 +101,7 @@ Translated shaders and compiled host pipelines are kept next to the executable, 
 
 | Folder | Content |
 |---|---|
-| `<exe folder>\g6shim_cache\shaders` | one entry per translated shader container |
+| `<exe folder>\g6shim_cache\shaders` | one entry per shader container: its translation, or a mark that it does not translate, so later runs of the same build drop it without translating it again |
 | `<exe folder>\g6shim_cache\pipelines` | the host pipeline library and the list of title pipelines to start early |
 
 `G6SHIM_CACHE_DIR`, or `[graphics] cache_dir`, replaces the `g6shim_cache` folder. When the executable path cannot be read and neither is set, nothing is kept. A changed build, adapter or driver discards the entries it cannot use; deleting the folders is always safe.

@@ -406,11 +406,19 @@ TEST(d3d12_xs_pipeline_translations_come_back_from_the_cache) {
     CHECK(runs.load() == 3);
     CHECK(shader_cache::cached(*cache, build, span_of(container), translate).has_value());
     CHECK(runs.load() == 3);
-    const shader_cache::Translator fail = [](std::span<const std::uint8_t>) {
+    std::atomic<int> failures{0};
+    const shader_cache::Translator fail = [&failures](std::span<const std::uint8_t>) {
+        failures.fetch_add(1);
         return std::optional<emit::HostShader>();
     };
     const std::string other = "other";
     CHECK(!shader_cache::cached(*cache, build, span_of(other), fail).has_value());
+    CHECK(!shader_cache::cached(*cache, build, span_of(other), fail).has_value());
+    CHECK(failures.load() == 1);
+    CHECK(!shader_cache::cached(*cache, build, span_of(other), translate).has_value());
+    CHECK(runs.load() == 3);
+    CHECK(!shader_cache::cached(*cache, other_build, span_of(other), fail).has_value());
+    CHECK(failures.load() == 2);
     std::filesystem::remove_all(dir, ignored);
 }
 

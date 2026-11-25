@@ -25,6 +25,7 @@ using g6shim::shader::emit::HostShader;
 using g6shim::shader::emit::StaticSampler;
 
 constexpr std::array<std::uint8_t, 4> kMagic{'V', 'S', 'H', '1'};
+constexpr std::array<std::uint8_t, 4> kRefusedMagic{'V', 'S', 'H', 'X'};
 constexpr std::array<HwStage, 8> kStages{HwStage::Ls, HwStage::Hs, HwStage::Es, HwStage::Gs,
                                          HwStage::Vs, HwStage::Ps, HwStage::Ms, HwStage::Cs};
 constexpr std::size_t kMaxEntryBytes = 256u << 20;
@@ -166,6 +167,12 @@ std::array<std::uint8_t, 16> entry_digest(const std::array<std::uint8_t, 16>& bu
     std::vector<std::uint8_t> input(build.begin(), build.end());
     input.insert(input.end(), container.begin(), container.end());
     return g6shim::shader::emit::hash(input);
+}
+
+bool refused_entry(const std::string& bytes) {
+    return bytes.size() == kRefusedMagic.size() &&
+           std::equal(kRefusedMagic.begin(), kRefusedMagic.end(), bytes.begin(),
+                      [](std::uint8_t magic, char byte) { return magic == static_cast<std::uint8_t>(byte); });
 }
 
 void log_damaged(const std::filesystem::path& path) {
@@ -353,7 +360,12 @@ std::optional<HostShader> cached(const Cache& cache, const std::array<std::uint8
         const std::filesystem::path path = cache.entry_path(build, container);
         if (!std::filesystem::exists(path)) {
             const auto shader = translate(container);
-            if (!shader) return std::nullopt;
+            if (!shader) {
+                g_misses.fetch_add(1, std::memory_order_relaxed);
+                if (!write_atomically(path, std::vector<std::uint8_t>(kRefusedMagic.begin(), kRefusedMagic.end())))
+                    G6SHIM_WARN("d3d12_xs: a failed translation was not recorded in %s", path.string().c_str());
+                return std::nullopt;
+            }
             ran = true;
             const std::vector<std::uint8_t> encoded = encode_entry(*shader);
             if (!write_atomically(path, encoded)) {
@@ -363,6 +375,11 @@ std::optional<HostShader> cached(const Cache& cache, const std::array<std::uint8
             }
         }
         if (const auto bytes = read_file(path); bytes) {
+            if (refused_entry(*bytes)) {
+                g_hits.fetch_add(1, std::memory_order_relaxed);
+                G6SHIM_TRACE("d3d12_xs: shader refused by the cache (%s)", path.string().c_str());
+                return std::nullopt;
+            }
             if (auto shader = decode_entry(std::span<const std::uint8_t>(
                     reinterpret_cast<const std::uint8_t*>(bytes->data()), bytes->size()))) {
                 if (ran)
