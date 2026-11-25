@@ -13,6 +13,10 @@
 #include "g6shim/shader/emit/shader.hpp"
 
 #include <windows.h>
+#include <d3dcompiler.h>
+#include <dxgi.h>
+
+#include <cstdio>
 
 #include <array>
 #include <atomic>
@@ -207,6 +211,60 @@ std::string name_of(std::string_view kind, std::string_view root, std::string_vi
                     std::string_view state) {
     const std::array<std::span<const std::uint8_t>, 2> code{span_of(first), span_of(second)};
     return pipeline_library::name(kind, span_of(root), code, state);
+}
+
+#pragma warning(push)
+#pragma warning(disable : 4324)
+template <typename T>
+struct alignas(8) StreamSubobject {
+    D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type;
+    T value;
+};
+#pragma warning(pop)
+
+struct BlendOnlyStream {
+    StreamSubobject<D3D12_BLEND_DESC> blend;
+};
+
+D3D12_GRAPHICS_PIPELINE_STATE_DESC bare_graphics() {
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
+    D3D12_RENDER_TARGET_BLEND_DESC target{};
+    target.SrcBlend = D3D12_BLEND_ONE;
+    target.DestBlend = D3D12_BLEND_ZERO;
+    target.BlendOp = D3D12_BLEND_OP_ADD;
+    target.SrcBlendAlpha = D3D12_BLEND_ONE;
+    target.DestBlendAlpha = D3D12_BLEND_ZERO;
+    target.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    target.LogicOp = D3D12_LOGIC_OP_NOOP;
+    target.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    for (D3D12_RENDER_TARGET_BLEND_DESC& each : desc.BlendState.RenderTarget) each = target;
+    desc.SampleMask = UINT32_MAX;
+    desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    desc.RasterizerState.DepthClipEnable = TRUE;
+    desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+    desc.DepthStencilState.StencilReadMask = 0xFF;
+    desc.DepthStencilState.StencilWriteMask = 0xFF;
+    desc.DepthStencilState.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
+    desc.DepthStencilState.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+    desc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
+    desc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    desc.DepthStencilState.BackFace = desc.DepthStencilState.FrontFace;
+    desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    desc.NumRenderTargets = 1;
+    desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    return desc;
+}
+
+Microsoft::WRL::ComPtr<ID3DBlob> compile_stage(const char* source, const char* profile) {
+    Microsoft::WRL::ComPtr<ID3DBlob> code;
+    Microsoft::WRL::ComPtr<ID3DBlob> errors;
+    const HRESULT compiled = ::D3DCompile(source, std::strlen(source), "pipeline", nullptr, nullptr, "main", profile, 0, 0,
+                                          &code, &errors);
+    CHECK(compiled == S_OK);
+    return code;
 }
 
 }  // namespace
@@ -463,4 +521,132 @@ TEST(d3d12_xs_pipeline_compiles_a_synthetic_compute_pipeline) {
     }
     CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
     CHECK(slot<std::uint32_t (*)(Object*)>(made, 0x10)(made) == 0);
+}
+
+TEST(d3d12_xs_pipeline_library_names_follow_the_loaded_description) {
+    const std::array<std::uint8_t, 4> root{'r', 'o', 'o', 't'};
+    const std::span<const std::uint8_t> root_span(root);
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC first = bare_graphics();
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC second = first;
+    second.BlendState.IndependentBlendEnable = TRUE;
+    const std::string shared = pipeline_library::name("graphics", root_span, first);
+    CHECK(shared == pipeline_library::name("graphics", root_span, first));
+    CHECK(shared != pipeline_library::name("graphics", root_span, second));
+    second = first;
+    second.BlendState.AlphaToCoverageEnable = TRUE;
+    CHECK(shared != pipeline_library::name("graphics", root_span, second));
+    second = first;
+    second.Flags = D3D12_PIPELINE_STATE_FLAG_TOOL_DEBUG;
+    CHECK(shared != pipeline_library::name("graphics", root_span, second));
+    second = first;
+    second.NodeMask = 1;
+    CHECK(shared != pipeline_library::name("graphics", root_span, second));
+    second = first;
+    second.IBStripCutValue = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFF;
+    CHECK(shared != pipeline_library::name("graphics", root_span, second));
+    second = first;
+    second.SampleDesc.Count = 4;
+    CHECK(shared != pipeline_library::name("graphics", root_span, second));
+    second = first;
+    second.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    CHECK(shared != pipeline_library::name("graphics", root_span, second));
+    second = first;
+    second.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    CHECK(shared != pipeline_library::name("graphics", root_span, second));
+    const D3D12_INPUT_ELEMENT_DESC position{"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
+                                            D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0};
+    const D3D12_INPUT_ELEMENT_DESC color{"COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
+                                         D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0};
+    second = first;
+    second.InputLayout.pInputElementDescs = &position;
+    second.InputLayout.NumElements = 1;
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC other_input = second;
+    other_input.InputLayout.pInputElementDescs = &color;
+    CHECK(pipeline_library::name("graphics", root_span, second) != pipeline_library::name("graphics", root_span, other_input));
+    const std::array<std::uint8_t, 1> cached_byte{0xAB};
+    second = first;
+    second.CachedPSO.pCachedBlob = cached_byte.data();
+    second.CachedPSO.CachedBlobSizeInBytes = cached_byte.size();
+    CHECK(shared != pipeline_library::name("graphics", root_span, second));
+    const std::array<std::uint8_t, 4> other_root{'r', 'o', 'o', '2'};
+    CHECK(shared != pipeline_library::name("graphics", other_root, first));
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC compute{};
+    D3D12_COMPUTE_PIPELINE_STATE_DESC compute_flags = compute;
+    compute_flags.Flags = D3D12_PIPELINE_STATE_FLAG_TOOL_DEBUG;
+    CHECK(pipeline_library::name("compute", root_span, compute) != pipeline_library::name("compute", root_span, compute_flags));
+    D3D12_COMPUTE_PIPELINE_STATE_DESC compute_node = compute;
+    compute_node.NodeMask = 1;
+    CHECK(pipeline_library::name("compute", root_span, compute) != pipeline_library::name("compute", root_span, compute_node));
+
+    BlendOnlyStream plain{};
+    plain.blend.type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND;
+    BlendOnlyStream covered = plain;
+    covered.blend.value.AlphaToCoverageEnable = TRUE;
+    const D3D12_PIPELINE_STATE_STREAM_DESC plain_desc{sizeof plain, &plain};
+    const D3D12_PIPELINE_STATE_STREAM_DESC covered_desc{sizeof covered, &covered};
+    CHECK(pipeline_library::name("mesh", root_span, plain_desc) != pipeline_library::name("mesh", root_span, covered_desc));
+
+    Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
+    Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
+    Microsoft::WRL::ComPtr<ID3D12Device> device;
+    if (FAILED(::CreateDXGIFactory2(0, IID_PPV_ARGS(&factory))) || FAILED(factory->EnumWarpAdapter(IID_PPV_ARGS(&adapter))) ||
+        FAILED(::D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)))) {
+        std::printf("  skipped: no WARP device\n");
+        return;
+    }
+    Microsoft::WRL::ComPtr<ID3D12Device1> device1;
+    if (FAILED(device.As(&device1))) {
+        std::printf("  skipped: no WARP device\n");
+        return;
+    }
+    const char* vertex_source = "float4 main(uint id : SV_VertexID) : SV_Position { return float4(id == 1 ? 1.0 : -1.0, id == 2 ? 1.0 : -1.0, 0, 1); }";
+    const char* pixel_source = "float4 main() : SV_Target { return 1; }";
+    const Microsoft::WRL::ComPtr<ID3DBlob> vertex = compile_stage(vertex_source, "vs_5_0");
+    const Microsoft::WRL::ComPtr<ID3DBlob> pixel = compile_stage(pixel_source, "ps_5_0");
+    if (vertex == nullptr || pixel == nullptr) return;
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC root_desc{};
+    root_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_0;
+    Microsoft::WRL::ComPtr<ID3DBlob> signature_blob;
+    Microsoft::WRL::ComPtr<ID3DBlob> signature_error;
+    CHECK(::D3D12SerializeVersionedRootSignature(&root_desc, &signature_blob, &signature_error) == S_OK);
+    if (signature_blob == nullptr) return;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> signature;
+    CHECK(device->CreateRootSignature(0, signature_blob->GetBufferPointer(), signature_blob->GetBufferSize(),
+                                      IID_PPV_ARGS(&signature)) == S_OK);
+    if (signature == nullptr) return;
+    const std::span<const std::uint8_t> signature_bytes(static_cast<const std::uint8_t*>(signature_blob->GetBufferPointer()),
+                                                        signature_blob->GetBufferSize());
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC created = bare_graphics();
+    created.pRootSignature = signature.Get();
+    created.VS.pShaderBytecode = vertex->GetBufferPointer();
+    created.VS.BytecodeLength = vertex->GetBufferSize();
+    created.PS.pShaderBytecode = pixel->GetBufferPointer();
+    created.PS.BytecodeLength = pixel->GetBufferSize();
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC created_other = created;
+    created_other.BlendState.IndependentBlendEnable = TRUE;
+    CHECK(pipeline_library::name("graphics", signature_bytes, created) !=
+          pipeline_library::name("graphics", signature_bytes, created_other));
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> first_pso;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> second_pso;
+    CHECK(device->CreateGraphicsPipelineState(&created, IID_PPV_ARGS(&first_pso)) == S_OK);
+    CHECK(device->CreateGraphicsPipelineState(&created_other, IID_PPV_ARGS(&second_pso)) == S_OK);
+    if (first_pso == nullptr || second_pso == nullptr) return;
+    const std::optional<pipeline_library::Library> library = pipeline_library::open(device1.Get(), {});
+    CHECK(library.has_value());
+    if (!library || library->library == nullptr) return;
+    const std::string first_name = pipeline_library::name("graphics", signature_bytes, created);
+    const std::string second_name = pipeline_library::name("graphics", signature_bytes, created_other);
+    const std::wstring first_wide(first_name.begin(), first_name.end());
+    const std::wstring second_wide(second_name.begin(), second_name.end());
+    CHECK(library->library->StorePipeline(first_wide.c_str(), first_pso.Get()) == S_OK);
+    CHECK(library->library->StorePipeline(second_wide.c_str(), second_pso.Get()) == S_OK);
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> loaded_first;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> loaded_second;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> mismatched;
+    CHECK(library->library->LoadGraphicsPipeline(first_wide.c_str(), &created, IID_PPV_ARGS(&loaded_first)) == S_OK);
+    CHECK(library->library->LoadGraphicsPipeline(second_wide.c_str(), &created_other, IID_PPV_ARGS(&loaded_second)) == S_OK);
+    CHECK(FAILED(library->library->LoadGraphicsPipeline(first_wide.c_str(), &created_other, IID_PPV_ARGS(&mismatched))));
+    CHECK(loaded_first != nullptr);
+    CHECK(loaded_second != nullptr);
 }

@@ -105,11 +105,6 @@ std::optional<RootSignature> make_root_signature(ID3D12Device* device,
     return result;
 }
 
-std::vector<std::uint8_t> bytecode_bytes(const D3D12_SHADER_BYTECODE& code) {
-    if (code.pShaderBytecode == nullptr) return {};
-    const auto* bytes = static_cast<const std::uint8_t*>(code.pShaderBytecode);
-    return std::vector<std::uint8_t>(bytes, bytes + code.BytecodeLength);
-}
 
 #pragma warning(push)
 #pragma warning(disable : 4324)
@@ -120,15 +115,24 @@ struct alignas(8) Subobject {
 };
 #pragma warning(pop)
 
-static_assert(sizeof(Subobject<ID3D12RootSignature*>) == 16);
-static_assert(sizeof(Subobject<D3D12_SHADER_BYTECODE>) == 24);
-static_assert(sizeof(Subobject<D3D12_BLEND_DESC>) == 336);
-static_assert(sizeof(Subobject<std::uint32_t>) == 8);
-static_assert(sizeof(Subobject<D3D12_RASTERIZER_DESC>) == 48);
-static_assert(sizeof(Subobject<D3D12_DEPTH_STENCIL_DESC>) == 56);
-static_assert(sizeof(Subobject<D3D12_RT_FORMAT_ARRAY>) == 40);
-static_assert(sizeof(Subobject<DXGI_FORMAT>) == 8);
-static_assert(sizeof(Subobject<DXGI_SAMPLE_DESC>) == 16);
+static_assert(sizeof(Subobject<ID3D12RootSignature*>) == pipeline_library::stream_subobject_bytes<ID3D12RootSignature*>());
+static_assert(offsetof(Subobject<ID3D12RootSignature*>, value) == pipeline_library::stream_subobject_value<ID3D12RootSignature*>());
+static_assert(sizeof(Subobject<D3D12_SHADER_BYTECODE>) == pipeline_library::stream_subobject_bytes<D3D12_SHADER_BYTECODE>());
+static_assert(offsetof(Subobject<D3D12_SHADER_BYTECODE>, value) == pipeline_library::stream_subobject_value<D3D12_SHADER_BYTECODE>());
+static_assert(sizeof(Subobject<D3D12_BLEND_DESC>) == pipeline_library::stream_subobject_bytes<D3D12_BLEND_DESC>());
+static_assert(offsetof(Subobject<D3D12_BLEND_DESC>, value) == pipeline_library::stream_subobject_value<D3D12_BLEND_DESC>());
+static_assert(sizeof(Subobject<std::uint32_t>) == pipeline_library::stream_subobject_bytes<std::uint32_t>());
+static_assert(offsetof(Subobject<std::uint32_t>, value) == pipeline_library::stream_subobject_value<std::uint32_t>());
+static_assert(sizeof(Subobject<D3D12_RASTERIZER_DESC>) == pipeline_library::stream_subobject_bytes<D3D12_RASTERIZER_DESC>());
+static_assert(offsetof(Subobject<D3D12_RASTERIZER_DESC>, value) == pipeline_library::stream_subobject_value<D3D12_RASTERIZER_DESC>());
+static_assert(sizeof(Subobject<D3D12_DEPTH_STENCIL_DESC>) == pipeline_library::stream_subobject_bytes<D3D12_DEPTH_STENCIL_DESC>());
+static_assert(offsetof(Subobject<D3D12_DEPTH_STENCIL_DESC>, value) == pipeline_library::stream_subobject_value<D3D12_DEPTH_STENCIL_DESC>());
+static_assert(sizeof(Subobject<D3D12_RT_FORMAT_ARRAY>) == pipeline_library::stream_subobject_bytes<D3D12_RT_FORMAT_ARRAY>());
+static_assert(offsetof(Subobject<D3D12_RT_FORMAT_ARRAY>, value) == pipeline_library::stream_subobject_value<D3D12_RT_FORMAT_ARRAY>());
+static_assert(sizeof(Subobject<DXGI_FORMAT>) == pipeline_library::stream_subobject_bytes<DXGI_FORMAT>());
+static_assert(offsetof(Subobject<DXGI_FORMAT>, value) == pipeline_library::stream_subobject_value<DXGI_FORMAT>());
+static_assert(sizeof(Subobject<DXGI_SAMPLE_DESC>) == pipeline_library::stream_subobject_bytes<DXGI_SAMPLE_DESC>());
+static_assert(offsetof(Subobject<DXGI_SAMPLE_DESC>, value) == pipeline_library::stream_subobject_value<DXGI_SAMPLE_DESC>());
 
 struct MeshStream {
     Subobject<ID3D12RootSignature*> root;
@@ -144,8 +148,8 @@ struct MeshStream {
 };
 static_assert(sizeof(MeshStream) % 8 == 0);
 
-HRESULT make_mesh_pipeline(ID3D12Device* device, ID3D12RootSignature* root, D3D12_SHADER_BYTECODE ms,
-                           D3D12_SHADER_BYTECODE ps, const GraphicsState& graphics, const std::string& name,
+HRESULT make_mesh_pipeline(ID3D12Device* device, ID3D12RootSignature* root, std::span<const std::uint8_t> root_blob,
+                           D3D12_SHADER_BYTECODE ms, D3D12_SHADER_BYTECODE ps, const GraphicsState& graphics,
                            ID3D12PipelineState** out) {
     MeshStream stream{
         {D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE, root},
@@ -160,6 +164,7 @@ HRESULT make_mesh_pipeline(ID3D12Device* device, ID3D12RootSignature* root, D3D1
         {D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC, graphics.samples},
     };
     D3D12_PIPELINE_STATE_STREAM_DESC desc{sizeof(MeshStream), &stream};
+    const std::string name = pipeline_library::name("mesh", root_blob, desc);
     Microsoft::WRL::ComPtr<ID3D12Device2> device2;
     if (FAILED(device->QueryInterface(IID_PPV_ARGS(&device2)))) return E_NOINTERFACE;
     return pipeline_library::pipeline(
@@ -454,9 +459,7 @@ std::optional<HostPipeline> HostPipeline::make(const std::vector<std::shared_ptr
         D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
         desc.pRootSignature = root->root.Get();
         desc.CS = code(0);
-        const std::vector<std::uint8_t> compute_code = bytecode_bytes(desc.CS);
-        const std::array<std::span<const std::uint8_t>, 1> codes{compute_code};
-        const std::string name = pipeline_library::name("compute", root->blob, codes, "");
+        const std::string name = pipeline_library::name("compute", root->blob, desc);
         Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
         const HRESULT made = pipeline_library::pipeline(
             name,
@@ -484,13 +487,9 @@ std::optional<HostPipeline> HostPipeline::make(const std::vector<std::shared_ptr
     }
     if (graphics == nullptr) return refuse("graphics state not kept (plain description)", shaders);
     if (mesh) {
-        const std::vector<std::uint8_t> mesh_code = bytecode_bytes(code(0));
-        const std::vector<std::uint8_t> pixel_code = bytecode_bytes(code(1));
-        const std::array<std::span<const std::uint8_t>, 2> codes{mesh_code, pixel_code};
-        const std::string name = pipeline_library::name("mesh", root->blob, codes, state);
         Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
-        const HRESULT made = make_mesh_pipeline(gpu->device(), root->root.Get(), code(0), code(1), *graphics,
-                                                name, pso.GetAddressOf());
+        const HRESULT made = make_mesh_pipeline(gpu->device(), root->root.Get(), root->blob, code(0), code(1), *graphics,
+                                                pso.GetAddressOf());
         if (FAILED(made) || pso == nullptr) {
             G6SHIM_WARN("d3d12_xs: host mesh pipeline refused [%s]", text.c_str());
             gpu->log_messages();
@@ -537,11 +536,7 @@ std::optional<HostPipeline> HostPipeline::make(const std::vector<std::shared_ptr
     for (std::size_t i = 0; i < 8; ++i) desc.RTVFormats[i] = graphics->targets.RTFormats[i];
     desc.DSVFormat = graphics->depth_format;
     desc.SampleDesc = graphics->samples;
-    const std::vector<std::uint8_t> vertex_code = bytecode_bytes(desc.VS);
-    const std::vector<std::uint8_t> geometry_code = bytecode_bytes(desc.GS);
-    const std::vector<std::uint8_t> pixel_code = bytecode_bytes(desc.PS);
-    const std::array<std::span<const std::uint8_t>, 3> codes{vertex_code, geometry_code, pixel_code};
-    const std::string name = pipeline_library::name("graphics", root->blob, codes, state);
+    const std::string name = pipeline_library::name("graphics", root->blob, desc);
     Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
     const HRESULT made = pipeline_library::pipeline(
         name,

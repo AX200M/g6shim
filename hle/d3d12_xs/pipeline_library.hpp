@@ -41,6 +41,25 @@ void use_directory(const std::filesystem::path& dir);
 
 std::string name(std::string_view kind, std::span<const std::uint8_t> root,
                  std::span<const std::span<const std::uint8_t>> code, std::string_view state);
+std::string name(std::string_view kind, std::span<const std::uint8_t> root,
+                 const D3D12_GRAPHICS_PIPELINE_STATE_DESC& desc);
+std::string name(std::string_view kind, std::span<const std::uint8_t> root,
+                 const D3D12_COMPUTE_PIPELINE_STATE_DESC& desc);
+std::string name(std::string_view kind, std::span<const std::uint8_t> root,
+                 const D3D12_PIPELINE_STATE_STREAM_DESC& desc);
+
+inline constexpr std::size_t kStreamAlign = 8;
+
+template <typename T>
+constexpr std::size_t stream_subobject_value() {
+    return (sizeof(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE) + alignof(T) - 1) & ~(alignof(T) - 1);
+}
+
+template <typename T>
+constexpr std::size_t stream_subobject_bytes() {
+    return (stream_subobject_value<T>() + sizeof(T) + kStreamAlign - 1) & ~(kStreamAlign - 1);
+}
+
 
 using Load = std::function<HRESULT(ID3D12PipelineLibrary1*, const wchar_t*)>;
 using Create = std::function<HRESULT(ID3D12PipelineState**)>;
