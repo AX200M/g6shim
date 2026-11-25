@@ -29,6 +29,7 @@ constexpr DWORD kWindowStyle = WS_OVERLAPPEDWINDOW;
 constexpr WPARAM kCommandMask = 0xFFF0;
 constexpr std::uint8_t kQuiesced = 1;
 constexpr wchar_t kCaptionMessageName[] = L"g6shim.caption";
+constexpr wchar_t kApplySizeMessageName[] = L"g6shim.apply_size";
 
 struct Registration {
     std::size_t id = 0;
@@ -103,9 +104,20 @@ LRESULT forward(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
     return ::CallWindowProcW(reinterpret_cast<WNDPROC>(previous), hwnd, message, wparam, lparam);
 }
 
+UINT apply_size_message() {
+    static const UINT message = ::RegisterWindowMessageW(kApplySizeMessageName);
+    return message;
+}
+
+void apply_size(HWND hwnd, Size wanted);
+
 LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
     if (message == caption_message()) {
         update_caption(hwnd);
+        return 0;
+    }
+    if (message == apply_size_message()) {
+        apply_size(hwnd, Size{static_cast<std::int32_t>(wparam), static_cast<std::int32_t>(lparam)});
         return 0;
     }
     if (message == WM_SIZE) {
@@ -321,7 +333,10 @@ void adopt(HWND hwnd) {
         apply_size(hwnd, wanted);
         return;
     }
-    std::thread([hwnd, wanted] { apply_size(hwnd, wanted); }).detach();
+    if (!::PostMessageW(hwnd, apply_size_message(), static_cast<WPARAM>(wanted.width),
+                        static_cast<LPARAM>(wanted.height)))
+        G6SHIM_WARN("d3d12_xs: window %p left at its size (0x%08lX)", hwnd,
+                    static_cast<unsigned long>(::GetLastError()));
 }
 
 }  // namespace g6shim::d3d12_xs::window
