@@ -76,6 +76,10 @@ void hook(HWND hwnd) {
     ::SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&window_proc));
 }
 
+bool owned_by_this_thread(HWND hwnd) {
+    return ::GetWindowThreadProcessId(hwnd, nullptr) == ::GetCurrentThreadId();
+}
+
 Rect rect_of(const RECT& rect) { return Rect{rect.left, rect.top, rect.right, rect.bottom}; }
 
 Rect monitor_rect(HWND hwnd, bool work) {
@@ -235,7 +239,12 @@ HWND create(std::uint32_t width, std::uint32_t height) {
 void adopt(HWND hwnd) {
     if (hwnd == nullptr) return;
     hook(hwnd);
-    apply_size(hwnd, client_size(hwnd));
+    const Size wanted = client_size(hwnd);
+    if (owned_by_this_thread(hwnd)) {
+        apply_size(hwnd, wanted);
+        return;
+    }
+    std::thread([hwnd, wanted] { apply_size(hwnd, wanted); }).detach();
 }
 
 }  // namespace g6shim::d3d12_xs::window
