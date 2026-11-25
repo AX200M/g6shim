@@ -239,6 +239,35 @@ TEST(d3d12_xs_host_old_descriptor_reaches_the_current_window_after_eviction) {
     ::VirtualFree(memory, 0, MEM_RELEASE);
 }
 
+TEST(d3d12_xs_host_buffer_view_without_elements_keeps_the_device) {
+    host::Host* gpu = test_host();
+    if (gpu == nullptr) return;
+    constexpr std::uint32_t kStride = 16;
+    constexpr std::uint32_t kBufferDimension = 1;
+    const ExtendedHeap extended{{0, 4, 1, 0}, {0, 0}};
+    Object* heap = nullptr;
+    CHECK(descriptor::create_heap(nullptr, &extended.desc, &descriptor::kIids[0], &heap) == S_OK);
+    Object* buffer = create_buffer(4096);
+    const std::uint64_t start = static_cast<descriptor::Heap*>(heap)->start;
+    const std::array<std::uint32_t, 10> unordered{0, kBufferDimension, 2, 0, 0, kStride, 0, 0, 0, 0};
+    descriptor::create_uav(nullptr, buffer, nullptr, unordered.data(), start);
+    const std::array<std::uint32_t, 10> shader{0, kBufferDimension, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, 0, 2, 0, 0, kStride, 0, 0};
+    const auto step = descriptor::increment(0);
+    CHECK(step.has_value());
+    if (!step) return;
+    const std::uint64_t second = start + *step;
+    descriptor::create_srv(nullptr, buffer, shader.data(), second);
+    descriptor_host::HostHeap* host_heap = descriptor_host::for_heap(heap);
+    CHECK(host_heap != nullptr);
+    if (host_heap != nullptr) {
+        CHECK(host_heap->mirror(0, start, true).has_value());
+        CHECK(host_heap->mirror(1, second, true).has_value());
+    }
+    CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
+    CHECK(slot<std::uint32_t (*)(Object*)>(buffer, 0x10)(buffer) == 0);
+    CHECK(slot<std::uint32_t (*)(Object*)>(heap, 0x10)(heap) == 0);
+}
+
 TEST(d3d12_xs_host_shadow_copies_title_buffers) {
     if (test_host() == nullptr) return;
     std::vector<std::uint8_t> title(4096);

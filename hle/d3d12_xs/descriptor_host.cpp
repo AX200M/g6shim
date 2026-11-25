@@ -128,9 +128,17 @@ std::optional<std::pair<std::uint64_t, std::uint64_t>> unordered_range(std::uint
                           static_cast<std::uint64_t>(desc.Buffer.NumElements) * element);
 }
 
+bool empty_buffer_view(std::uint32_t elements) {
+    if (elements != 0) return false;
+    static std::once_flag once;
+    std::call_once(once, [] { G6SHIM_INFO("d3d12_xs: a buffer view with no elements is made a null view"); });
+    return true;
+}
+
 std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> buffer_srv(std::uint64_t address, std::uint64_t bytes,
                                                                  D3D12_SHADER_RESOURCE_VIEW_DESC desc,
                                                                  D3D12_CPU_DESCRIPTOR_HANDLE at) {
+    if (empty_buffer_view(desc.Buffer.NumElements)) return std::nullopt;
     const auto shadow = shadow::find(address, bytes);
     if (!shadow) return std::nullopt;
     const std::uint64_t element = element_size(desc);
@@ -150,6 +158,7 @@ std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> buffer_srv(std::uint64_t a
 std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> buffer_uav(std::uint64_t address, std::uint64_t bytes,
                                                                  D3D12_UNORDERED_ACCESS_VIEW_DESC desc,
                                                                  D3D12_CPU_DESCRIPTOR_HANDLE at) {
+    if (empty_buffer_view(desc.Buffer.NumElements)) return std::nullopt;
     const auto shadow = shadow::find(address, bytes);
     if (!shadow) return std::nullopt;
     if ((static_cast<std::uint32_t>((*shadow)->buffer()->GetDesc().Flags) &
