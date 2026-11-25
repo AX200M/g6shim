@@ -65,12 +65,29 @@ add_executable(g6shim_tests
   unit/xgameruntime_xuser_test.cpp
   unit/xgameruntime_xgame_test.cpp
   unit/xgameruntime_xsystem_test.cpp
+  unit/xgameruntime_storage_test.cpp
+  unit/xgameruntime_xnetworking_test.cpp
+  unit/xgameruntime_xpackage_test.cpp
+  unit/xgameruntime_display_test.cpp
+  unit/xgameruntime_xgamesave_test.cpp
+  unit/xgameruntime_xstore_test.cpp
+  unit/xgameruntime_xgameui_test.cpp
+  unit/xgameruntime_speech_test.cpp
   unit/xgameruntime_module_test.cpp
   "${PROJECT_SOURCE_DIR}/hle/xgameruntime/runtime.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xasync.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xuser.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xgame.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xsystem.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/title.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/storage.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xnetworking.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xpackage.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/display.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xgamesave.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xstore.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xgameui.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/speech.cpp"
   unit/log_format_test.cpp
   unit/run_frames_test.cpp
   "${PROJECT_SOURCE_DIR}/src/tools/run/frames.cpp"
@@ -159,7 +176,7 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/xcrdapi/bcpack.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xcrdapi/dstorage.cpp"
   "${PROJECT_SOURCE_DIR}/hle/g6shim_advapi32/registry.cpp")
-target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim_shader g6shim::winrt Opus::opus d3d12 dxgi d3dcompiler onecore)
+target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim_shader g6shim::winrt Opus::opus d3d12 dxgi d3dcompiler onecore PowrProf)
 target_link_options(g6shim_tests PRIVATE "/EXPORT:__XMemAllocationHooks__,DATA" "/EXPORT:g6shim_xmem_map_alias")
 foreach(forwarder IN ITEMS hle_g6shim_file hle_g6shim_file2 hle_g6shim_crtfs hle_g6shim_kernel32
                          hle_g6shim_libloader hle_g6shim_libloader2 hle_xgameruntime)

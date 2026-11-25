@@ -21,8 +21,10 @@ namespace {
 std::mutex g_queried_mutex;
 std::vector<std::pair<Guid, Guid>> g_queried;
 
-std::array<std::span<const Interface>, 4> interface_sets() {
-    return {xasync_interfaces(), xuser_interfaces(), xsystem_interfaces(), xgame_interfaces()};
+std::array<std::span<const Interface>, 12> interface_sets() {
+    return {xasync_interfaces(),  xuser_interfaces(),      xsystem_interfaces(),  xgame_interfaces(),
+            storage_interfaces(), xnetworking_interfaces(), xpackage_interfaces(), display_interfaces(),
+            xgamesave_interfaces(), xstore_interfaces(),   xgameui_interfaces(),  speech_interfaces()};
 }
 
 const Interface* find_interface(const Guid& provider, const Guid& iid) {

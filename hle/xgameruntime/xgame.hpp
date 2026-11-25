@@ -36,6 +36,8 @@ extern const Object kInvitesObject;
 extern const Object kEventsObject;
 
 std::uint32_t title_id();
+std::optional<std::string> title_manifest();
+std::optional<std::string> manifest_element(std::string_view text, std::string_view path);
 std::optional<std::uint32_t> manifest_title_id(std::string_view text);
 std::vector<std::string> relaunch_args(const std::vector<std::string>& ours, std::string_view current,
                                        std::string_view exe, std::string_view args);

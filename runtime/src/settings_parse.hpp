@@ -46,6 +46,7 @@ inline constexpr Binding kBindings[] = {
     {"G6SHIM_CACHE_DIR", "graphics", "cache_dir"},
     {"G6SHIM_INPUT_AUTOPRESS", "input", "autopress"},
     {"G6SHIM_BCPACK_TABLES", "storage", "bcpack_tables"},
+    {"G6SHIM_DATA_DIR", "saves", "dir"},
 };
 
 struct Entry {

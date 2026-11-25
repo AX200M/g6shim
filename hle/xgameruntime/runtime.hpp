@@ -89,5 +89,13 @@ std::span<const Interface> xasync_interfaces();
 std::span<const Interface> xuser_interfaces();
 std::span<const Interface> xsystem_interfaces();
 std::span<const Interface> xgame_interfaces();
+std::span<const Interface> storage_interfaces();
+std::span<const Interface> xnetworking_interfaces();
+std::span<const Interface> xpackage_interfaces();
+std::span<const Interface> display_interfaces();
+std::span<const Interface> xgamesave_interfaces();
+std::span<const Interface> xstore_interfaces();
+std::span<const Interface> xgameui_interfaces();
+std::span<const Interface> speech_interfaces();
 
 }  // namespace g6shim::xgameruntime

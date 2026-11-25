@@ -76,6 +76,7 @@ The two library-loader forwarders make `LoadLibraryExW`/`LoadLibraryW` of `xgame
 | `graphics` | `cache_dir` | `G6SHIM_CACHE_DIR` | `g6shim_cache` in the folder of the executable | Folder for translated shaders and compiled host pipelines. |
 | `input` | `autopress` | `G6SHIM_INPUT_AUTOPRESS` | none | Hold buttons for 0.2 s at those seconds after the first controller read, for example `6:Menu,9:A`. Buttons: `Menu View A B X Y Up Down Left Right`. |
 | `storage` | `bcpack_tables` | `G6SHIM_BCPACK_TABLES` | `bcpack-tables.bin` next to `XCRDAPI.dll` | BCPack constant tables for DirectStorage texture decompression. Without a table file BCPack requests fail; zlib and plain requests still run. |
+| `saves` | `dir` | `G6SHIM_DATA_DIR` | `%LOCALAPPDATA%\g6shim\data\<title ID>` | Folder for game saves; the title ID is 8 uppercase hex digits. |
 | — | — | `G6SHIM_DXIL` | the newest `Windows Kits\10\bin\<version>\x64\dxil.dll` | Environment only, not read from `g6shim.ini`. `dxil.dll` the shader translator and its tests validate and sign DXIL with. Without one the validator tests are skipped; when the variable is set and the file cannot be loaded, they fail. CI sets it to the Windows SDK's copy. |
 
 ```ini
@@ -89,6 +90,9 @@ d3d_debug = 1
 
 [console]
 model = series-s
+
+[saves]
+dir = D:\g6shim-data
 ```
 
 ## Caches
@@ -102,6 +106,17 @@ Translated shaders and compiled host pipelines are kept next to the executable, 
 
 `G6SHIM_CACHE_DIR`, or `[graphics] cache_dir`, replaces the `g6shim_cache` folder. When the executable path cannot be read and neither is set, nothing is kept. A changed build, adapter or driver discards the entries it cannot use; deleting the folders is always safe.
 
+## Saves
+
+Game saves (`XGameSave`) are kept outside the game folder, under the data folder:
+
+| Folder | Content |
+|---|---|
+| `<data folder>\saves\<xuid>\<configuration>` | the user's saves for one service configuration (`default` when the title names none) |
+| `<data folder>\saves\...\v<N>` | one committed version of a save container; a new version is written beside it and renamed into place, so a kill leaves the old version or the new one |
+
+The xuid is 16 uppercase hex digits. Each version folder holds a `manifest` and one file per blob. `G6SHIM_DATA_DIR`, or `[saves] dir`, replaces the whole data folder; removing it discards the saves. Saves made by an older one-file layout in the same folder are converted on first use.
+
 ## Files next to the executable
 
 | File | Content |
@@ -110,7 +125,7 @@ Translated shaders and compiled host pipelines are kept next to the executable, 
 | `g6shim.log` | The log, appended on every run. |
 | `g6shim_input.ini` | Keyboard and controller mapping, written with defaults on first start. XInput controllers need no mapping. |
 | `g6shim_cache\` | Translated shaders and compiled host pipelines. The folders are described under [Caches](#caches). |
-| `g6shim_saves\<container>\<blob>` | Saves. Files larger than 64 MiB are treated as damaged. |
+| `g6shim_saves\<container>\<blob>` | WinRT connected-storage saves. Files larger than 64 MiB are treated as damaged. |
 | `g6shim_persistent\` | Persistent local storage, made on the first request for it and mounted as its own drive on the highest letter of `D:`-`Z:` that neither the host nor another mount uses. The log names the letter. |
 | `g6shim_frame_<n>.bmp` | Captured frames. |
 | `console_xg_x.dll` | Optional: a copy of the console's own `xg_x.dll` from your dump. When present, texture layouts come from it instead of g6shim's own code. |

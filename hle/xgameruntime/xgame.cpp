@@ -194,17 +194,30 @@ std::optional<std::uint32_t> manifest_title_id(std::string_view text_value) {
     return parse_hex(trim(*value));
 }
 
-std::uint32_t title_id() {
-    static const std::uint32_t value = [] {
+std::optional<std::string> manifest_element(std::string_view text_value, std::string_view path) {
+    return element_text(text_value, path);
+}
+
+std::optional<std::string> title_manifest() {
+    static const std::optional<std::string> content = []() -> std::optional<std::string> {
         std::wstring path = executable_folder();
-        if (path.empty()) return std::uint32_t{0};
+        if (path.empty()) return std::nullopt;
         path += kManifestFile;
         std::ifstream in(path, std::ios::binary);
-        if (!in) return std::uint32_t{0};
-        std::string content(kMaxManifestBytes, '\0');
-        in.read(content.data(), static_cast<std::streamsize>(content.size()));
-        content.resize(static_cast<std::size_t>(in.gcount()));
-        return manifest_title_id(content).value_or(0);
+        if (!in) return std::nullopt;
+        std::string text(kMaxManifestBytes, '\0');
+        in.read(text.data(), static_cast<std::streamsize>(text.size()));
+        text.resize(static_cast<std::size_t>(in.gcount()));
+        return text;
+    }();
+    return content;
+}
+
+std::uint32_t title_id() {
+    static const std::uint32_t value = [] {
+        const std::optional<std::string> content = title_manifest();
+        if (!content) return std::uint32_t{0};
+        return manifest_title_id(*content).value_or(0);
     }();
     return value;
 }

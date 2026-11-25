@@ -5,3 +5,4 @@ g6shim_add_hle_module(hle_xgameruntime
     DLL "g6shim_xgameruntime.dll"
     DEF "${CMAKE_CURRENT_SOURCE_DIR}/xgameruntime.def"
     SOURCES ${sources})
+target_link_libraries(hle_xgameruntime PRIVATE PowrProf)
