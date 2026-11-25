@@ -147,3 +147,4 @@ cmake --build --preset release --target g6shim_deploy
 - DLLs the game ships for its own WinRT classes are activated from the game folder. Some need the Visual C++ 2012 x64 runtime.
 - A window close ends the game. A window larger than the monitor's work area is shrunk to fit it, keeping the title's aspect ratio. The title bar shows the render resolution, the window's client size when it differs, and the frame rate.
 - On CPUs that lack the console's AMD-only instructions, the runtime emulates them (`clzero`, `monitorx`/`mwaitx`, `clwb` and SSE4a's `extrq`/`insertq`) instead of stopping at an illegal instruction; [docs/abi/cpu.md](abi/cpu.md) lists the encodings.
+- The runtime gives the game process 1 ms timer resolution, also while its window is in the background. The console's timed waits are short; at Windows' default 15.6 ms steps a title's audio thread that sends one 10 ms period per wake leaves gaps between periods.
