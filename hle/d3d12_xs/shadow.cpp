@@ -13,6 +13,7 @@
 #include <map>
 #include <span>
 #include <tuple>
+#include <unordered_set>
 #include <utility>
 
 namespace g6shim::d3d12_xs::shadow {
@@ -74,6 +75,10 @@ std::map<BufferKey, Entry> g_buffers;
 
 std::mutex g_loose_mutex;
 std::map<std::pair<std::uint64_t, std::uint64_t>, std::shared_ptr<Shadow>> g_loose;
+std::unordered_set<ID3D12Resource*> g_loose_buffers;
+std::atomic<std::uint64_t> g_submission{0};
+std::atomic<std::uint64_t> g_generation{0};
+std::atomic<std::uint64_t> g_evicted{0};
 
 std::optional<std::shared_ptr<Shadow>> loose(std::uint64_t address, std::uint64_t end) {
     const std::uint64_t start = address & ~(kWindowBytes - 1);
@@ -82,7 +87,10 @@ std::optional<std::shared_ptr<Shadow>> loose(std::uint64_t address, std::uint64_
     {
         std::lock_guard<std::mutex> lock(g_loose_mutex);
         const auto found = g_loose.find({start, bytes});
-        if (found != g_loose.end()) return found->second;
+        if (found != g_loose.end()) {
+            found->second->used(g_submission.load(std::memory_order_relaxed));
+            return found->second;
+        }
     }
     host::Host* gpu_host = host::host();
     if (gpu_host == nullptr) return std::nullopt;
@@ -94,8 +102,10 @@ std::optional<std::shared_ptr<Shadow>> loose(std::uint64_t address, std::uint64_
                  static_cast<unsigned long long>(start), static_cast<unsigned long long>(bytes));
     auto shadow = std::make_shared<Shadow>(std::move(buffer->first), buffer->second, gpu, start, bytes);
     std::lock_guard<std::mutex> lock(g_loose_mutex);
-    g_loose.insert_or_assign({start, bytes}, shadow);
-    return shadow;
+    const auto [at, inserted] = g_loose.try_emplace({start, bytes}, shadow);
+    at->second->used(g_submission.load(std::memory_order_relaxed));
+    if (inserted) g_loose_buffers.insert(shadow->buffer());
+    return at->second;
 }
 
 }  // namespace
@@ -392,6 +402,40 @@ std::string nearest(std::uint64_t va) {
         out += text;
     }
     return out;
+}
+
+void submission_completed() {
+    const std::uint64_t now = g_submission.fetch_add(1, std::memory_order_relaxed) + 1;
+    std::lock_guard<std::mutex> lock(g_loose_mutex);
+    bool evicted = false;
+    for (auto it = g_loose.begin(); it != g_loose.end();) {
+        const std::shared_ptr<Shadow>& window = it->second;
+        if (window.use_count() == 1 && now - window->last_used() > kIdleSubmissions) {
+            g_loose_buffers.erase(window->buffer());
+            it = g_loose.erase(it);
+            g_evicted.fetch_add(1, std::memory_order_relaxed);
+            evicted = true;
+        } else {
+            ++it;
+        }
+    }
+    if (evicted) g_generation.fetch_add(1, std::memory_order_release);
+}
+
+std::uint64_t eviction_generation() { return g_generation.load(std::memory_order_acquire); }
+
+bool live_loose(ID3D12Resource* buffer) {
+    std::lock_guard<std::mutex> lock(g_loose_mutex);
+    return g_loose_buffers.contains(buffer);
+}
+
+LooseStats loose_stats() {
+    std::lock_guard<std::mutex> lock(g_loose_mutex);
+    LooseStats stats;
+    stats.windows = g_loose.size();
+    for (const auto& [key, window] : g_loose) stats.bytes += window->bytes();
+    stats.evicted = g_evicted.load(std::memory_order_relaxed);
+    return stats;
 }
 
 }  // namespace g6shim::d3d12_xs::shadow

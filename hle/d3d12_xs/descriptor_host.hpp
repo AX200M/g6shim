@@ -11,6 +11,7 @@
 #include <d3d12.h>
 #include <wrl/client.h>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -43,6 +44,7 @@ public:
     void make_null(std::uint32_t index);
     void constant_at(std::uint32_t index, std::uint64_t gpu, std::uint32_t bytes);
     std::optional<descriptor::View> mirror(std::uint32_t index, std::uint64_t handle, bool for_draw);
+    Microsoft::WRL::ComPtr<ID3D12Resource> kept(std::uint32_t index);
 
 private:
     HostHeap(Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap, std::uint64_t cpu, std::uint64_t gpu,
@@ -51,6 +53,9 @@ private:
     bool fill_null(D3D12_DESCRIPTOR_HEAP_TYPE kind, std::uint32_t total);
     void null_sampler(std::uint32_t index);
     void keep(std::uint32_t index, Microsoft::WRL::ComPtr<ID3D12Resource> resource);
+    bool window_evicted(std::uint32_t index);
+
+    static constexpr std::uint64_t kNoWindow = 0;
 
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap_;
     std::uint64_t cpu_ = 0;
@@ -63,6 +68,7 @@ private:
     std::vector<std::uint64_t> made_;
     std::mutex kept_mutex_;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> kept_;
+    std::vector<std::atomic<std::uint64_t>> window_generation_;
     std::mutex next_mutex_;
     std::uint32_t next_ = 0;
     std::vector<bool> taken_;

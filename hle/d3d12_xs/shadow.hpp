@@ -18,6 +18,14 @@
 
 namespace g6shim::d3d12_xs::shadow {
 
+inline constexpr std::uint64_t kIdleSubmissions = 512;
+
+struct LooseStats {
+    std::size_t windows = 0;
+    std::uint64_t bytes = 0;
+    std::uint64_t evicted = 0;
+};
+
 class Shadow : public std::enable_shared_from_this<Shadow> {
 public:
     Shadow(Microsoft::WRL::ComPtr<ID3D12Resource> buffer, std::uint8_t* data, std::uint64_t gpu,
@@ -30,6 +38,8 @@ public:
     std::uint64_t bytes() const { return bytes_; }
     std::uint8_t* data() const { return data_; }
     ID3D12Resource* buffer() const { return buffer_.Get(); }
+    void used(std::uint64_t submission) { last_used_.store(submission, std::memory_order_relaxed); }
+    std::uint64_t last_used() const { return last_used_.load(std::memory_order_relaxed); }
 
     void refresh(host::HostList& list, std::uint64_t address, std::uint64_t bytes);
     void gpu_writes(host::HostList& list, std::uint64_t address, std::uint64_t bytes);
@@ -56,11 +66,16 @@ private:
     std::vector<std::pair<std::size_t, std::size_t>> pending_;
     std::mutex before_mutex_;
     std::optional<std::pair<std::size_t, std::vector<std::uint8_t>>> before_;
+    std::atomic<std::uint64_t> last_used_{0};
 };
 
 void register_buffer(std::uintptr_t resource, std::uint64_t start, std::uint64_t bytes);
 void unregister_buffer(std::uintptr_t resource, std::uint64_t start);
 std::optional<std::shared_ptr<Shadow>> find(std::uint64_t address, std::uint64_t bytes);
 std::string nearest(std::uint64_t va);
+void submission_completed();
+std::uint64_t eviction_generation();
+bool live_loose(ID3D12Resource* buffer);
+LooseStats loose_stats();
 
 }  // namespace g6shim::d3d12_xs::shadow

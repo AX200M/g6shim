@@ -193,6 +193,52 @@ TEST(d3d12_xs_host_descriptor_heap_mirrors_a_buffer_view) {
     CHECK(slot<std::uint32_t (*)(Object*)>(heap, 0x10)(heap) == 0);
 }
 
+TEST(d3d12_xs_host_old_descriptor_reaches_the_current_window_after_eviction) {
+    host::Host* gpu = test_host();
+    if (gpu == nullptr) return;
+    constexpr std::size_t kTitleBytes = 256;
+    constexpr std::size_t kRegionBytes = 8 << 20;
+    auto* memory = static_cast<std::uint8_t*>(
+        ::VirtualAlloc(nullptr, kRegionBytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    CHECK(memory != nullptr);
+    if (memory == nullptr) return;
+    std::memset(memory, 1, kTitleBytes);
+    const auto address = reinterpret_cast<std::uint64_t>(memory);
+    const ExtendedHeap extended{{0, 4, 1, 0}, {0, 0}};
+    Object* heap = nullptr;
+    CHECK(descriptor::create_heap(nullptr, &extended.desc, &descriptor::kIids[0], &heap) == S_OK);
+    const std::uint64_t handle = static_cast<descriptor::Heap*>(heap)->start;
+    const std::array<std::uint32_t, 4> words{static_cast<std::uint32_t>(address),
+                                             static_cast<std::uint32_t>(address >> 32),
+                                             static_cast<std::uint32_t>(kTitleBytes), 0};
+    descriptor::create_cbv(nullptr, words.data(), handle);
+    descriptor_host::HostHeap* host_heap = descriptor_host::for_heap(heap);
+    CHECK(host_heap != nullptr);
+    if (host_heap != nullptr) {
+        CHECK(host_heap->mirror(0, handle, true).has_value());
+        ID3D12Resource* first = host_heap->kept(0).Get();
+        CHECK(first != nullptr);
+        CHECK(shadow::live_loose(first));
+        const std::uint64_t evicted = shadow::loose_stats().evicted;
+        for (std::uint64_t i = 0; i <= shadow::kIdleSubmissions; ++i) shadow::submission_completed();
+        CHECK(!shadow::live_loose(first));
+        CHECK(shadow::loose_stats().evicted > evicted);
+        std::memset(memory, 2, kTitleBytes);
+        CHECK(host_heap->mirror(0, handle, true).has_value());
+        const auto window = shadow::find(address, kTitleBytes);
+        CHECK(window.has_value());
+        if (window) {
+            CHECK(host_heap->kept(0).Get() == (*window)->buffer());
+            CHECK(host_heap->kept(0).Get() != first);
+            CHECK((*window)->update(address, kTitleBytes) == kTitleBytes);
+            CHECK((*window)->data()[(*window)->offset(address)] == 2);
+        }
+    }
+    CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
+    CHECK(slot<std::uint32_t (*)(Object*)>(heap, 0x10)(heap) == 0);
+    ::VirtualFree(memory, 0, MEM_RELEASE);
+}
+
 TEST(d3d12_xs_host_shadow_copies_title_buffers) {
     if (test_host() == nullptr) return;
     std::vector<std::uint8_t> title(4096);

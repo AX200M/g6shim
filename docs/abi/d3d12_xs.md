@@ -343,6 +343,8 @@ Wait flag 2 makes a token when the wait times out. The token counts frames; tick
 | loose memory window | 4 MiB aligned, length rounded to the window |
 | shadow buffer rounding | 64 KiB, so views ending in the last 256 bytes fit |
 
+A loose window is evicted after `kIdleSubmissions` (512) completed submissions without a lookup, once no command list that has not been reset holds it. Each eviction raises a generation number. A host descriptor slot made on a loose window keeps the generation it was made in; when the generation has moved and its window is gone, the slot is made again on its next use, on the current window. The frame-rate log line counts the live loose windows, their bytes and the evictions since the previous line.
+
 | State | Meaning |
 |---|---|
 | watch 0 | not asked yet |
