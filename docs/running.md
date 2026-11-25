@@ -128,7 +128,17 @@ The xuid is 16 uppercase hex digits. Each version folder holds a `manifest` and 
 | `g6shim_saves\<container>\<blob>` | WinRT connected-storage saves. Files larger than 64 MiB are treated as damaged. |
 | `g6shim_persistent\` | Persistent local storage, made on the first request for it and mounted as its own drive on the highest letter of `D:`-`Z:` that neither the host nor another mount uses. The log names the letter. |
 | `g6shim_frame_<n>.bmp` | Captured frames. |
+| `bcpack-tables.bin` | Optional, next to `XCRDAPI.dll`: the BCPack constant tables (see [BCPack tables](#bcpack-tables)). |
 | `console_xg_x.dll` | Optional: a copy of the console's own `xg_x.dll` from your dump. When present, texture layouts come from it instead of g6shim's own code. |
+
+## BCPack tables
+
+BCPack-compressed textures can only be unpacked with the format's constant tables (entropy models, rank tables, control codes, dictionaries; 77,982 bytes). They are not g6shim's work and are not covered by its licence, so the repository does not contain them. Configure with `-DG6SHIM_FETCH_BCPACK_TABLES=ON` to download a pinned copy from the VIctory project (checked by SHA-256) into the build folder, next to `XCRDAPI.dll`; `g6shim_deploy` copies it into the game folder. The default build downloads nothing.
+
+```bat
+cmake --preset release -DG6SHIM_FETCH_BCPACK_TABLES=ON -DG6SHIM_GAME_DIR=D:\work\Game
+cmake --build --preset release --target g6shim_deploy
+```
 
 ## Notes
 

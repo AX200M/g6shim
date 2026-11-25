@@ -79,6 +79,8 @@ function(g6shim_add_hle_dir dir)
     foreach(t IN LISTS hle_targets)
       list(APPEND files $<TARGET_FILE:${t}>)
     endforeach()
+    get_property(extra GLOBAL PROPERTY G6SHIM_DEPLOY_FILES)
+    list(APPEND files ${extra})
     add_custom_target(g6shim_deploy
       COMMAND ${CMAKE_COMMAND} -E copy_if_different ${files} "${G6SHIM_GAME_DIR}"
       DEPENDS g6shim_runtime ${hle_targets}

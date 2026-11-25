@@ -15,6 +15,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 option(G6SHIM_BUILD_TOOLS "Build the command-line tools" ON)
 option(G6SHIM_BUILD_HLE "Build the replacement DLLs" ON)
 option(G6SHIM_BUILD_TESTS "Build the tests" ON)
+option(G6SHIM_FETCH_BCPACK_TABLES "Download the BCPack constant tables and place them next to XCRDAPI.dll" OFF)
 set(G6SHIM_HLE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/hle" CACHE PATH "Folder holding the replacement DLL projects")
 set(G6SHIM_GAME_DIR "" CACHE PATH "Game folder the g6shim_deploy target copies the replacement DLLs into")
 
@@ -26,6 +27,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 include(cmake/g6shim.cmake)
 include(cmake/opus.cmake)
+include(cmake/bcpack_tables.cmake)
 
 add_subdirectory(runtime)
 add_subdirectory(winrt EXCLUDE_FROM_ALL)
