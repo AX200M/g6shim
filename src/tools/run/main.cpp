@@ -18,6 +18,12 @@
 
 namespace {
 
+constexpr wchar_t kNoDebugHeap[] = L"_NO_DEBUG_HEAP";
+
+void keep_release_heap() {
+    if (GetEnvironmentVariableW(kNoDebugHeap, nullptr, 0) == 0) SetEnvironmentVariableW(kNoDebugHeap, L"1");
+}
+
 void usage() {
     std::fputs(
         "usage: g6shim-run <exe> [--timeout <seconds>] [-v] [--log <file>] [-- <game arguments>...]\n"
@@ -25,7 +31,9 @@ void usage() {
         "\n"
         "Starts the game in its own folder under a minimal debugger (or attaches to it)\n"
         "and prints its debug output, DLLs loaded from outside System32, exceptions and\n"
-        "the exit code.\n"
+        "the exit code. A started game gets the normal Windows heap, not the much slower\n"
+        "debug heap Windows gives programs started by a debugger; set _NO_DEBUG_HEAP=0\n"
+        "to keep the debug heap.\n"
         "\n"
         "options:\n"
         "  --timeout <s>  stop the game after this many seconds (default 30)\n"
@@ -391,6 +399,7 @@ int wmain(int argc, wchar_t** argv) {
 
         STARTUPINFOW si{};
         si.cb = sizeof si;
+        keep_release_heap();
         if (!CreateProcessW(exe.c_str(), cmdline.data(), nullptr, nullptr, FALSE, DEBUG_ONLY_THIS_PROCESS, nullptr,
                             dir.c_str(), &si, &pi)) {
             std::fprintf(stderr, "g6shim-run: cannot start %s (error %lu)\n", narrow(exe).c_str(), GetLastError());

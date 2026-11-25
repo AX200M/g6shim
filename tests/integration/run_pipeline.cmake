@@ -122,6 +122,7 @@ endif()
 expect("${out}" "debug: " "debug output captured")
 expect("${out}" "hello from g6shim" "g6shim log arrives through the debugger")
 expect("${out}" "exited with 0x00000000" "clean exit")
+expect("${out}" "process heap compatibility -> 2" "the started game keeps the low-fragmentation heap, not the debug heap")
 
 step("g6shim-run -p/-tid: attach to a suspended game, as for a registered package")
 run(out "${SPAWN}" "${WORK}/game/sample_game.exe" "${RUN}" --timeout 60 --log "${WORK}/attach.log")
