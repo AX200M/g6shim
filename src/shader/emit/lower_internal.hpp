@@ -207,6 +207,11 @@ private:
     V masked_descriptor_value(Value value, std::uint32_t mask);
     void defer_image_heap_read(const IrInst& inst, Site site, std::uint8_t code, const RootParam& root);
     V read_image_heap_word(const ImageHeapWord& word);
+    struct HeapRecords {
+        V handle;
+        V count;
+    };
+    HeapRecords heap_records(const UserData& binding);
     std::pair<V, V> read_heap_record(std::size_t c, V byte_address, const UserData& binding);
     void fill_masked_descriptor_phis();
     Val user_dword(std::uint32_t index);
@@ -284,6 +289,7 @@ private:
     std::optional<V> user_data_;
     std::map<std::uint32_t, V> user_data_rows_;
     std::map<std::uint32_t, V> user_data_words_;
+    std::unordered_map<V, HeapRecords, VHash> heap_records_;
     std::map<std::uint32_t, UserData> user_reads_;
     std::vector<std::array<std::uint32_t, 4>> samplers_;
     std::map<std::pair<Site, bool>, const Source*> descriptors_;

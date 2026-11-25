@@ -16,6 +16,9 @@
 #include <string_view>
 #include <vector>
 
+#include <d3d12.h>
+#include <wrl/client.h>
+
 namespace {
 
 using namespace g6shim::shader;
@@ -51,6 +54,7 @@ constexpr std::string_view kScalarImageAddress = "scalar_image_address";
 constexpr std::string_view kImageSampleBiasA16 = "image_sample_bias_a16";
 constexpr std::string_view kImageShapeOnly = "image_shape_only";
 constexpr std::string_view kImageHeapShape = "image_heap_shape";
+constexpr std::string_view kImageHeapShapeLoop = "image_heap_shape_loop";
 constexpr std::string_view kBufferHeapStride = "buffer_heap_stride";
 constexpr std::string_view kSamplerLodData = "sampler_lod_data";
 constexpr std::string_view kPackedInputPartner = "packed_input_partner";
@@ -177,6 +181,7 @@ TEST(shader_fixtures_translate_and_validate) {
             fixture.name == kImageSampleBiasA16 || fixture.name == kScalarBufferCountOnly ||
             fixture.name == kPackedInputPartner || fixture.name == kSelectReadLaneMask ||
             fixture.name == kImageShapeOnly || fixture.name == kImageHeapShape ||
+            fixture.name == kImageHeapShapeLoop ||
             fixture.name == kBufferHeapStride || fixture.name == kSamplerLodData ||
             fixture.name == kSpilledComputeRoot)
             continue;
@@ -505,6 +510,58 @@ TEST(shader_fixtures_translate_image_shape_at_a_computed_heap_index) {
         std::printf("fixture %s with an unused load did not translate: %s\n", unused.name, error.what());
         CHECK(false);
     }
+}
+
+TEST(shader_fixtures_heap_shape_read_in_a_loop_creates_a_pipeline_on_the_default_adapter) {
+    const Fixture* fixture = find_fixture(kImageHeapShapeLoop);
+    CHECK(fixture != nullptr);
+    if (fixture == nullptr) return;
+    constexpr std::uint8_t kHeapUserData = 4;
+    constexpr std::uint8_t kHeapSlot = 2;
+    constexpr std::uint8_t kOutputUserData = 6;
+    constexpr std::uint8_t kOutputSlot = 1;
+    constexpr std::uint32_t kHostUserDataDwords = 16;
+    std::vector<std::uint8_t> dxil;
+    std::uint32_t constants = kHostUserDataDwords;
+    try {
+        const auto lowered = lower_compute(fixture->words, kFixtureVgprs,
+            {root_param(RootType::Kind::Constants, kConstantsUserData, kConstantsSlot),
+             root_param(RootType::Kind::ResourceHeap, kHeapUserData, kHeapSlot),
+             root_param(RootType::Kind::Table, kOutputUserData, kOutputSlot)},
+            {used_uav(kOutputUserData, kOutputSlot)}, (kOutputUserData + 1u) << kUserSgprShift, {1, 1, 1});
+        check_dxil(lowered.dxil, fixture->name);
+        dxil = lowered.dxil;
+        for (const UserData& field : lowered.user_data) constants = std::max(constants, field.index + 1);
+    } catch (const std::exception& error) {
+        std::printf("fixture %s did not translate: %s\n", fixture->name, error.what());
+        CHECK(false);
+        return;
+    }
+    Microsoft::WRL::ComPtr<ID3D12Device> device;
+    if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&device)))) {
+        std::printf("skipped: no D3D12 device\n");
+        return;
+    }
+    D3D12_ROOT_PARAMETER parameter{};
+    parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    parameter.Constants.Num32BitValues = constants;
+    D3D12_ROOT_SIGNATURE_DESC root_desc{};
+    root_desc.NumParameters = 1;
+    root_desc.pParameters = &parameter;
+    root_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED |
+                      D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+    Microsoft::WRL::ComPtr<ID3DBlob> blob;
+    CHECK(SUCCEEDED(D3D12SerializeRootSignature(&root_desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, nullptr)));
+    if (!blob) return;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> root;
+    CHECK(SUCCEEDED(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(),
+                                                IID_PPV_ARGS(&root))));
+    if (!root) return;
+    D3D12_COMPUTE_PIPELINE_STATE_DESC pipeline_desc{};
+    pipeline_desc.pRootSignature = root.Get();
+    pipeline_desc.CS = {dxil.data(), dxil.size()};
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> pipeline;
+    CHECK(SUCCEEDED(device->CreateComputePipelineState(&pipeline_desc, IID_PPV_ARGS(&pipeline))));
 }
 
 TEST(shader_fixtures_translate_a_buffer_load_with_a_runtime_stride) {

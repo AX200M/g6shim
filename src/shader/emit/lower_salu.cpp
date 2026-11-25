@@ -769,8 +769,14 @@ void Lower::descriptor_data(const IrInst& inst, Site site) {
                                    : RootType::Kind::Other;
     const bool image_has_no_metadata_plane = image_fields != nullptr && !image_fields->r128 && !uav &&
                                              (root == RootType::Kind::Table || root == RootType::Kind::ResourceHeap);
+    const std::vector<Site>& waterfall_loads = x_->res->waterfall.loads;
+    const bool invariant = src.kind == Source::Kind::Loaded && tracked != scalar_.end() && !tracked->second.dynamic &&
+                           std::find(waterfall_loads.begin(), waterfall_loads.end(), src.load) == waterfall_loads.end();
+    const std::size_t resume = cur_;
+    if (invariant) cur_ = s_.entry;
     const V h = handle(site, src, false, props);
     const std::size_t c = cur_;
+    cur_ = resume;
     const Ty i32t = s_.t.i32;
     const Ty dims = s_.m.named_struct("dx.types.Dimensions", {i32t, i32t, i32t, i32t});
     const V mip = image && !uav ? s_.m.i32(0) : s_.m.undef(i32t);
@@ -968,18 +974,27 @@ V Lower::read_image_heap_word(const ImageHeapWord& word) {
     return s_.m.extract(c, *read.shape, word.channel);
 }
 
-std::pair<V, V> Lower::read_heap_record(std::size_t c, V byte_address, const UserData& binding) {
+Lower::HeapRecords Lower::heap_records(const UserData& binding) {
+    constexpr std::uint32_t kRecordShift = 4;
+    static_assert(ImageHeapData::kBytes == (1u << kRecordShift) && ImageHeapData::kBytes == BufferHeapData::kBytes);
     const V base = descriptor_address(binding).value;
-    const V h = s_.heap_handle(c, base, false, false, kRawBufferSrv);
+    if (const auto known = heap_records_.find(base); known != heap_records_.end()) return known->second;
+    const std::size_t entry = s_.entry;
+    const V h = s_.heap_handle(entry, base, false, false, kRawBufferSrv);
+    const Ty i32 = s_.t.i32;
+    const Ty dimensions = s_.m.named_struct("dx.types.Dimensions", {i32, i32, i32, i32});
+    const V dims = s_.op(entry, "getDimensions", Attr::ReadOnly, dimensions, 72, {h, s_.m.undef(i32)});
+    const V count = s_.m.bin(entry, Bin::LShr, s_.m.extract(entry, dims, 0), s_.m.i32(kRecordShift));
+    return heap_records_.emplace(base, HeapRecords{h, count}).first->second;
+}
+
+std::pair<V, V> Lower::read_heap_record(std::size_t c, V byte_address, const UserData& binding) {
+    const auto [h, count] = heap_records(binding);
     constexpr std::uint32_t kDescriptorShift = 5;
     constexpr std::uint32_t kRecordShift = 4;
     static_assert(kResourceDescriptorBytes == (1u << kDescriptorShift));
-    static_assert(ImageHeapData::kBytes == (1u << kRecordShift) && ImageHeapData::kBytes == BufferHeapData::kBytes);
     const V slot = s_.m.bin(c, Bin::LShr, byte_address, s_.m.i32(kDescriptorShift));
     const Ty i32 = s_.t.i32;
-    const Ty dimensions = s_.m.named_struct("dx.types.Dimensions", {i32, i32, i32, i32});
-    const V dims = s_.op(c, "getDimensions", Attr::ReadOnly, dimensions, 72, {h, s_.m.undef(i32)});
-    const V count = s_.m.bin(c, Bin::LShr, s_.m.extract(c, dims, 0), s_.m.i32(kRecordShift));
     const V in_range = s_.m.cmp(c, pred::kIult, slot, count);
     const V low_bits = s_.m.bin(c, Bin::And, byte_address, s_.m.i32(kResourceDescriptorBytes - 1));
     const V aligned = s_.m.cmp(c, pred::kEq, low_bits, s_.m.i32(0));
