@@ -11,11 +11,9 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
-#include <cstring>
 #include <fstream>
 #include <mutex>
 #include <string>
-#include <string_view>
 
 namespace g6shim::d3d12_xs::shader_cache {
 
@@ -30,8 +28,9 @@ constexpr std::array<std::uint8_t, 4> kMagic{'V', 'S', 'H', '1'};
 constexpr std::array<HwStage, 8> kStages{HwStage::Ls, HwStage::Hs, HwStage::Es, HwStage::Gs,
                                          HwStage::Vs, HwStage::Ps, HwStage::Ms, HwStage::Cs};
 constexpr std::size_t kMaxEntryBytes = 256u << 20;
-constexpr std::size_t kMaxManifestBytes = 1u << 20;
 constexpr std::size_t kMaxUserData = 256;
+constexpr std::size_t kMaxModuleChars = 0x8000;
+constexpr wchar_t kCacheFolder[] = L"g6shim_cache";
 
 std::atomic<std::uint64_t> g_hits{0};
 std::atomic<std::uint64_t> g_misses{0};
@@ -39,35 +38,30 @@ std::atomic<std::uint64_t> g_misses{0};
 std::once_flag g_root_once;
 std::optional<std::filesystem::path> g_root;
 
-std::wstring environment(const wchar_t* name) {
-    std::wstring value(32768, L'\0');
-    const DWORD length = ::GetEnvironmentVariableW(name, value.data(), static_cast<DWORD>(value.size()));
-    if (length == 0 || static_cast<std::size_t>(length) >= value.size()) return {};
-    value.resize(length);
-    return value;
+std::optional<std::wstring> executable_path() {
+    std::wstring path(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD length = ::GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+        if (length == 0) return std::nullopt;
+        if (length < path.size()) {
+            path.resize(length);
+            return path;
+        }
+        if (path.size() >= kMaxModuleChars) return std::nullopt;
+        path.resize(std::min(path.size() * 2, kMaxModuleChars));
+    }
 }
 
-std::string narrow(const std::wstring& text) {
-    if (text.empty()) return {};
-    const int length =
-        ::WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
-    if (length <= 0) return {};
-    std::string out(static_cast<std::size_t>(length), '\0');
-    ::WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), out.data(), length, nullptr,
-                          nullptr);
-    return out;
-}
-
-std::optional<std::string> read_file(const std::filesystem::path& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return std::nullopt;
-    in.seekg(0, std::ios::end);
-    const std::streamoff size = in.tellg();
-    if (size < 0 || static_cast<std::uint64_t>(size) > kMaxEntryBytes) return std::nullopt;
-    in.seekg(0, std::ios::beg);
-    std::string bytes(static_cast<std::size_t>(size), '\0');
-    if (size > 0 && !in.read(bytes.data(), size)) return std::nullopt;
-    return bytes;
+std::optional<std::filesystem::path> default_root() {
+    const std::optional<std::wstring> configured = settings::get_wide("G6SHIM_CACHE_DIR");
+    if (configured) return cache_root(std::filesystem::path(), std::filesystem::path(*configured));
+    const std::optional<std::wstring> module = executable_path();
+    if (!module) {
+        G6SHIM_WARN("d3d12_xs: cannot read the executable path and no G6SHIM_CACHE_DIR; translated shaders and "
+                    "host pipelines are not kept");
+        return std::nullopt;
+    }
+    return cache_root(std::filesystem::path(*module), std::nullopt);
 }
 
 bool write_atomically(const std::filesystem::path& path, std::span<const std::uint8_t> bytes) {
@@ -88,6 +82,18 @@ bool write_atomically(const std::filesystem::path& path, std::span<const std::ui
     return true;
 }
 
+std::optional<std::string> read_file(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return std::nullopt;
+    in.seekg(0, std::ios::end);
+    const std::streamoff size = in.tellg();
+    if (size < 0 || static_cast<std::uint64_t>(size) > kMaxEntryBytes) return std::nullopt;
+    in.seekg(0, std::ios::beg);
+    std::string bytes(static_cast<std::size_t>(size), '\0');
+    if (size > 0 && !in.read(bytes.data(), size)) return std::nullopt;
+    return bytes;
+}
+
 std::string hex_digest(const std::array<std::uint8_t, 16>& digest) {
     constexpr char kDigits[] = "0123456789abcdef";
     std::string out;
@@ -97,77 +103,6 @@ std::string hex_digest(const std::array<std::uint8_t, 16>& digest) {
         out.push_back(kDigits[byte & 0x0F]);
     }
     return out;
-}
-
-bool hex_title_id(const std::string& text) {
-    if (text.size() != 8) return false;
-    return std::all_of(text.begin(), text.end(), [](char c) {
-        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
-    });
-}
-
-std::optional<std::string> manifest_title_id(std::string_view text) {
-    constexpr std::string_view kAttribute = "TitleId=\"";
-    constexpr std::string_view kElement = "<TitleId>";
-    std::string found;
-    if (const std::size_t at = text.find(kAttribute); at != std::string_view::npos) {
-        const std::size_t begin = at + kAttribute.size();
-        const std::size_t quote = text.find('"', begin);
-        if (quote != std::string_view::npos && quote - begin == 8)
-            found = std::string(text.substr(begin, 8));
-    }
-    if (found.empty()) {
-        if (const std::size_t at = text.find(kElement); at != std::string_view::npos) {
-            const std::size_t begin = at + kElement.size();
-            const std::size_t close = text.find('<', begin);
-            if (close != std::string_view::npos && close - begin == 8)
-                found = std::string(text.substr(begin, 8));
-        }
-    }
-    if (!hex_title_id(found)) return std::nullopt;
-    for (char& c : found)
-        if (c >= 'A' && c <= 'F') c = static_cast<char>(c - 'A' + 'a');
-    return found;
-}
-
-std::string title_id() {
-    wchar_t module[MAX_PATH] = {};
-    const DWORD length = ::GetModuleFileNameW(nullptr, module, MAX_PATH);
-    if (length == 0 || length >= MAX_PATH) return {};
-    std::filesystem::path folder(module);
-    folder = folder.parent_path();
-    constexpr const wchar_t* kManifests[] = {L"MicrosoftGame.config", L"AppxManifest.console.xml",
-                                             L"AppxManifest.xml"};
-    for (const wchar_t* name : kManifests) {
-        const auto text = read_file(folder / name);
-        if (!text) continue;
-        if (const auto id = manifest_title_id(std::string_view(*text).substr(0, kMaxManifestBytes))) return *id;
-    }
-    return {};
-}
-
-std::string executable_name() {
-    wchar_t module[MAX_PATH] = {};
-    const DWORD length = ::GetModuleFileNameW(nullptr, module, MAX_PATH);
-    if (length == 0 || length >= MAX_PATH) return {};
-    std::string name = narrow(std::filesystem::path(module).stem().wstring());
-    if (name.empty()) return {};
-    return name;
-}
-
-std::optional<std::filesystem::path> default_root() {
-    if (const std::optional<std::wstring> override = settings::get_wide("G6SHIM_CACHE_DIR"))
-        return std::filesystem::path(*override);
-    const std::wstring local = environment(L"LOCALAPPDATA");
-    if (local.empty()) {
-        G6SHIM_WARN("d3d12_xs: no LOCALAPPDATA and no G6SHIM_CACHE_DIR; translated shaders and host pipelines "
-                    "are not kept");
-        return std::nullopt;
-    }
-    std::string folder = title_id();
-    if (folder.empty()) folder = executable_name();
-    if (folder.empty()) folder = "default";
-    return std::filesystem::path(local) / L"g6shim" / L"cache" / folder;
 }
 
 struct Reader {
@@ -238,6 +173,13 @@ void log_damaged(const std::filesystem::path& path) {
 }
 
 }  // namespace
+
+std::optional<std::filesystem::path> cache_root(const std::filesystem::path& executable,
+                                                const std::optional<std::filesystem::path>& override_dir) {
+    if (override_dir) return *override_dir;
+    if (executable.empty()) return std::nullopt;
+    return executable.parent_path() / kCacheFolder;
+}
 
 std::optional<Cache> Cache::open(const std::filesystem::path& dir) {
     if (dir.empty()) return std::nullopt;

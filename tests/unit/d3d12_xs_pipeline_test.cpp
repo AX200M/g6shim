@@ -337,6 +337,29 @@ TEST(d3d12_xs_pipeline_shader_entries_round_trip_and_reject_damage) {
     CHECK(!shader_cache::decode_entry(wrong).has_value());
 }
 
+TEST(d3d12_xs_shader_cache_root_prefers_the_override_folder) {
+    const std::filesystem::path executable(L"C:\\work\\Game\\Game.exe");
+    const std::filesystem::path configured(L"D:\\caches\\g6shim");
+    const std::optional<std::filesystem::path> beside = shader_cache::cache_root(executable, configured);
+    CHECK(beside.has_value());
+    if (beside) CHECK(*beside == configured);
+    const std::optional<std::filesystem::path> without_executable =
+        shader_cache::cache_root(std::filesystem::path(), configured);
+    CHECK(without_executable.has_value());
+    if (without_executable) CHECK(*without_executable == configured);
+}
+
+TEST(d3d12_xs_shader_cache_root_sits_beside_the_executable) {
+    const std::filesystem::path executable(L"C:\\work\\Game\\Game.exe");
+    const std::optional<std::filesystem::path> root = shader_cache::cache_root(executable, std::nullopt);
+    CHECK(root.has_value());
+    if (root) CHECK(*root == std::filesystem::path(L"C:\\work\\Game") / L"g6shim_cache");
+}
+
+TEST(d3d12_xs_shader_cache_root_needs_an_executable_path) {
+    CHECK(!shader_cache::cache_root(std::filesystem::path(), std::nullopt).has_value());
+}
+
 TEST(d3d12_xs_pipeline_translations_come_back_from_the_cache) {
     const std::filesystem::path dir = std::filesystem::temp_directory_path() / "g6shim_shader_cache_test";
     std::error_code ignored;

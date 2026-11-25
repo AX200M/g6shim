@@ -32,6 +32,8 @@ private:
     std::filesystem::path dir_;
 };
 
+std::optional<std::filesystem::path> cache_root(const std::filesystem::path& executable,
+                                                const std::optional<std::filesystem::path>& override_dir);
 std::optional<std::filesystem::path> root_directory();
 void use_directory(const std::filesystem::path& dir);
 

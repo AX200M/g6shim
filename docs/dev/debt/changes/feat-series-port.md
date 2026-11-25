@@ -247,7 +247,7 @@
   Closes when: a title needs the console's rectangle or quad rasterisation.
 - `CreateComputePipelineStateX` accepts its console extension count and extensions but uses only the plain compute description.
   Closes when: a title's compute pipeline depends on the console's shader settings.
-- Translated shaders and host pipelines are cached by content hash under `%LOCALAPPDATA%\g6shim\cache` (or `G6SHIM_CACHE_DIR`); the hashes are MD5, and a changed module file invalidates every entry.
+- Translated shaders and host pipelines are cached by content hash under `g6shim_cache` in the folder of the executable (or `G6SHIM_CACHE_DIR`); the hashes are MD5, and a changed module file invalidates every entry.
   Closes when: a shared content hash is available.
 - The pipeline library and the early-pipeline list are written when the workers run dry (at most every 20 s) or on an explicit save, so a run that ends while pipelines are still being made can lose that last batch.
   Closes when: every run saves at shutdown.
