@@ -53,6 +53,7 @@ struct Shader {
     std::vector<SigElement> outputs;
     std::vector<SigElement> prims;
     std::optional<Mesh> mesh;
+    std::optional<Geometry> geometry;
     std::uint32_t user_data = 0;
     std::uint32_t samplers = 0;
     std::uint64_t cmp_samplers = 0;

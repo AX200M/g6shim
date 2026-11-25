@@ -28,6 +28,17 @@ namespace {
 
 constexpr float kTwoPi = 6.283185307179586476925286766559f;
 constexpr std::uint16_t kGsAllocReq = 9;
+constexpr std::uint32_t kGeometryMaxVertices = 1024;
+constexpr std::uint32_t kGeometryScalarProduct = 1024;
+constexpr std::uint32_t kTrianglePrimitive = 3;
+constexpr std::uint32_t kTriangleStrip = 5;
+constexpr std::uint8_t kMsgGs = 2;
+constexpr std::uint8_t kMsgGsDone = 3;
+constexpr std::uint8_t kGsOpCut = 1;
+constexpr std::uint8_t kGsOpEmit = 2;
+constexpr std::uint8_t kGsOpEmitCut = 3;
+constexpr std::uint32_t kEmitStream = 97;
+constexpr std::uint32_t kCutStream = 98;
 
 constexpr Numeric kNorm[] = {Numeric::Unorm, Numeric::Snorm, Numeric::Uscaled,
                              Numeric::Sscaled, Numeric::Uint, Numeric::Sint};
@@ -282,8 +293,18 @@ Lower::Lower(const Parts& parts, const std::unordered_map<Value, Why, ValueHash>
     rpo_.assign(p.blocks.size(), std::numeric_limits<std::size_t>::max());
     tail_.assign(p.blocks.size(), std::nullopt);
     half_outputs_ = half_outputs(parts.native->io, parts.outputs);
+    if (parts.native->stage == HwStage::Gs) {
+        Geometry geometry;
+        geometry.input_primitive = kTrianglePrimitive;
+        geometry.max_vertices = kGeometryMaxVertices;
+        geometry.stream_mask = 1;
+        geometry.output_topology = kTriangleStrip;
+        geometry.instances = 1;
+        s_.geometry = geometry;
+    }
     if (parts.native->stage == HwStage::Cs) mask_data_ = MaskData::Console;
-    else if (parts.native->stage == HwStage::Ps || parts.native->stage == HwStage::Vs)
+    else if (parts.native->stage == HwStage::Ps || parts.native->stage == HwStage::Vs ||
+             parts.native->stage == HwStage::Gs)
         mask_data_ = MaskData::Host;
     else
         mask_data_ = MaskData::None;
@@ -634,6 +655,14 @@ Lowered Lower::run() {
     }
     fill_phis();
     s_.samplers = static_cast<std::uint32_t>(samplers_.size());
+    if (s_.geometry) {
+        std::uint32_t scalars = 1;
+        for (const SigElement& element : s_.outputs) {
+            if (!element.row) continue;
+            scalars = std::max(scalars, *element.row * 4 + static_cast<std::uint32_t>(element.col + element.cols));
+        }
+        s_.geometry->max_vertices = std::min(s_.geometry->max_vertices, kGeometryScalarProduct / scalars);
+    }
     Lowered out;
     out.dxil = s_.finish();
     out.cmp_samplers = s_.cmp_samplers;
@@ -780,7 +809,7 @@ Val Lower::load_input(std::size_t id, std::uint8_t col) {
     return load_any_input(id, col);
 }
 
-Val Lower::load_any_input(std::size_t id, std::uint8_t col) {
+Val Lower::load_any_input(std::size_t id, std::uint8_t col, std::optional<std::uint32_t> vertex) {
     SigElement& e = s_.inputs[id];
     e.usage = static_cast<std::uint8_t>(e.usage | (1u << col));
     const bool is_int = e.comp != 9;
@@ -792,12 +821,108 @@ Val Lower::load_any_input(std::size_t id, std::uint8_t col) {
     if (bit) suffix = ".i1";
     else if (!is_int) suffix = ".f32";
     const std::size_t entry = s_.entry;
-    const std::vector<V> args = {s_.m.i32(static_cast<std::uint32_t>(id)), s_.m.i32(0),
-                                 s_.m.i8(col), s_.m.undef(s_.t.i32)};
+    const V axis = vertex ? s_.m.i32(*vertex) : s_.m.undef(s_.t.i32);
+    const std::vector<V> args = {s_.m.i32(static_cast<std::uint32_t>(id)), s_.m.i32(0), s_.m.i8(col), axis};
     const V v = s_.op(entry, "loadInput" + suffix, Attr::ReadNone, ty, 4, args);
     if (bit) return Val::i32(s_.m.cast(entry, Cast::ZExt, v, s_.t.i32));
     if (is_int) return Val::i32(v);
     return Val::i32(s_.m.cast(entry, Cast::Bitcast, v, s_.t.i32));
+}
+
+std::optional<std::pair<std::size_t, std::uint8_t>> Lower::geometry_slot(std::vector<SigElement>& elements,
+                                                                         std::uint32_t dword, bool input) {
+    if (dword > 255) return std::nullopt;
+    const std::uint8_t row = static_cast<std::uint8_t>(dword / 4);
+    const std::uint8_t col = static_cast<std::uint8_t>(dword % 4);
+    for (std::size_t id = 0; id < elements.size(); ++id) {
+        const SigElement& element = elements[id];
+        if (!element.row || *element.row != row) continue;
+        if (col >= element.col && col < element.col + element.cols)
+            return std::pair<std::size_t, std::uint8_t>{id, static_cast<std::uint8_t>(col - element.col)};
+    }
+    if (!elements.empty()) return std::nullopt;
+    SigElement element;
+    element.row = row;
+    element.col = 0;
+    element.cols = 4;
+    element.comp = 9;
+    element.usage = 0;
+    element.half = false;
+    element.interp = row == 0 ? 4 : 2;
+    if (row == 0) {
+        element.name = "SV_Position";
+        element.kind = 3;
+        element.index = 0;
+    } else {
+        element.name = "TEXCOORD";
+        element.kind = 0;
+        element.index = static_cast<std::uint32_t>(row - 1);
+    }
+    if (!input && element.kind == 0) element.interp = 2;
+    elements.push_back(std::move(element));
+    return std::pair<std::size_t, std::uint8_t>{elements.size() - 1, col};
+}
+
+void Lower::geometry_ring(const IrInst& inst, std::size_t b, std::size_t i) {
+    const Site site{b, i};
+    bool matched = false;
+    const std::optional<V> guard_value = guard(b, i);
+    for (const RingLoad& load : x_->io->ring_loads) {
+        if (load.site != site) continue;
+        matched = true;
+        const std::optional<std::pair<std::size_t, std::uint8_t>> slot =
+            geometry_slot(s_.inputs, load.dword, true);
+        if (!slot) fail("a geometry input the signature lacks");
+        const Val value = load_any_input(slot->first, slot->second, load.vertex);
+        if (value.kind != Val::Kind::I32) fail(value.why);
+        write(inst, Reg::v(load.vgpr), value.value, guard_value);
+    }
+    const auto at = begin_guarded(guard_value);
+    for (const RingStore& store : x_->io->ring_stores) {
+        if (store.site != site) continue;
+        matched = true;
+        const std::optional<std::pair<std::size_t, std::uint8_t>> slot =
+            geometry_slot(s_.outputs, store.dword, false);
+        if (!slot) fail("a geometry output the signature lacks");
+        const std::optional<Value> source = inst.read(Reg::v(store.vgpr));
+        if (!source) fail("an unread geometry output");
+        SigElement& element = s_.outputs[slot->first];
+        element.usage = static_cast<std::uint8_t>(element.usage | (1u << slot->second));
+        V argument = i32_of(*source);
+        std::string suffix = ".i32";
+        if (element.comp == 9) {
+            suffix = ".f32";
+            const auto found = floats_.find(*source);
+            argument = found != floats_.end() ? found->second : as_float(argument);
+        }
+        const std::vector<V> args = {s_.m.i32(static_cast<std::uint32_t>(slot->first)), s_.m.i32(0),
+                                     s_.m.i8(slot->second), argument};
+        s_.op(cur_, "storeOutput" + suffix, Attr::NoUnwind, s_.t.void_type, 5, args);
+    }
+    end_guarded(at, {});
+    if (!matched) fail("an LDS operation in a geometry shader");
+}
+
+void Lower::geometry_message(const IrInst& inst, std::size_t b, std::size_t i) {
+    if (x_->native->stage != HwStage::Gs) return;
+    const auto* fields = std::get_if<SoppFields>(&inst.fields);
+    if (fields == nullptr) std::abort();
+    const std::uint16_t msg = fields->imm & 0xF;
+    const std::uint16_t op = (fields->imm >> 4) & 7;
+    const std::uint16_t stream = (fields->imm >> 8) & 3;
+    if (msg == kMsgGsDone && op == 0) return;
+    if (msg != kMsgGs) fail("a geometry message");
+    if (stream != 0) fail("a geometry stream other than zero");
+    if (op == 0) return;
+    if (op != kGsOpCut && op != kGsOpEmit && op != kGsOpEmitCut) fail("a geometry message");
+    const std::optional<V> guard_value = guard(b, i);
+    const auto at = begin_guarded(guard_value);
+    const V id = s_.m.i8(static_cast<std::uint8_t>(stream));
+    if (op == kGsOpEmit || op == kGsOpEmitCut)
+        s_.op(cur_, "emitStream", Attr::NoUnwind, s_.t.void_type, kEmitStream, {id});
+    if (op == kGsOpCut || op == kGsOpEmitCut)
+        s_.op(cur_, "cutStream", Attr::NoUnwind, s_.t.void_type, kCutStream, {id});
+    end_guarded(at, {});
 }
 
 Val Lower::get(Value v) {
@@ -1189,6 +1314,7 @@ V Lower::atom(const Atom& atom_value, std::size_t at) {
         case Atom::Kind::Quad:
             return s_.m.boolean(true);
         case Atom::Kind::Opaque: {
+            if (x_->native->stage == HwStage::Gs) return s_.m.boolean(true);
             if (!console_lanes_) fail("an opaque lane mask");
             std::optional<Val> hi;
             if (const std::optional<Value> high = pair_high(atom_value.value)) hi = get(*high);
@@ -1203,6 +1329,7 @@ V Lower::atom(const Atom& atom_value, std::size_t at) {
             return lane_bit(at, low_word, high_word);
         }
         case Atom::Kind::Constant: {
+            if (x_->native->stage == HwStage::Gs) return s_.m.boolean(true);
             if (!console_lanes_) fail("a constant lane mask");
             const V lo = s_.m.i32(static_cast<std::uint32_t>(atom_value.constant));
             const V hi = s_.m.i32(static_cast<std::uint32_t>(atom_value.constant >> 32));
@@ -1279,6 +1406,13 @@ std::optional<Value> Lower::pair_high(Value lo) const {
 std::optional<V> Lower::guard(std::size_t b, std::size_t i) {
     const std::optional<Bool>& entry = x_->st->guards[b][i];
     if (!entry) return std::nullopt;
+    if (x_->native->stage == HwStage::Gs) {
+        try {
+            return boolean(*entry, cur_);
+        } catch (const WhyError&) {
+            return std::nullopt;
+        }
+    }
     return boolean(*entry, cur_);
 }
 
@@ -1549,13 +1683,17 @@ void Lower::inst(std::size_t b, std::size_t i) {
         (holds_flat && !name.starts_with("global_load_")) ||
         name.find("store") != std::string_view::npos ||
         name.find("atomic") != std::string_view::npos || name == "s_barrier" ||
+        (name == "s_sendmsg" && x_->native->stage == HwStage::Gs) ||
+        (holds_ds && x_->native->stage == HwStage::Gs) ||
         (holds_ds && !(name.starts_with("ds_read") || name.starts_with("ds_swizzle") ||
                        name.find("permute") != std::string_view::npos));
     try {
         if (std::holds_alternative<SopFields>(inst_value.fields)) {
             sop(inst_value);
         } else if (std::holds_alternative<SoppFields>(inst_value.fields)) {
-            if (name == "s_barrier") {
+            if (name == "s_sendmsg" || name == "s_sendmsghalt") {
+                geometry_message(inst_value, b, i);
+            } else if (name == "s_barrier") {
                 if (no_barrier_.contains(b)) return;
                 const std::uint32_t mode = writes_uavs_ ? (1u | 2u | 8u) : (1u | 8u);
                 const V k = s_.m.i32(mode);

@@ -67,6 +67,20 @@ One bit of `SPI_PS_INPUT_ADDR` per entry, in this order; each enabled entry take
 User data dword `i` arrives in SGPR `i` in the vertex, pixel and compute stages, and in SGPR `i + 8` in the merged stages.
 A table or heap parameter holds the 32-bit heap address in its first dword, with the high half set to 0; a root descriptor holds a 64-bit buffer address in its first two.
 
+## Geometry stage
+
+A geometry program is a merged export/geometry stage on local-data-share rings, not a primitive shader. It is wave64. It does not use `exp`.
+
+On entry only `v0` and `v1` are live. They hold packed 16-bit input-vertex offsets, unpacked with word selects (`WORD_0` of `v0`, `WORD_1` of `v0`, `WORD_0` of `v1` are vertices 0, 1 and 2). `v2`-`v4` are not live.
+
+Export-shader outputs are read from local data share at those vertex offsets (`ds_read2_b32` and `ds_read_b32`). Each signature register is 4 dwords, so register `n` starts 16 bytes after the vertex base. The input primitive is a triangle.
+
+Emitted vertices are written with `ds_write*` into the geometry-to-vertex area. The instruction offset selects the output register; the vector address is a per-lane base and is not part of the slot. Output is a triangle strip on stream 0.
+
+`s_sendmsg` `MSG_GS` with `GS_OP_EMIT` emits the vertex, `GS_OP_CUT` ends the strip, and `GS_OP_EMIT_CUT` does both. The program finishes with `MSG_GS_DONE` and `GS_OP_NOP`.
+
+The paired vertex container holds an export-shader payload and a legacy vertex payload. A geometry-bound pipeline is taken to run the export-shader payload on the console. The host runs the legacy vertex payload; its exports are the geometry shader's inputs.
+
 ## DXIL bitcode blocks
 
 Unabbreviated records only; each block's abbreviation width is fixed.

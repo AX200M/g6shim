@@ -34,6 +34,10 @@ std::uint32_t width_of(std::string_view name) {
 }  // namespace
 
 void Lower::ds(const IrInst& inst, std::size_t b, std::size_t i) {
+    if (x_->native->stage == HwStage::Gs) {
+        geometry_ring(inst, b, i);
+        return;
+    }
     const auto* fields = std::get_if<DsFields>(&inst.fields);
     if (fields == nullptr) std::abort();
     if (fields->gds) fail("GDS");

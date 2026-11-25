@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+
 #include <optional>
 #include <string_view>
 #include <unordered_map>
@@ -144,6 +145,214 @@ private:
 const std::vector<VsOutput>& no_params() {
     static const std::vector<VsOutput> empty;
     return empty;
+}
+
+constexpr std::uint8_t kWord0 = 4;
+constexpr std::uint8_t kWord1 = 5;
+constexpr std::uint8_t kDwordSelect = 6;
+constexpr std::uint32_t kMaxRingDwords = 128;
+
+struct Disp {
+    std::optional<std::uint8_t> vertex;
+    std::int32_t bytes = 0;
+    bool known = false;
+};
+
+std::optional<std::int32_t> immediate(const Operand& op) {
+    if (const auto* constant = std::get_if<ConstantOperand>(&op)) {
+        const std::optional<std::uint32_t> value = inline_constant(constant->code);
+        if (!value) return std::nullopt;
+        return static_cast<std::int32_t>(*value);
+    }
+    if (const auto* literal = std::get_if<LiteralOperand>(&op))
+        return static_cast<std::int32_t>(literal->value);
+    return std::nullopt;
+}
+
+std::optional<Value> vector_value(const Inst& inst, const Operand& op) {
+    const auto* vector = std::get_if<VectorOperand>(&op);
+    if (vector == nullptr) return std::nullopt;
+    return inst.read(Reg::v(vector->reg));
+}
+
+void raise_rings(const Program& program, const std::unordered_map<Value, Site, ValueHash>& defs, Io& io) {
+    std::unordered_map<Value, std::uint8_t, ValueHash> packs;
+    for (const auto& entry : program.inputs) {
+        if (entry.first == Reg::v(0)) packs.emplace(entry.second, std::uint8_t{0});
+        if (entry.first == Reg::v(1)) packs.emplace(entry.second, std::uint8_t{1});
+    }
+    std::unordered_map<Value, std::uint8_t, ValueHash> bases;
+    const auto at = [&](Site site) -> const Inst& { return program.blocks[site.block].insts[site.index]; };
+    for (const Block& block : program.blocks) {
+        for (const Inst& inst : block.insts) {
+            const auto* valu = std::get_if<Valu>(&inst.fields);
+            if (valu == nullptr || !valu->dst || valu->src.empty()) continue;
+            const auto* dst = std::get_if<VectorOperand>(&*valu->dst);
+            if (dst == nullptr) continue;
+            const std::optional<Value> written = inst.write(Reg::v(dst->reg));
+            if (!written) continue;
+            if (valu->sdwa && valu->sdwa->dst_sel == kDwordSelect && !valu->sdwa->src_sel.empty()) {
+                const std::optional<Value> src = vector_value(inst, valu->src[0]);
+                const std::uint8_t sel = valu->sdwa->src_sel[0];
+                if (src && (sel == kWord0 || sel == kWord1)) {
+                    const auto pack = packs.find(*src);
+                    if (pack != packs.end())
+                        bases.emplace(*written, static_cast<std::uint8_t>(pack->second * 2 + (sel == kWord1 ? 1 : 0)));
+                }
+            }
+            if (inst.name() == "v_and_b32" && valu->src.size() > 1) {
+                const std::optional<Value> src = vector_value(inst, valu->src[0]);
+                const std::optional<std::int32_t> mask = immediate(valu->src[1]);
+                if (src && mask && *mask == static_cast<std::int32_t>(0xFFFF)) {
+                    const auto pack = packs.find(*src);
+                    if (pack != packs.end()) bases.emplace(*written, static_cast<std::uint8_t>(pack->second * 2));
+                }
+            }
+            if (inst.name() == "v_lshrrev_b32" && valu->src.size() > 1) {
+                const std::optional<std::int32_t> shift = immediate(valu->src[0]);
+                const std::optional<Value> src = vector_value(inst, valu->src[1]);
+                if (shift && *shift == 16 && src) {
+                    const auto pack = packs.find(*src);
+                    if (pack != packs.end())
+                        bases.emplace(*written, static_cast<std::uint8_t>(pack->second * 2 + 1));
+                }
+            }
+        }
+    }
+    const std::function<Disp(Value, int)> displacement = [&](Value value, int depth) -> Disp {
+        if (depth > 8) return {};
+        const auto base = bases.find(value);
+        if (base != bases.end()) return Disp{base->second, 0, true};
+        const auto def = defs.find(value);
+        if (def == defs.end()) return {};
+        const Inst& inst = at(def->second);
+        const auto* valu = std::get_if<Valu>(&inst.fields);
+        if (valu == nullptr) return Disp{std::nullopt, 0, true};
+        const std::string_view name = inst.name();
+        if (name == "v_mov_b32" && !valu->sdwa && valu->src.size() == 1) {
+            const std::optional<Value> src = vector_value(inst, valu->src[0]);
+            if (!src) return Disp{std::nullopt, 0, true};
+            return displacement(*src, depth + 1);
+        }
+        if (name == "v_add_u32" || name == "v_add_co_u32" || name == "v_add_nc_u32" || name == "v_add_i32") {
+            if (valu->src.size() < 2) return {};
+            const std::optional<Value> left = vector_value(inst, valu->src[0]);
+            const std::optional<Value> right = vector_value(inst, valu->src[1]);
+            const std::optional<std::int32_t> left_imm = immediate(valu->src[0]);
+            const std::optional<std::int32_t> right_imm = immediate(valu->src[1]);
+            if (left && right_imm) {
+                Disp d = displacement(*left, depth + 1);
+                if (d.known) d.bytes += *right_imm;
+                return d;
+            }
+            if (right && left_imm) {
+                Disp d = displacement(*right, depth + 1);
+                if (d.known) d.bytes += *left_imm;
+                return d;
+            }
+            if (left) return displacement(*left, depth + 1);
+            if (right) return displacement(*right, depth + 1);
+            return Disp{std::nullopt, 0, true};
+        }
+        if (name == "v_lshlrev_b32" && valu->src.size() > 1) {
+            const std::optional<std::int32_t> shift = immediate(valu->src[0]);
+            const std::optional<Value> src = vector_value(inst, valu->src[1]);
+            if (shift && *shift == 2 && src) {
+                Disp d = displacement(*src, depth + 1);
+                if (d.known) d.bytes <<= 2;
+                return d;
+            }
+        }
+        return Disp{std::nullopt, 0, true};
+    };
+    struct Piece {
+        std::uint32_t byte = 0;
+        std::uint32_t dwords = 0;
+    };
+    const auto pieces = [](const Inst& inst) {
+        std::vector<Piece> out;
+        const auto* fields = std::get_if<DsFields>(&inst.fields);
+        if (fields == nullptr) return out;
+        const std::string_view name = inst.name();
+        const bool pair = name.starts_with("ds_read2") || name.starts_with("ds_write2");
+        std::uint32_t width = 1;
+        if (name.ends_with("b64")) width = 2;
+        else if (name.ends_with("b96")) width = 3;
+        else if (name.ends_with("b128")) width = 4;
+        else if (!name.ends_with("b32")) return out;
+        if (pair) {
+            std::uint32_t scale = 4 * width;
+            if (name.find("st64") != std::string_view::npos) scale *= 64;
+            out.push_back({static_cast<std::uint32_t>(fields->offset0) * scale, width});
+            out.push_back({static_cast<std::uint32_t>(fields->offset1) * scale, width});
+        } else {
+            const std::uint32_t offset = static_cast<std::uint32_t>(fields->offset0) |
+                                         static_cast<std::uint32_t>(fields->offset1) << 8;
+            out.push_back({offset, width});
+        }
+        return out;
+    };
+    for (std::size_t b = 0; b < program.blocks.size(); ++b) {
+        const Block& block = program.blocks[b];
+        for (std::size_t i = 0; i < block.insts.size(); ++i) {
+            const Inst& inst = block.insts[i];
+            const Site site{b, i};
+            if (std::holds_alternative<ExpFields>(inst.fields))
+                detail::fail_unsupported(inst.machine.offset, "an export in a geometry shader");
+            if (!std::holds_alternative<DsFields>(inst.fields)) continue;
+            const auto* fields = std::get_if<DsFields>(&inst.fields);
+            if (fields->gds) detail::fail_unsupported(inst.machine.offset, "GDS");
+            const std::string_view name = inst.name();
+            const bool read = name.starts_with("ds_read");
+            const bool write = name.starts_with("ds_write");
+            if (!read && !write)
+                detail::fail_unsupported(inst.machine.offset, "an LDS operation in a geometry shader");
+            const std::vector<Piece> listed = pieces(inst);
+            if (listed.empty() || !fields->addr)
+                detail::fail_unsupported(inst.machine.offset, "an LDS operation in a geometry shader");
+            const std::optional<Value> addr = vector_value(inst, *fields->addr);
+            if (!addr) detail::fail_unsupported(inst.machine.offset, "a geometry ring address");
+            const Disp disp = displacement(*addr, 0);
+            if (!disp.known) detail::fail_unsupported(inst.machine.offset, "a geometry ring address");
+            if (read && !disp.vertex) detail::fail_unsupported(inst.machine.offset, "a geometry ring read");
+            std::uint8_t cursor = 0;
+            if (read) {
+                if (!fields->dst) detail::fail_unsupported(inst.machine.offset, "a geometry ring read");
+                const auto* dst = std::get_if<VectorOperand>(&*fields->dst);
+                if (dst == nullptr) detail::fail_unsupported(inst.machine.offset, "a geometry ring read");
+                cursor = dst->reg;
+            }
+            for (std::size_t piece = 0; piece < listed.size(); ++piece) {
+                for (std::uint32_t k = 0; k < listed[piece].dwords; ++k) {
+                    const std::int64_t byte = static_cast<std::int64_t>(disp.bytes) + listed[piece].byte + 4 * k;
+                    if (byte < 0 || (byte % 4) != 0)
+                        detail::fail_unsupported(inst.machine.offset, "a geometry ring address");
+                    const std::uint32_t dword = static_cast<std::uint32_t>(byte / 4);
+                    if (dword >= kMaxRingDwords)
+                        detail::fail_unsupported(inst.machine.offset, "a geometry ring slot");
+                    if (read) {
+                        RingLoad load;
+                        load.site = site;
+                        load.vgpr = cursor++;
+                        load.vertex = *disp.vertex;
+                        load.dword = dword;
+                        io.ring_loads.push_back(load);
+                    } else {
+                        if (piece >= fields->data.size())
+                            detail::fail_unsupported(inst.machine.offset, "a geometry ring address");
+                        const auto* data = std::get_if<VectorOperand>(&fields->data[piece]);
+                        if (data == nullptr)
+                            detail::fail_unsupported(inst.machine.offset, "a geometry ring address");
+                        RingStore store;
+                        store.site = site;
+                        store.vgpr = static_cast<std::uint8_t>(data->reg + k);
+                        store.dword = dword;
+                        io.ring_stores.push_back(store);
+                    }
+                }
+            }
+        }
+    }
 }
 
 }  // namespace
@@ -316,6 +525,8 @@ Io raise(const Program& program, const NativeProgram& native) {
         loaded.emplace_back(Reg::v(5), Input::simple(Input::Kind::MeshGroup));
         loaded.emplace_back(Reg::s(3), Input::simple(Input::Kind::MergedWaveInfo));
         params = &ms->outputs;
+    } else if (native.stage == HwStage::Gs) {
+        params = &no_params();
     } else {
         detail::fail_unsupported(0, "I/O of this stage");
     }
@@ -359,6 +570,7 @@ Io raise(const Program& program, const NativeProgram& native) {
             for (const auto& entry : block.insts[i].writes) defs[entry.second] = Site{b, i};
         for (std::size_t i = 0; i < block.phis.size(); ++i) phis[block.phis[i].value] = Site{b, i};
     }
+    if (native.stage == HwStage::Gs) raise_rings(program, defs, io);
     const Halves halves(program, defs, phis);
 
     for (std::size_t b = 0; b < program.blocks.size(); ++b) {
