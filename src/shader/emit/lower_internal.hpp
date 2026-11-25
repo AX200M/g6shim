@@ -73,6 +73,9 @@ struct Stop {
 enum class MaskData : std::uint8_t { Console, Host, None };
 
 inline constexpr Why kLaneMask = "a lane mask read as data";
+inline constexpr Why kLaneMaskElsewhere = "a lane mask holding lanes elsewhere read as data";
+inline constexpr Why kQuadMask = "a whole-quad lane mask read as data";
+inline constexpr Why kOpaqueMask = "an opaque lane mask read as data";
 
 inline constexpr std::array<std::uint32_t, 9> kHalfConstants = {0x3800, 0xB800, 0x3C00, 0xBC00, 0x4000,
                                                                0xC000, 0x4400, 0xC400, 0x3118};
@@ -113,6 +116,14 @@ private:
     V i32_of(Value v);
     Val user(std::size_t param, std::uint32_t dword);
     V mask_dword(Value v);
+    std::pair<V, V> mask_pair(Value v);
+    std::size_t mask_site(Value lo);
+    std::pair<V, V> active_ballot(Bool bits, std::size_t at);
+    std::pair<V, V> combine_mask(Bool bits, std::size_t at);
+    std::pair<V, V> atom_mask(const Atom& atom, std::size_t at);
+    std::pair<V, V> mask_ones();
+    std::pair<V, V> mask_bin(Bin op, std::pair<V, V> a, std::pair<V, V> b, std::size_t at);
+    void fill_mask_words();
     V operand(const IrInst& inst, const Operand& op);
     V as_float(V x);
     V as_int(V f);
@@ -247,6 +258,10 @@ private:
     bool mask_ok_ = false;
     std::unordered_map<Value, std::pair<V, V>, ValueHash> ballots_;
     std::unordered_set<Value, ValueHash> balloting_;
+    std::map<std::pair<std::uint32_t, std::size_t>, std::pair<V, V>> mask_words_;
+    std::unordered_map<Value, std::pair<V, V>, ValueHash> mask_phi_words_;
+    std::vector<Value> pending_mask_words_;
+    std::unordered_map<Value, std::pair<V, V>, ValueHash> lane_ballots_;
     std::unordered_map<Value, std::size_t, ValueHash> def_block_;
     std::size_t cur_ir_ = 0;
     std::map<std::size_t, std::unordered_map<std::size_t, Section>> sections_;

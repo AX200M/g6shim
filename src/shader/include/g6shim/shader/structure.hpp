@@ -148,6 +148,7 @@ struct Structured {
     std::map<std::pair<Value, Value>, Bool> paired_masks;
     std::unordered_map<Value, Value, ValueHash> highs;
     std::unordered_set<Value, ValueHash> active;
+    std::unordered_set<Value, ValueHash> lane_data;
 
     std::optional<Bool> mask_bits(Value low, std::optional<Value> high) const;
 };

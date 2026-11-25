@@ -850,6 +850,13 @@ Structured Lanes::finish(const std::vector<std::vector<std::optional<Bool>>>& ex
         if (entry.first.low != entry.first.high) result.highs.emplace(entry.first.high, entry.first.low);
     result.active = std::move(active_);
     result.bools = std::move(b_);
+    for (const auto& entry : result.masks) {
+        bool sound = true;
+        for (const Atom& atom : result.bools.support(entry.second)) {
+            if (atom.kind == Atom::Kind::Opaque || atom.kind == Atom::Kind::Quad) sound = false;
+        }
+        if (sound) result.lane_data.insert(entry.first);
+    }
     result.exits = std::move(exits);
     result.guards = std::move(guards);
     result.reach = cond;
