@@ -72,6 +72,8 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xgame.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xsystem.cpp"
   unit/log_format_test.cpp
+  unit/run_frames_test.cpp
+  "${PROJECT_SOURCE_DIR}/src/tools/run/frames.cpp"
   unit/cpu_emulation_test.cpp
   "${PROJECT_SOURCE_DIR}/runtime/src/cpu_emulation.cpp"
   unit/d3d12_xs_object_test.cpp
@@ -179,6 +181,7 @@ target_include_directories(g6shim_tests PRIVATE
   "${PROJECT_SOURCE_DIR}/hle/xcrdapi"
   "${PROJECT_SOURCE_DIR}/hle/xgameruntime"
   "${PROJECT_SOURCE_DIR}/runtime/src"
+  "${PROJECT_SOURCE_DIR}/src/tools/run"
   "${PROJECT_SOURCE_DIR}/winrt")
 g6shim_add_compute_dxil(g_bvh_build_dxil "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh/build.hlsl" main)
 g6shim_target_compute_dxil(g6shim_tests g_bvh_build_dxil)

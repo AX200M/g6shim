@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <windows.h>
+#include <dbghelp.h>
 
 #include <algorithm>
 #include <chrono>
@@ -12,6 +13,8 @@
 #include <map>
 #include <string>
 #include <vector>
+
+#include "frames.hpp"
 
 namespace {
 
@@ -89,6 +92,22 @@ constexpr std::size_t kMaxDebugString = 8192;
 constexpr int kQuietFirstChanceAfter = 50;
 constexpr DWORD kDebugEventWaitMs = 200;
 
+BOOL CALLBACK read_debuggee(HANDLE process, DWORD64 address, PVOID buffer, DWORD size, LPDWORD read) {
+    SIZE_T got = 0;
+    if (!ReadProcessMemory(process, reinterpret_cast<LPCVOID>(static_cast<std::uintptr_t>(address)), buffer, size, &got))
+        return FALSE;
+    if (read) *read = static_cast<DWORD>(got);
+    return TRUE;
+}
+
+PVOID CALLBACK function_table(HANDLE process, DWORD64 address) {
+    return SymFunctionTableAccess64(process, address);
+}
+
+DWORD64 CALLBACK module_base(HANDLE process, DWORD64 address) {
+    return SymGetModuleBase64(process, address);
+}
+
 const char* exception_name(DWORD code) {
     switch (code) {
         case EXCEPTION_ACCESS_VIOLATION: return "access violation";
@@ -112,7 +131,16 @@ public:
     Session(HANDLE process, bool verbose, std::wstring system_dir)
         : process_(process), verbose_(verbose), system_dir_(lower(std::move(system_dir))) {}
 
+    ~Session() { shutdown(); }
+
     void set_process(HANDLE process) { process_ = process; }
+
+    void shutdown() {
+        if (symbols_) {
+            SymCleanup(process_);
+            symbols_ = false;
+        }
+    }
 
     double seconds() const {
         return std::chrono::duration<double>(std::chrono::steady_clock::now() - start_).count();
@@ -120,22 +148,21 @@ public:
 
     void loaded(std::uintptr_t base, const std::wstring& path) {
         modules_[base] = path;
+        refresh_symbols();
         const bool system = lower(path).rfind(system_dir_, 0) == 0;
         if (verbose_ || !system) std::printf("[%8.3f] load %s\n", seconds(), narrow(path).c_str());
     }
 
-    void unloaded(std::uintptr_t base) { modules_.erase(base); }
+    void unloaded(std::uintptr_t base) {
+        modules_.erase(base);
+        refresh_symbols();
+    }
 
     std::string where(std::uintptr_t address) const {
         auto it = modules_.upper_bound(address);
-        char buf[64];
-        if (it == modules_.begin()) {
-            std::snprintf(buf, sizeof buf, "0x%llx", static_cast<unsigned long long>(address));
-            return buf;
-        }
+        if (it == modules_.begin()) return g6shim::run::format_raw_address(address);
         --it;
-        std::snprintf(buf, sizeof buf, "+0x%llx", static_cast<unsigned long long>(address - it->first));
-        return narrow(file_name(it->second)) + buf;
+        return g6shim::run::format_module_address(address, it->first, narrow(file_name(it->second)));
     }
 
     void debug_string(const OUTPUT_DEBUG_STRING_INFO& info) {
@@ -149,10 +176,11 @@ public:
         if (!s.empty()) std::printf("[%8.3f] debug: %s\n", seconds(), s.c_str());
     }
 
-    DWORD exception(const EXCEPTION_DEBUG_INFO& info) {
+    DWORD exception(const EXCEPTION_DEBUG_INFO& info, DWORD thread_id) {
         const EXCEPTION_RECORD& ex = info.ExceptionRecord;
         if (!initial_breakpoint_seen_ && ex.ExceptionCode == EXCEPTION_BREAKPOINT) {
             initial_breakpoint_seen_ = true;
+            open_symbols();
             return DBG_CONTINUE;
         }
         const bool first = info.dwFirstChance != 0;
@@ -165,6 +193,10 @@ public:
             if (ex.ExceptionCode == kStowedException) stowed(ex);
             if (ex.ExceptionCode == kRoOriginateError || ex.ExceptionCode == kRoTransformError) ro_error(ex);
         }
+        if (!first) {
+            open_symbols();
+            stack(thread_id, reinterpret_cast<std::uintptr_t>(ex.ExceptionAddress));
+        }
         return DBG_EXCEPTION_NOT_HANDLED;
     }
 
@@ -174,6 +206,53 @@ private:
         SIZE_T got = 0;
         return ReadProcessMemory(process_, reinterpret_cast<const void*>(address), &out, sizeof out, &got) &&
                got == sizeof out;
+    }
+
+    void open_symbols() {
+        if (!process_ || symbols_) return;
+        SymSetOptions(SYMOPT_IGNORE_NT_SYMPATH | SYMOPT_DEFERRED_LOADS);
+        symbols_ = SymInitialize(process_, nullptr, TRUE) != FALSE;
+    }
+
+    void refresh_symbols() const {
+        if (symbols_) SymRefreshModuleList(process_);
+    }
+
+    void stack(DWORD thread_id, std::uintptr_t fault_address) const {
+        std::printf("  #0 %s\n", where(fault_address).c_str());
+        HANDLE thread = OpenThread(THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, thread_id);
+        if (!thread) return;
+        CONTEXT context{};
+        context.ContextFlags = CONTEXT_CONTROL;
+        const bool have_context = GetThreadContext(thread, &context) != FALSE;
+        if (have_context && symbols_ && process_) {
+            STACKFRAME64 frame{};
+            frame.AddrPC.Offset = context.Rip;
+            frame.AddrPC.Mode = AddrModeFlat;
+            frame.AddrStack.Offset = context.Rsp;
+            frame.AddrStack.Mode = AddrModeFlat;
+            frame.AddrFrame.Offset = context.Rbp;
+            frame.AddrFrame.Mode = AddrModeFlat;
+            g6shim::run::FrameStop stop;
+            stop.keep(fault_address);
+            bool current = true;
+            std::size_t index = 0;
+            while (index + 1 < g6shim::run::kMaxStackFrames) {
+                if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, process_, thread, &frame, &context, read_debuggee,
+                                 function_table, module_base, nullptr))
+                    break;
+                const auto address = static_cast<std::uintptr_t>(frame.AddrPC.Offset);
+                if (current) {
+                    current = false;
+                    stop.keep(address);
+                    continue;
+                }
+                if (!stop.keep(address)) break;
+                ++index;
+                std::printf("  #%zu %s\n", index, where(address).c_str());
+            }
+        }
+        CloseHandle(thread);
     }
 
     void stowed(const EXCEPTION_RECORD& ex) const {
@@ -210,6 +289,7 @@ private:
     bool verbose_;
     std::wstring system_dir_;
     std::map<std::uintptr_t, std::wstring> modules_;
+    bool symbols_ = false;
     bool initial_breakpoint_seen_ = false;
     int first_chance_ = 0;
     std::chrono::steady_clock::time_point start_ = std::chrono::steady_clock::now();
@@ -354,7 +434,7 @@ int wmain(int argc, wchar_t** argv) {
                 session.debug_string(ev.u.DebugString);
                 break;
             case EXCEPTION_DEBUG_EVENT:
-                status = session.exception(ev.u.Exception);
+                status = session.exception(ev.u.Exception, ev.dwThreadId);
                 break;
             case EXIT_PROCESS_DEBUG_EVENT:
                 exit_code = ev.u.ExitProcess.dwExitCode;
@@ -368,6 +448,7 @@ int wmain(int argc, wchar_t** argv) {
 
     const char* name = exception_name(exit_code);
     std::printf("[%8.3f] exited with 0x%08lX%s%s\n", session.seconds(), exit_code, *name ? " " : "", name);
+    session.shutdown();
     if (pi.hThread) CloseHandle(pi.hThread);
     if (pi.hProcess) CloseHandle(pi.hProcess);
     return exit_code == 0 && !stopped ? 0 : 1;
