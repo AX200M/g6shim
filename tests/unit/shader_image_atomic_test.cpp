@@ -211,6 +211,10 @@ TEST(shader_image_atomic64_adds_on_warp) {
     words[2] = 1;
     words[3] = 0;
     words[4] = 0;
+    for (const auto& field : lowered.user_data) {
+        if (field.source == g6shim::shader::emit::UserData::Source::ViewHeapCount && field.index < 64)
+            words[field.index] = 1;
+    }
     constants->Unmap(0, nullptr);
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
     device->GetCopyableFootprints(&texture_desc, 0, 1, 0, &footprint, nullptr, nullptr, nullptr);

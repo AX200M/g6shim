@@ -311,6 +311,101 @@ void null_buffer_view(D3D12_CPU_DESCRIPTOR_HANDLE at) {
     gpu->device()->CreateShaderResourceView(nullptr, &desc, at);
 }
 
+void null_raw_uav(D3D12_CPU_DESCRIPTOR_HANDLE at) {
+    host::Host* gpu = host::host();
+    if (gpu == nullptr) return;
+    D3D12_UNORDERED_ACCESS_VIEW_DESC desc{};
+    desc.Format = DXGI_FORMAT_R32_TYPELESS;
+    desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    desc.Buffer.NumElements = 1;
+    desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+    gpu->device()->CreateUnorderedAccessView(nullptr, nullptr, &desc, at);
+}
+
+void null_typed_buffer(D3D12_CPU_DESCRIPTOR_HANDLE at, bool unordered) {
+    host::Host* gpu = host::host();
+    if (gpu == nullptr) return;
+    if (unordered) {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC desc{};
+        desc.Format = DXGI_FORMAT_R32_UINT;
+        desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        desc.Buffer.NumElements = 1;
+        gpu->device()->CreateUnorderedAccessView(nullptr, nullptr, &desc, at);
+        return;
+    }
+    D3D12_SHADER_RESOURCE_VIEW_DESC desc{};
+    desc.Format = DXGI_FORMAT_R32_UINT;
+    desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    desc.Buffer.NumElements = 1;
+    gpu->device()->CreateShaderResourceView(nullptr, &desc, at);
+}
+
+void null_structured_buffer(D3D12_CPU_DESCRIPTOR_HANDLE at, bool unordered) {
+    host::Host* gpu = host::host();
+    if (gpu == nullptr) return;
+    if (unordered) {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC desc{};
+        desc.Format = DXGI_FORMAT_UNKNOWN;
+        desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        desc.Buffer.NumElements = 1;
+        desc.Buffer.StructureByteStride = 4;
+        gpu->device()->CreateUnorderedAccessView(nullptr, nullptr, &desc, at);
+        return;
+    }
+    D3D12_SHADER_RESOURCE_VIEW_DESC desc{};
+    desc.Format = DXGI_FORMAT_UNKNOWN;
+    desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    desc.Buffer.NumElements = 1;
+    desc.Buffer.StructureByteStride = 4;
+    gpu->device()->CreateShaderResourceView(nullptr, &desc, at);
+}
+
+void null_texture(D3D12_CPU_DESCRIPTOR_HANDLE at, D3D12_SRV_DIMENSION dimension, bool unordered) {
+    host::Host* gpu = host::host();
+    if (gpu == nullptr) return;
+    if (unordered) {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC desc{};
+        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.ViewDimension = dimension == D3D12_SRV_DIMENSION_TEXTURE3D ? D3D12_UAV_DIMENSION_TEXTURE3D
+                             : dimension == D3D12_SRV_DIMENSION_TEXTURECUBE
+                                 ? D3D12_UAV_DIMENSION_TEXTURE2DARRAY
+                                 : D3D12_UAV_DIMENSION_TEXTURE2D;
+        if (desc.ViewDimension == D3D12_UAV_DIMENSION_TEXTURE3D) desc.Texture3D.WSize = 1;
+        if (desc.ViewDimension == D3D12_UAV_DIMENSION_TEXTURE2DARRAY) desc.Texture2DArray.ArraySize = 6;
+        gpu->device()->CreateUnorderedAccessView(nullptr, nullptr, &desc, at);
+        return;
+    }
+    D3D12_SHADER_RESOURCE_VIEW_DESC desc{};
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.ViewDimension = dimension;
+    desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    if (dimension == D3D12_SRV_DIMENSION_TEXTURE3D) desc.Texture3D.MipLevels = 1;
+    else if (dimension == D3D12_SRV_DIMENSION_TEXTURECUBE) desc.TextureCube.MipLevels = 1;
+    else desc.Texture2D.MipLevels = 1;
+    gpu->device()->CreateShaderResourceView(nullptr, &desc, at);
+}
+
+void write_null(g6shim::shader::emit::NullView kind, D3D12_CPU_DESCRIPTOR_HANDLE at) {
+    using Kind = g6shim::shader::emit::NullView;
+    switch (kind) {
+    case Kind::RawSrv: null_buffer_view(at); break;
+    case Kind::RawUav: null_raw_uav(at); break;
+    case Kind::TypedSrv: null_typed_buffer(at, false); break;
+    case Kind::TypedUav: null_typed_buffer(at, true); break;
+    case Kind::StructuredSrv: null_structured_buffer(at, false); break;
+    case Kind::StructuredUav: null_structured_buffer(at, true); break;
+    case Kind::Texture2DSrv: null_texture(at, D3D12_SRV_DIMENSION_TEXTURE2D, false); break;
+    case Kind::Texture2DUav: null_texture(at, D3D12_SRV_DIMENSION_TEXTURE2D, true); break;
+    case Kind::Texture3DSrv: null_texture(at, D3D12_SRV_DIMENSION_TEXTURE3D, false); break;
+    case Kind::Texture3DUav: null_texture(at, D3D12_SRV_DIMENSION_TEXTURE3D, true); break;
+    case Kind::TextureCubeSrv: null_texture(at, D3D12_SRV_DIMENSION_TEXTURECUBE, false); break;
+    case Kind::TextureCubeUav: null_texture(at, D3D12_SRV_DIMENSION_TEXTURECUBE, true); break;
+    case Kind::Count: break;
+    }
+}
+
 void null_like(const std::array<std::uint32_t, 10>& words, D3D12_CPU_DESCRIPTOR_HANDLE at) {
     if (words[1] < kTextureViews || words[1] > kTextureViewsEnd) {
         null_view(at);
@@ -340,57 +435,91 @@ std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> make(const descriptor::Vie
 void null_for(const descriptor::View& view, D3D12_CPU_DESCRIPTOR_HANDLE at) {
     host::Host* gpu = host::host();
     if (gpu == nullptr) return;
-    bool buffer = false;
-    std::optional<std::uint32_t> dimension;
     if (const auto* constant = std::get_if<descriptor::ConstantView>(&view)) {
         (void)constant;
         D3D12_CONSTANT_BUFFER_VIEW_DESC desc{};
         gpu->device()->CreateConstantBufferView(&desc, at);
         return;
     }
+    using Kind = g6shim::shader::emit::NullView;
+    const auto buffer_kind = [](bool unordered, bool raw, bool structured) {
+        if (raw) return unordered ? Kind::RawUav : Kind::RawSrv;
+        if (structured) return unordered ? Kind::StructuredUav : Kind::StructuredSrv;
+        return unordered ? Kind::TypedUav : Kind::TypedSrv;
+    };
+    const auto texture_kind = [](std::uint32_t resource_dimension, std::uint32_t view_dimension, bool unordered) {
+        const bool cube = view_dimension == D3D12_SRV_DIMENSION_TEXTURECUBE ||
+                          view_dimension == D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
+        const bool volume = resource_dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ||
+                            view_dimension == D3D12_SRV_DIMENSION_TEXTURE3D ||
+                            view_dimension == static_cast<std::uint32_t>(D3D12_UAV_DIMENSION_TEXTURE3D);
+        if (cube) return unordered ? Kind::TextureCubeUav : Kind::TextureCubeSrv;
+        if (volume) return unordered ? Kind::Texture3DUav : Kind::Texture3DSrv;
+        return unordered ? Kind::Texture2DUav : Kind::Texture2DSrv;
+    };
     if (const auto* shader = std::get_if<descriptor::ShaderView>(&view)) {
         const bool is_buffer =
             resource::buffer_bytes(reinterpret_cast<Object*>(shader->resource)) != std::nullopt;
         if (is_buffer || (shader->desc && (*shader->desc)[1] == kBufferDimension)) {
-            null_buffer_view(at);
+            bool raw = true;
+            bool structured = false;
+            if (shader->desc) {
+                const auto desc = srv_desc(*shader->desc);
+                raw = (static_cast<std::uint32_t>(desc.Buffer.Flags) & D3D12_BUFFER_SRV_FLAG_RAW) != 0;
+                structured = desc.Buffer.StructureByteStride != 0;
+            }
+            write_null(buffer_kind(false, raw, structured), at);
             return;
         }
-        if (shader->desc) {
-            null_like(*shader->desc, at);
-            return;
-        }
-        null_view(at);
+        const std::uint32_t view_dimension = shader->desc ? (*shader->desc)[1] : 0;
+        write_null(texture_kind(0, view_dimension, false), at);
         return;
     }
-    if (const auto* unordered = std::get_if<descriptor::UnorderedView>(&view)) {
-        buffer = resource::buffer_bytes(reinterpret_cast<Object*>(unordered->resource)) != std::nullopt ||
-                 (unordered->desc && (*unordered->desc)[1] == kBufferDimension);
-        if (unordered->desc) dimension = (*unordered->desc)[1];
+    bool unordered = false;
+    bool buffer = false;
+    bool raw = false;
+    bool structured = false;
+    std::uint32_t resource_dimension = 0;
+    std::uint32_t view_dimension = 0;
+    if (const auto* access = std::get_if<descriptor::UnorderedView>(&view)) {
+        unordered = true;
+        buffer = resource::buffer_bytes(reinterpret_cast<Object*>(access->resource)) != std::nullopt ||
+                 (access->desc && (*access->desc)[1] == kBufferDimension);
+        if (access->desc) {
+            view_dimension = (*access->desc)[1];
+            const auto desc = uav_desc(*access->desc);
+            raw = (static_cast<std::uint32_t>(desc.Buffer.Flags) & D3D12_BUFFER_UAV_FLAG_RAW) != 0;
+            structured = desc.Buffer.StructureByteStride != 0;
+        }
     } else if (const auto* placed = std::get_if<descriptor::PlacedView>(&view)) {
-        if (!placed->unordered && placed->resource[0] == kBufferDimension) {
-            null_buffer_view(at);
+        resource_dimension = placed->resource[0];
+        view_dimension = placed->desc[1];
+        if (!placed->unordered && resource_dimension == kBufferDimension) {
+            std::array<std::uint32_t, 10> words{};
+            std::copy_n(placed->desc.begin(), 10, words.begin());
+            const auto desc = srv_desc(words);
+            write_null(buffer_kind(false, (static_cast<std::uint32_t>(desc.Buffer.Flags) & D3D12_BUFFER_SRV_FLAG_RAW) != 0,
+                                   desc.Buffer.StructureByteStride != 0),
+                       at);
             return;
         }
         if (!placed->unordered) {
-            std::array<std::uint32_t, 10> words{};
-            std::copy_n(placed->desc.begin(), 10, words.begin());
-            null_like(words, at);
+            write_null(texture_kind(resource_dimension, view_dimension, false), at);
             return;
         }
-        buffer = placed->resource[0] == kBufferDimension;
-        dimension = placed->desc[1];
+        unordered = true;
+        buffer = resource_dimension == kBufferDimension;
+        std::array<std::uint32_t, 10> words{};
+        std::copy_n(placed->desc.begin(), 10, words.begin());
+        const auto desc = uav_desc(words);
+        raw = (static_cast<std::uint32_t>(desc.Buffer.Flags) & D3D12_BUFFER_UAV_FLAG_RAW) != 0;
+        structured = desc.Buffer.StructureByteStride != 0;
     } else {
-        null_view(at);
+        write_null(Kind::Texture2DSrv, at);
         return;
     }
-    D3D12_UNORDERED_ACCESS_VIEW_DESC desc{};
-    if (buffer) {
-        desc.Format = DXGI_FORMAT_R32_UINT;
-        desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-    } else {
-        desc = null_uav_desc(dimension);
-    }
-    gpu->device()->CreateUnorderedAccessView(nullptr, nullptr, &desc, at);
+    if (buffer) write_null(buffer_kind(unordered, raw, structured), at);
+    else write_null(texture_kind(resource_dimension, view_dimension, unordered), at);
 }
 
 std::optional<std::pair<std::uint64_t, std::uint64_t>> srv_range(std::uint64_t base,
@@ -658,7 +787,23 @@ std::unique_ptr<HostHeap> HostHeap::create(bool sampler, std::uint32_t count) {
     std::unique_ptr<HostHeap> made(new HostHeap(std::move(heap), cpu, address, step, count, dynamic, sampler));
     if (!made->fill_null(kind, count + dynamic))
         G6SHIM_WARN("d3d12_xs: host descriptor heap not made null");
+    made->place_nulls();
     return made;
+}
+
+void HostHeap::place_nulls() {
+    const auto count = static_cast<std::uint32_t>(g6shim::shader::emit::NullView::Count);
+    if (sampler_ || dynamic_ < count) return;
+    const std::uint32_t base = dynamic_ - count;
+    for (std::uint32_t kind = 0; kind < count; ++kind) {
+        taken_[base + kind] = true;
+        write_null(static_cast<g6shim::shader::emit::NullView>(kind), cpu(count_ + base + kind));
+    }
+}
+
+std::uint32_t HostHeap::null_base() const {
+    const auto count = static_cast<std::uint32_t>(g6shim::shader::emit::NullView::Count);
+    return dynamic_ >= count ? count_ + dynamic_ - count : count_;
 }
 
 bool HostHeap::fill_null(D3D12_DESCRIPTOR_HEAP_TYPE kind, std::uint32_t total) {

@@ -20,6 +20,22 @@
 
 namespace g6shim::shader::emit {
 
+enum class NullView : std::uint32_t {
+    RawSrv = 0,
+    RawUav,
+    TypedSrv,
+    TypedUav,
+    StructuredSrv,
+    StructuredUav,
+    Texture2DSrv,
+    Texture2DUav,
+    Texture3DSrv,
+    Texture3DUav,
+    TextureCubeSrv,
+    TextureCubeUav,
+    Count
+};
+
 struct UserData {
     enum class Source : std::uint32_t {
         Root, ConstantBufferAddressLow, ShaderBufferAddressLow, ImageBaseAddressLow,
@@ -28,7 +44,7 @@ struct UserData {
         ImageSamplingFields, TypedBufferFormatWord, TypedBufferHighWord,
         ConstantBufferHighWord, ConstantBufferRecordCount, ConstantBufferFormatWord,
         ShaderBufferRecordCount, ImageWidthLowBits, ImageDimensions, SamplerLodWord, ImageBaseMip, ImageHeapData,
-        BufferHeapData, ViewHeapCount, SamplerHeapCount
+        BufferHeapData, ViewHeapCount, SamplerHeapCount, NullViewBase
     };
 
     std::uint32_t index = 0;

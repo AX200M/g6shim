@@ -112,7 +112,8 @@ void check_valu(const std::vector<std::uint32_t>& body, const char* label) {
     std::size_t heap_limits = 0;
     for (const UserData& entry : lowered.user_data) {
         if (entry.source == UserData::Source::ViewHeapCount ||
-            entry.source == UserData::Source::SamplerHeapCount)
+            entry.source == UserData::Source::SamplerHeapCount ||
+            entry.source == UserData::Source::NullViewBase)
             ++heap_limits;
     }
     CHECK(lowered.user_data.size() == 5 + heap_limits);

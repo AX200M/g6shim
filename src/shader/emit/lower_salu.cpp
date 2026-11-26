@@ -1098,7 +1098,7 @@ V Lower::handle(Site site, const Source& src, bool sampler,
                                                                              props.first};
         const auto found = handles_.find(key);
         if (found != handles_.end()) return found->second;
-        const V index = heap_index(src.load, src.first, sampler);
+        const V index = heap_index(src.load, src.first, sampler, props.first);
         const std::vector<Site>& loads = x_->res->waterfall.loads;
         const bool per_lane = std::find(loads.begin(), loads.end(), src.load) != loads.end();
         const V h = s_.heap_handle(cur_, index, sampler, per_lane, props);
@@ -1160,7 +1160,7 @@ V Lower::handle(Site site, const Source& src, bool sampler,
             cur_ = at;
             V index;
             try {
-                index = heap_index(arg.load, arg.first, sampler);
+                index = heap_index(arg.load, arg.first, sampler, props.first);
             } catch (...) {
                 cur_ = here;
                 throw;
@@ -1179,18 +1179,18 @@ V Lower::handle(Site site, const Source& src, bool sampler,
             fail("a descriptor chosen by a condition");
         const Val cond = get(src.key);
         if (cond.kind != Val::Kind::Bit) fail("SCC without a value");
-        const V set = heap_index(src.args[0].load, src.args[0].first, sampler);
-        const V clear = heap_index(src.args[1].load, src.args[1].first, sampler);
+        const V set = heap_index(src.args[0].load, src.args[0].first, sampler, props.first);
+        const V clear = heap_index(src.args[1].load, src.args[1].first, sampler, props.first);
         const V index = s_.m.select(cur_, cond.value, set, clear);
         return s_.heap_handle(cur_, index, sampler, false, props);
     }
-    const V index = lane_heap_index(src, sampler);
+    const V index = lane_heap_index(src, sampler, props.first);
     return s_.heap_handle(cur_, index, sampler, true, props);
 }
 
-V Lower::lane_heap_index(const Source& src, bool sampler) {
-    if (src.kind == Source::Kind::Loaded) return heap_index(src.load, src.first, sampler);
-    if (src.kind == Source::Kind::Fetched) return fetched_index(src.load, src.first, sampler);
+V Lower::lane_heap_index(const Source& src, bool sampler, std::uint32_t props) {
+    if (src.kind == Source::Kind::Loaded) return heap_index(src.load, src.first, sampler, props);
+    if (src.kind == Source::Kind::Fetched) return fetched_index(src.load, src.first, sampler, props);
     if (src.kind == Source::Kind::Lanes || src.kind == Source::Kind::Select) {
         if (src.args.size() != 2) fail("a descriptor chosen per lane");
         V cond;
@@ -1203,8 +1203,8 @@ V Lower::lane_heap_index(const Source& src, bool sampler) {
             if (value.kind != Val::Kind::Bit) fail("SCC without a value");
             cond = value.value;
         }
-        const V set = lane_heap_index(src.args[0], sampler);
-        const V clear = lane_heap_index(src.args[1], sampler);
+        const V set = lane_heap_index(src.args[0], sampler, props);
+        const V clear = lane_heap_index(src.args[1], sampler, props);
         return s_.m.select(cur_, cond, set, clear);
     }
     if (src.kind == Source::Kind::LanePhi) {
@@ -1223,14 +1223,14 @@ V Lower::lane_heap_index(const Source& src, bool sampler) {
                 const std::size_t here = cur_;
                 cur_ = at;
                 try {
-                    index = lane_heap_index(*src.options[n], sampler);
+                    index = lane_heap_index(*src.options[n], sampler, props);
                 } catch (...) {
                     cur_ = here;
                     throw;
                 }
                 cur_ = here;
             } else {
-                index = s_.m.i32(0);
+                index = sampler ? s_.m.i32(0) : null_view_slot(props);
             }
             incoming.emplace_back(index, at);
         }
@@ -1241,7 +1241,7 @@ V Lower::lane_heap_index(const Source& src, bool sampler) {
     fail("a per-lane descriptor from neither a heap load nor a choice of them");
 }
 
-V Lower::fetched_index(Site load, std::uint8_t first, bool sampler) {
+V Lower::fetched_index(Site load, std::uint8_t first, bool sampler, std::uint32_t props) {
     const auto tracked = scalar_.find(load);
     if (tracked == scalar_.end()) fail("an untracked descriptor load");
     const Address a = tracked->second;
@@ -1271,7 +1271,7 @@ V Lower::fetched_index(Site load, std::uint8_t first, bool sampler) {
                          4u * static_cast<std::uint32_t>(first));
     at = s_.m.bin(c, Bin::Add, at, k);
     const V shift = s_.m.i32(sampler ? 4 : 5);
-    return bounded_heap_index(s_.m.bin(c, Bin::LShr, at, shift), sampler);
+    return bounded_heap_index(s_.m.bin(c, Bin::LShr, at, shift), sampler, props);
 }
 
 V Lower::heap_byte_address(Site load, std::uint8_t first) {
@@ -1303,10 +1303,10 @@ V Lower::heap_byte_address(Site load, std::uint8_t first) {
     return addr;
 }
 
-V Lower::heap_index(Site load, std::uint8_t first, bool sampler) {
+V Lower::heap_index(Site load, std::uint8_t first, bool sampler, std::uint32_t props) {
     const V address = heap_byte_address(load, first);
     const V index = s_.m.bin(cur_, Bin::LShr, address, s_.m.i32(sampler ? 4 : 5));
-    return bounded_heap_index(index, sampler);
+    return bounded_heap_index(index, sampler, props);
 }
 
 V Lower::heap_limit(bool sampler) {
@@ -1330,11 +1330,50 @@ V Lower::heap_limit(bool sampler) {
     return user_dword(index).value;
 }
 
-V Lower::bounded_heap_index(V index, bool sampler) {
+V Lower::null_view_slot(std::uint32_t props) {
+    using Kind = NullView;
+    const bool uav = (props & 0x1000u) != 0;
+    Kind kind = Kind::Texture2DSrv;
+    switch (props & 0xffu) {
+    case 11: kind = uav ? Kind::RawUav : Kind::RawSrv; break;
+    case 10: kind = uav ? Kind::TypedUav : Kind::TypedSrv; break;
+    case 12: kind = uav ? Kind::StructuredUav : Kind::StructuredSrv; break;
+    case 4: kind = uav ? Kind::Texture3DUav : Kind::Texture3DSrv; break;
+    case 5: kind = uav ? Kind::TextureCubeUav : Kind::TextureCubeSrv; break;
+    default: kind = uav ? Kind::Texture2DUav : Kind::Texture2DSrv; break;
+    }
+    const std::size_t c = cur_;
+    using SourceKind = UserData::Source;
+    std::uint32_t index = 0;
+    bool found = false;
+    for (const auto& entry : user_reads_) {
+        if (entry.second.source == SourceKind::NullViewBase) {
+            index = entry.first;
+            found = true;
+            break;
+        }
+        index = std::max(index, entry.first + 1);
+    }
+    if (!found) {
+        for (const RootParam& param : x_->native->layout) {
+            if (param.user_data < 64 && param.sgprs <= 64u - param.user_data)
+                index = std::max(index, std::uint32_t{param.user_data} + param.sgprs);
+        }
+        if (index >= 64) fail("a null view slot beyond host root constants");
+        RootType root;
+        root.kind = RootType::Kind::ResourceHeap;
+        user_reads_.emplace(index, UserData{index, 0, root, 0, SourceKind::NullViewBase});
+    }
+    const V base = user_dword(index).value;
+    return s_.m.bin(c, Bin::Add, base, s_.m.i32(static_cast<std::uint32_t>(kind)));
+}
+
+V Lower::bounded_heap_index(V index, bool sampler, std::uint32_t props) {
     if (index.kind == V::Kind::Const) return index;
     const std::size_t c = cur_;
     const V in_range = s_.m.cmp(c, pred::kIult, index, heap_limit(sampler));
-    return s_.m.select(c, in_range, index, s_.m.i32(0));
+    const V fallback = sampler ? s_.m.i32(0) : null_view_slot(props);
+    return s_.m.select(c, in_range, index, fallback);
 }
 
 

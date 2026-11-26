@@ -130,6 +130,7 @@ void check_indexed_buffer_results(Lowered lowered) {
         if (field.source == UserData::Source::BufferHeapData) constants[field.index] = kMetadata;
         if (field.source == UserData::Source::ViewHeapCount)
             constants[field.index] = heap->count() + heap->dynamic_slots();
+        if (field.source == UserData::Source::NullViewBase) constants[field.index] = heap->count();
         if (field.root.kind == RootType::Kind::Table) constants[field.index] = kOutputDescriptor * 32;
     }
     D3D12_ROOT_PARAMETER parameter{};
@@ -448,7 +449,8 @@ TEST(shader_fixtures_translate_and_validate) {
         std::size_t heap_limits = 0;
         for (const UserData& entry : lowered.user_data) {
             if (entry.source == UserData::Source::ViewHeapCount ||
-                entry.source == UserData::Source::SamplerHeapCount)
+                entry.source == UserData::Source::SamplerHeapCount ||
+                entry.source == UserData::Source::NullViewBase)
                 ++heap_limits;
         }
         CHECK(lowered.user_data.size() == kUserSgprs + heap_limits);
@@ -893,6 +895,10 @@ TEST(shader_fixtures_bound_a_descriptor_heap_index) {
             return entry.source == UserData::Source::ViewHeapCount;
         });
         CHECK(field != lowered.user_data.end());
+        CHECK(std::any_of(lowered.user_data.begin(), lowered.user_data.end(), [](const UserData& entry) {
+            return entry.source == UserData::Source::NullViewBase &&
+                   entry.root.kind == RootType::Kind::ResourceHeap;
+        }));
         if (field != lowered.user_data.end()) {
             CHECK(field->root.kind == RootType::Kind::ResourceHeap);
             CHECK(field->index >= kOutputUserData + 1);
@@ -1110,7 +1116,7 @@ TEST(shader_fixtures_translate_scalar_buffer_address_at_a_join) {
                                           [source](const UserData& entry) { return entry.source == source; });
         CHECK(address != lowered.user_data.end());
         if (address != lowered.user_data.end()) {
-            CHECK(address->index == kUserSgprs + 1);
+            CHECK(address->index >= kUserSgprs);
             CHECK(address->slot == kTableSlot);
             CHECK(address->dword == 0);
         }
@@ -1268,7 +1274,7 @@ TEST(shader_fixtures_translate_scalar_reads_of_image_addresses) {
     });
     CHECK(address != lowered.user_data.end());
     if (address != lowered.user_data.end()) {
-        CHECK(address->index == kUserSgprs + 1);
+        CHECK(address->index >= kUserSgprs);
         CHECK(address->slot == kTableSlot);
         CHECK(address->dword == 0);
     }

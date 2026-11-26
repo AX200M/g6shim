@@ -33,6 +33,7 @@ public:
     static std::unique_ptr<HostHeap> create(bool sampler, std::uint32_t count);
 
     std::uint32_t count() const { return count_; }
+    std::uint32_t null_base() const;
     std::uint32_t dynamic_slots() const { return dynamic_; }
     bool samplers() const { return sampler_; }
     std::uint32_t step() const { return step_; }
@@ -54,6 +55,7 @@ private:
              std::uint32_t step, std::uint32_t count, std::uint32_t dynamic, bool sampler);
 
     bool fill_null(D3D12_DESCRIPTOR_HEAP_TYPE kind, std::uint32_t total);
+    void place_nulls();
     void null_sampler(std::uint32_t index);
     void keep(std::uint32_t index, Microsoft::WRL::ComPtr<ID3D12Resource> resource);
     bool window_evicted(std::uint32_t index);

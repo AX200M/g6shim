@@ -305,14 +305,15 @@ std::optional<HostShader> decode_entry(std::span<const std::uint8_t> bytes) {
         using UserData = g6shim::shader::emit::UserData;
         using Source = UserData::Source;
         if (!index || !slot || !root || !dword || !source || *slot > 0xFF ||
-            *source > static_cast<std::uint32_t>(Source::SamplerHeapCount))
+            *source > static_cast<std::uint32_t>(Source::NullViewBase))
             return std::nullopt;
         const RootType type = root_type(*root);
         const auto field = static_cast<Source>(*source);
         auto expected = RootType::Kind::Table;
         if (field == Source::SamplerLodWord || field == Source::SamplerHeapCount)
             expected = RootType::Kind::SamplerHeap;
-        if (field == Source::ImageHeapData || field == Source::BufferHeapData || field == Source::ViewHeapCount)
+        if (field == Source::ImageHeapData || field == Source::BufferHeapData || field == Source::ViewHeapCount ||
+            field == Source::NullViewBase)
             expected = RootType::Kind::ResourceHeap;
         if (field != Source::Root && type.kind != expected)
             return std::nullopt;
