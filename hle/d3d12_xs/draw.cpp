@@ -901,7 +901,8 @@ bool State::execute_indirect(host::HostList& list, std::tuple<std::uint32_t, std
     if (counter_shadow) (*counter_shadow)->refresh(list, counter_at, 4);
     if (!indirect::bound(list, (*args)->buffer(), (*args)->gpu(arguments), kind, stride, max)) return false;
     host_pipeline_ = nullptr;
-    host_roots_[1] = nullptr;
+    host_roots_ = {nullptr, nullptr};
+    host_heaps_ = {nullptr, nullptr};
     bool ran = false;
     if (kind == kDraw || kind == kIndexed) {
         ran = topology_ != kRectangleTopology && prepare(list, kind == kIndexed);
