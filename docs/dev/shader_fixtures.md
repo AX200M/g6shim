@@ -50,6 +50,8 @@ The test lowers each program as a wave32 compute shader with 8 VGPRs, five user 
 
 `heap_index_bound.s` loads one buffer descriptor from the resource heap at an index taken from a root constant and stores one dword through the output UAV. A dynamic heap index is kept inside the host descriptor heap. `heap_table_offset.s` is the same load with a constant byte offset from the heap pointer; that offset is bounded against the same count.
 
+`raw_offset_bound.s` loads one dword at a lane offset from a heap buffer descriptor and stores it. The byte offset is compared with the resource size before the load, so an offset past the buffer is not issued.
+
 `sampler_lod_data.s` reads and compares the LOD word of the second sampler heap slot without sampling an image.
 
 `packed_input_partner.s` interpolates the high half of the third packed component. Its two half-precision signature rows share one hardware attribute. The cases cover an adjacent partner, a unique partner beyond a separate input, and rejection when no eligible partner exists.

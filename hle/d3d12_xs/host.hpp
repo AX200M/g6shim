@@ -54,6 +54,14 @@ struct PresentedPlane {
 };
 
 bool compose(ID3D12GraphicsCommandList* list, std::span<const PresentedPlane> planes, ID3D12Resource* target);
+inline constexpr std::uint64_t kStandInBytes = 64 * 1024;
+
+struct StandIn {
+    ID3D12Resource* resource = nullptr;
+    std::uint64_t gpu = 0;
+};
+
+StandIn stand_in();
 inline constexpr std::uint64_t kScratchChunk = 4 << 20;
 inline constexpr std::uint64_t kTimestampFrequency = 100'000'000;
 

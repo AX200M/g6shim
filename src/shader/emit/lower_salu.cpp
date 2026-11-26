@@ -617,13 +617,8 @@ void Lower::smem(const IrInst& inst, Site site) {
         for (std::uint32_t k = 0; k < count; ++k) {
             const V off = s_.m.i32(4 * k);
             const V at = s_.m.bin(c, Bin::Add, addr, off);
-            const V mask = s_.m.i8(1);
-            const V undef = s_.m.undef(s_.t.i32);
-            const V align = s_.m.i32(4);
-            const V r = s_.op(c, "rawBufferLoad.f32", Attr::ReadOnly, s_.t.res_ret, 139,
-                              {h, at, undef, mask, align});
-            const V x = as_int(s_.m.extract(c, r, 0));
-            write(inst, Reg::s(static_cast<std::uint8_t>(code + k)), x, std::nullopt);
+            const std::vector<V> words = bounded_raw_words(h, at, 1);
+            write(inst, Reg::s(static_cast<std::uint8_t>(code + k)), as_int(words[0]), std::nullopt);
         }
         return;
     }

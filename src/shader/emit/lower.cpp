@@ -512,13 +512,8 @@ void Lower::flat(const IrInst& inst, std::size_t b, std::size_t i) {
     }
     const auto dword = [&](V byte) -> V {
         if (!h) return code_dword(byte);
-        const std::size_t at = cur_;
-        const V u = s_.m.undef(s_.t.i32);
-        const V mask = s_.m.i8(1);
-        const V align = s_.m.i32(4);
-        const V r = s_.op(at, "rawBufferLoad.f32", Attr::ReadOnly, s_.t.res_ret, 139,
-                          {*h, byte, u, mask, align});
-        return as_int(s_.m.extract(at, r, 0));
+        const std::vector<V> words = bounded_raw_words(*h, byte, 1);
+        return as_int(words[0]);
     };
     for (std::size_t k = 0; k < n; ++k) {
         V x;

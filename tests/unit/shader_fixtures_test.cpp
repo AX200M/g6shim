@@ -60,6 +60,7 @@ constexpr std::string_view kImageHeapShape = "image_heap_shape";
 constexpr std::string_view kImageHeapShapeLoop = "image_heap_shape_loop";
 constexpr std::string_view kBufferHeapStride = "buffer_heap_stride";
 constexpr std::string_view kHeapIndexBound = "heap_index_bound";
+constexpr std::string_view kRawOffsetBound = "raw_offset_bound";
 constexpr std::string_view kHeapTableOffset = "heap_table_offset";
 constexpr std::string_view kSamplerLodData = "sampler_lod_data";
 constexpr std::string_view kPackedInputPartner = "packed_input_partner";
@@ -430,6 +431,7 @@ TEST(shader_fixtures_translate_and_validate) {
             fixture.name == kImageShapeOnly || fixture.name == kImageHeapShape ||
             fixture.name == kImageHeapShapeLoop || fixture.name == kHeapIndexBound ||
             fixture.name == kHeapTableOffset || fixture.name == kBufferHeapStride ||
+            fixture.name == kRawOffsetBound ||
             fixture.name == kSamplerLodData || fixture.name == kSpilledComputeRoot ||
             fixture.name == kImageGather4Lod || fixture.name == kImageGather4LodBorder)
             continue;
@@ -895,6 +897,126 @@ TEST(shader_fixtures_bound_a_descriptor_heap_index) {
             CHECK(field->root.kind == RootType::Kind::ResourceHeap);
             CHECK(field->index >= kOutputUserData + 1);
         }
+        check_dxil(lowered.dxil, fixture->name);
+    } catch (const std::exception& error) {
+        std::printf("fixture %s did not translate: %s\n", fixture->name, error.what());
+        CHECK(false);
+    }
+}
+namespace {
+
+bool bitcode_names_contain(const std::vector<std::uint8_t>& dxil, std::string_view text) {
+    std::size_t at = 0;
+    bool found_magic = false;
+    for (; at + 4 <= dxil.size(); ++at) {
+        if (dxil[at] == 'B' && dxil[at + 1] == 'C' && dxil[at + 2] == 0xC0 && dxil[at + 3] == 0xDE) {
+            found_magic = true;
+            break;
+        }
+    }
+    if (!found_magic) return false;
+    at += 4;
+    std::vector<std::uint32_t> words;
+    for (std::size_t i = at; i + 4 <= dxil.size(); i += 4) {
+        words.push_back(static_cast<std::uint32_t>(dxil[i]) | static_cast<std::uint32_t>(dxil[i + 1]) << 8 |
+                        static_cast<std::uint32_t>(dxil[i + 2]) << 16 |
+                        static_cast<std::uint32_t>(dxil[i + 3]) << 24);
+    }
+    struct Bits {
+        const std::vector<std::uint32_t>* words;
+        std::size_t index = 0;
+        std::uint64_t current = 0;
+        int have = 0;
+        std::uint32_t take(int width) {
+            while (have < width && index < words->size()) {
+                current |= static_cast<std::uint64_t>((*words)[index++]) << have;
+                have += 32;
+            }
+            const std::uint32_t value = static_cast<std::uint32_t>(current & ((std::uint64_t{1} << width) - 1));
+            current >>= width;
+            have -= width;
+            return value;
+        }
+        std::uint64_t vbr(int width) {
+            const std::uint64_t high = std::uint64_t{1} << (width - 1);
+            std::uint64_t value = 0;
+            int shift = 0;
+            for (;;) {
+                const std::uint32_t chunk = take(width);
+                value |= static_cast<std::uint64_t>(chunk & (high - 1)) << shift;
+                if ((chunk & high) == 0) return value;
+                shift += width - 1;
+            }
+        }
+        void align() {
+            current = 0;
+            have = 0;
+        }
+        std::uint32_t word() {
+            align();
+            return index < words->size() ? (*words)[index++] : 0;
+        }
+    };
+    Bits bits{&words};
+    bool hit = false;
+    const auto search = [&](auto&& self, int abbrev) -> void {
+        if (hit) return;
+        for (;;) {
+            if (bits.index >= words.size() && bits.have < abbrev) return;
+            const std::uint32_t id = bits.take(abbrev);
+            if (id == 0) {
+                bits.align();
+                return;
+            }
+            if (id == 1) {
+                (void)bits.vbr(8);
+                const std::uint64_t next = bits.vbr(4);
+                bits.align();
+                (void)bits.word();
+                self(self, static_cast<int>(next == 0 ? 2 : next));
+                if (hit) return;
+                continue;
+            }
+            if (id != 3) return;
+            (void)bits.vbr(6);
+            const std::uint64_t count = bits.vbr(6);
+            std::string run;
+            for (std::uint64_t n = 0; n < count; ++n) {
+                const std::uint64_t op = bits.vbr(6);
+                if (op >= 32 && op < 127)
+                    run.push_back(static_cast<char>(op));
+                else
+                    run.clear();
+                if (run.find(text) != std::string::npos) {
+                    hit = true;
+                    return;
+                }
+            }
+        }
+    };
+    search(search, 2);
+    return hit;
+}
+
+}  // namespace
+
+
+TEST(shader_fixtures_bound_a_raw_buffer_byte_offset) {
+    const Fixture* fixture = find_fixture(kRawOffsetBound);
+    CHECK(fixture != nullptr);
+    if (fixture == nullptr) return;
+    constexpr std::uint8_t kHeapUserData = 4;
+    constexpr std::uint8_t kHeapSlot = 2;
+    constexpr std::uint8_t kOutputUserData = 6;
+    constexpr std::uint8_t kOutputSlot = 1;
+    try {
+        const auto lowered = lower_compute(fixture->words, kFixtureVgprs,
+            {root_param(RootType::Kind::Constants, kConstantsUserData, kConstantsSlot),
+             root_param(RootType::Kind::ResourceHeap, kHeapUserData, kHeapSlot),
+             root_param(RootType::Kind::Table, kOutputUserData, kOutputSlot)},
+            {used_uav(kOutputUserData, kOutputSlot)}, (kOutputUserData + 1u) << kUserSgprShift, {1, 1, 1});
+        CHECK(bitcode_names_contain(lowered.dxil, "getDimensions"));
+        CHECK(bitcode_names_contain(lowered.dxil, "rawBufferLoad"));
         check_dxil(lowered.dxil, fixture->name);
     } catch (const std::exception& error) {
         std::printf("fixture %s did not translate: %s\n", fixture->name, error.what());

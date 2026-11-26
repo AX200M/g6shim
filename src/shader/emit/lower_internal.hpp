@@ -230,6 +230,8 @@ private:
     V heap_byte_address(Site load, std::uint8_t first);
     V heap_index(Site load, std::uint8_t first, bool sampler);
     V heap_limit(bool sampler);
+    V raw_byte_fits(V handle, V byte, std::uint32_t bytes);
+    std::vector<V> bounded_raw_words(V handle, V byte, std::uint32_t count);
     V bounded_heap_index(V index, bool sampler);
     void valu(const IrInst& inst, std::size_t b, std::size_t i);
     std::pair<V, std::optional<V>> dpp(const IrInst& inst, const Dpp& dpp);

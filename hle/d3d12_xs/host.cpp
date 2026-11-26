@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <optional>
 #include <thread>
 
@@ -1548,6 +1549,42 @@ void write_mapped(std::uint8_t* destination, const std::uint8_t* source, std::si
                        write_process(reinterpret_cast<std::uint8_t*>(fine_at), fine_from, fine);
                    });
                });
+}
+
+StandIn stand_in() {
+    static std::once_flag once;
+    static Microsoft::WRL::ComPtr<ID3D12Resource> buffer;
+    static StandIn made{};
+    std::call_once(once, [] {
+        Host* gpu = host();
+        if (gpu == nullptr || gpu->device() == nullptr) return;
+        D3D12_HEAP_PROPERTIES heap{};
+        heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        desc.Width = kStandInBytes;
+        desc.Height = 1;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels = 1;
+        desc.SampleDesc.Count = 1;
+        desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        if (FAILED(gpu->device()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                                                          D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                          IID_PPV_ARGS(&buffer)))) {
+            G6SHIM_WARN("d3d12_xs: no zero stand-in for an unbound root view");
+            return;
+        }
+        void* data = nullptr;
+        if (FAILED(buffer->Map(0, nullptr, &data)) || data == nullptr) {
+            buffer.Reset();
+            return;
+        }
+        std::memset(data, 0, kStandInBytes);
+        buffer->Unmap(0, nullptr);
+        made.resource = buffer.Get();
+        made.gpu = buffer->GetGPUVirtualAddress();
+    });
+    return made;
 }
 
 }  // namespace host

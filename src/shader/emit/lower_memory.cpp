@@ -206,14 +206,11 @@ std::vector<V> Lower::format_load(V h, V off, std::uint8_t format, std::uint32_t
     const std::size_t c = cur_;
     std::uint32_t total = 0;
     for (std::uint32_t bit : bits) total += bit;
-    const V u = s_.m.undef(s_.t.i32);
-    const V align = s_.m.i32(4);
     const auto load = [&](V at, std::uint32_t n) {
-        const V mask = s_.m.i8(static_cast<std::uint8_t>((1u << n) - 1));
-        const V r =
-            s_.op(c, "rawBufferLoad.f32", Attr::ReadOnly, s_.t.res_ret, 139, {h, at, u, mask, align});
+        const std::vector<V> loaded = bounded_raw_words(h, at, n);
         std::vector<V> out;
-        for (std::uint32_t k = 0; k < n; ++k) out.push_back(as_int(s_.m.extract(c, r, k)));
+        out.reserve(n);
+        for (const V word : loaded) out.push_back(as_int(word));
         return out;
     };
     std::vector<V> words;
@@ -222,9 +219,9 @@ std::vector<V> Lower::format_load(V h, V off, std::uint8_t format, std::uint32_t
         const V three = s_.m.i32(3);
         const V at = s_.m.bin(c, Bin::And, off, not3);
         const V w = load(at, 1)[0];
-        const V byte = s_.m.bin(c, Bin::And, off, three);
-        const V sh = s_.m.bin(c, Bin::Shl, byte, three);
-        words.push_back(s_.m.bin(c, Bin::LShr, w, sh));
+        const V byte = s_.m.bin(cur_, Bin::And, off, three);
+        const V sh = s_.m.bin(cur_, Bin::Shl, byte, three);
+        words.push_back(s_.m.bin(cur_, Bin::LShr, w, sh));
     } else {
         words = load(off, total / 32);
     }
@@ -237,46 +234,46 @@ std::vector<V> Lower::format_load(V h, V off, std::uint8_t format, std::uint32_t
             field = word;
         } else {
             const V sh = s_.m.i32(at % 32);
-            const V t = s_.m.bin(c, Bin::LShr, word, sh);
+            const V t = s_.m.bin(cur_, Bin::LShr, word, sh);
             const V m = s_.m.i32(static_cast<std::uint32_t>((std::uint64_t{1} << w) - 1));
-            field = s_.m.bin(c, Bin::And, t, m);
+            field = s_.m.bin(cur_, Bin::And, t, m);
         }
         at += w;
         const auto signed_field = [&]() {
             if (w == 32) return field;
             const V k = s_.m.i32(32 - w);
-            const V t = s_.m.bin(c, Bin::Shl, field, k);
-            return s_.m.bin(c, Bin::AShr, t, k);
+            const V t = s_.m.bin(cur_, Bin::Shl, field, k);
+            return s_.m.bin(cur_, Bin::AShr, t, k);
         };
         const Ty f32t = s_.t.f32;
         V x;
         switch (numeric) {
             case Numeric::Unorm: {
-                const V f = s_.m.cast(c, Cast::UiToFp, field, f32t);
+                const V f = s_.m.cast(cur_, Cast::UiToFp, field, f32t);
                 const V max = s_.m.f32(std::bit_cast<std::uint32_t>(
                     static_cast<float>((std::uint64_t{1} << w) - 1)));
-                const V q = s_.m.bin(c, Bin::SDiv, f, max);
+                const V q = s_.m.bin(cur_, Bin::SDiv, f, max);
                 x = as_int(q);
                 break;
             }
             case Numeric::Snorm: {
                 const V s = signed_field();
-                const V f = s_.m.cast(c, Cast::SiToFp, s, f32t);
+                const V f = s_.m.cast(cur_, Cast::SiToFp, s, f32t);
                 const V max = s_.m.f32(std::bit_cast<std::uint32_t>(
                     static_cast<float>((std::uint64_t{1} << (w - 1)) - 1)));
-                const V q = s_.m.bin(c, Bin::SDiv, f, max);
+                const V q = s_.m.bin(cur_, Bin::SDiv, f, max);
                 const V lo = s_.m.f32(std::bit_cast<std::uint32_t>(-1.0f));
                 x = as_int(binary(35, q, lo));
                 break;
             }
             case Numeric::Uscaled: {
-                const V f = s_.m.cast(c, Cast::UiToFp, field, f32t);
+                const V f = s_.m.cast(cur_, Cast::UiToFp, field, f32t);
                 x = as_int(f);
                 break;
             }
             case Numeric::Sscaled: {
                 const V s = signed_field();
-                x = as_int(s_.m.cast(c, Cast::SiToFp, s, f32t));
+                x = as_int(s_.m.cast(cur_, Cast::SiToFp, s, f32t));
                 break;
             }
             case Numeric::Uint: x = field; break;
@@ -289,9 +286,9 @@ std::vector<V> Lower::format_load(V h, V off, std::uint8_t format, std::uint32_t
                     const std::uint32_t shift = half_shift(w);
                     if (shift != 0) {
                         const V sh = s_.m.i32(shift);
-                        half_bits = s_.m.bin(c, Bin::Shl, field, sh);
+                        half_bits = s_.m.bin(cur_, Bin::Shl, field, sh);
                     }
-                    x = as_int(s_.op(c, "legacyF16ToF32", Attr::ReadNone, f32t, 131, {half_bits}));
+                    x = as_int(s_.op(cur_, "legacyF16ToF32", Attr::ReadNone, f32t, 131, {half_bits}));
                 }
                 break;
         }
@@ -443,6 +440,16 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
         if (returns) {
             if (const std::optional<Value> read = inst.read(Reg::v(data->reg))) old = i32_of(*read);
         }
+        V bounds = s_.m.boolean(true);
+        if (index) {
+            const Ty i32t = s_.t.i32;
+            const Ty dims = s_.m.named_struct("dx.types.Dimensions", {i32t, i32t, i32t, i32t});
+            const V d = s_.op(cur_, "getDimensions", Attr::ReadOnly, dims, 72, {h, iu});
+            bounds = s_.m.cmp(cur_, pred::kIult, *index, s_.m.extract(cur_, d, 0));
+        } else {
+            bounds = raw_byte_fits(h, off, static_cast<std::uint32_t>(sizeof(std::uint32_t)));
+        }
+        const auto bounded = begin_guarded(bounds);
         const auto at = begin_guarded(guard_value);
         const Ty i32t = s_.t.i32;
         V r;
@@ -453,7 +460,8 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
             const std::vector<V> args = {h, s_.m.i32(op), coords[0], coords[1], coords[2], vals[0]};
             r = s_.op(cur_, "atomicBinOp.i32", Attr::NoUnwind, i32t, 78, args);
         }
-        const V result = end_guarded(at, {{r, old}})[0];
+        const V executed = end_guarded(at, {{r, old}})[0];
+        const V result = end_guarded(bounded, {{executed, s_.m.i32(0)}})[0];
         if (returns) write(inst, Reg::v(data->reg), result, std::nullopt);
         return;
     }
@@ -507,7 +515,21 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
         args.push_back(
             s_.m.i8(static_cast<std::uint8_t>(typed ? 0xF : (1u << count) - 1u)));
         if (!typed) args.push_back(s_.m.i32(4));
-        const auto at = begin_guarded(guard_value);
+        std::optional<V> store_guard = guard_value;
+        if (!typed) {
+            const V resource = args[0];
+            V fits = s_.m.boolean(true);
+            if (index) {
+                const Ty i32t = s_.t.i32;
+                const Ty dims = s_.m.named_struct("dx.types.Dimensions", {i32t, i32t, i32t, i32t});
+                const V d = s_.op(cur_, "getDimensions", Attr::ReadOnly, dims, 72, {resource, iu});
+                fits = s_.m.cmp(cur_, pred::kIult, *index, s_.m.extract(cur_, d, 0));
+            } else {
+                fits = raw_byte_fits(resource, off, count * static_cast<std::uint32_t>(sizeof(std::uint32_t)));
+            }
+            store_guard = store_guard ? s_.m.bin(cur_, Bin::And, *store_guard, fits) : fits;
+        }
+        const auto at = begin_guarded(store_guard);
         s_.op(cur_, op_name, Attr::NoUnwind, s_.t.void_type, opcode, args);
         end_guarded(at, {});
         return;
@@ -550,19 +572,56 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
         const V h = handle(site, src, false, {10 | u, 0x409});
         const V at = index.value_or(s_.m.i32(0));
         r = s_.op(c, "bufferLoad.f32", Attr::ReadOnly, s_.t.res_ret, 68, {h, at, iu});
-    } else {
+    } else if (index) {
+        if (stride < 4 || stride % 4 != 0) fail("a structured buffer of unknown stride");
+        const V h = handle(site, src, false, {12 | u, stride});
+        const Ty i32t = s_.t.i32;
+        const Ty dims = s_.m.named_struct("dx.types.Dimensions", {i32t, i32t, i32t, i32t});
+        const V d = s_.op(cur_, "getDimensions", Attr::ReadOnly, dims, 72, {h, iu});
+        const V fits = s_.m.cmp(cur_, pred::kIult, *index, s_.m.extract(cur_, d, 0));
+        const auto bounds = begin_guarded(fits);
         const V mask = s_.m.i8(static_cast<std::uint8_t>((1u << count) - 1));
-        const V align = s_.m.i32(4);
-        if (index) {
-            if (stride < 4 || stride % 4 != 0) fail("a structured buffer of unknown stride");
-            const V h = handle(site, src, false, {12 | u, stride});
-            r = s_.op(c, "rawBufferLoad.f32", Attr::ReadOnly, s_.t.res_ret, 139,
-                      {h, *index, off, mask, align});
-        } else {
-            const V h = handle(site, src, false, {11 | u, 0});
-            r = s_.op(c, "rawBufferLoad.f32", Attr::ReadOnly, s_.t.res_ret, 139,
-                      {h, off, iu, mask, align});
+        const V loaded = s_.op(cur_, "rawBufferLoad.f32", Attr::ReadOnly, s_.t.res_ret, 139,
+                               {h, *index, off, mask, s_.m.i32(4)});
+        std::vector<std::pair<V, V>> words;
+        const V zero = s_.m.f32(0);
+        for (std::uint32_t k = 0; k < count; ++k)
+            words.emplace_back(s_.m.extract(cur_, loaded, k), zero);
+        const std::vector<V> safe = end_guarded(bounds, words);
+        if (!fields->data) fail("a buffer result");
+        const auto* data = std::get_if<VectorOperand>(&*fields->data);
+        if (data == nullptr) fail("a buffer result");
+        for (std::uint32_t k = 0; k < count; ++k)
+            write(inst, Reg::v(static_cast<std::uint8_t>(data->reg + k)), as_int(safe[k]), guard_value);
+        return;
+    } else {
+        const V h = handle(site, src, false, {11 | u, 0});
+        const std::vector<V> safe = bounded_raw_words(h, off, count);
+        if (!fields->data) fail("a buffer result");
+        const auto* data = std::get_if<VectorOperand>(&*fields->data);
+        if (data == nullptr) fail("a buffer result");
+        if (d16) {
+            const V k16 = s_.m.i32(16);
+            const Ty i32t = s_.t.i32;
+            for (std::uint32_t k = 0; k < (count + 1) / 2; ++k) {
+                std::optional<V> x;
+                const std::uint32_t worst = std::min(2 * k + 2, count);
+                for (std::uint32_t ch = worst; ch-- > 2 * k;) {
+                    const V packed = s_.op(cur_, "legacyF32ToF16", Attr::ReadNone, i32t, 130, {safe[ch]});
+                    if (x) {
+                        const V up = s_.m.bin(cur_, Bin::Shl, *x, k16);
+                        x = s_.m.bin(cur_, Bin::Or, packed, up);
+                    } else {
+                        x = packed;
+                    }
+                }
+                write(inst, Reg::v(static_cast<std::uint8_t>(data->reg + k)), *x, guard_value);
+            }
+            return;
         }
+        for (std::uint32_t k = 0; k < count; ++k)
+            write(inst, Reg::v(static_cast<std::uint8_t>(data->reg + k)), as_int(safe[k]), guard_value);
+        return;
     }
     if (!fields->data) fail("a buffer result");
     const auto* data = std::get_if<VectorOperand>(&*fields->data);
@@ -642,6 +701,32 @@ std::vector<V> Lower::load_indexed_heap_buffer(const Source& src, V index, V off
     values.reserve(count);
     for (std::uint32_t k = 0; k < count; ++k) values.emplace_back(as_int(s_.m.extract(cur_, r, k)), zero);
     return end_guarded(guarded, values);
+}
+
+V Lower::raw_byte_fits(V handle, V byte, std::uint32_t bytes) {
+    const std::size_t c = cur_;
+    const Ty i32 = s_.t.i32;
+    const Ty dims = s_.m.named_struct("dx.types.Dimensions", {i32, i32, i32, i32});
+    const V d = s_.op(c, "getDimensions", Attr::ReadOnly, dims, 72, {handle, s_.m.undef(i32)});
+    const V size = s_.m.extract(c, d, 0);
+    const V width = s_.m.i32(bytes == 0 ? 1 : bytes);
+    const V end = s_.m.bin(c, Bin::Add, byte, width);
+    const V no_wrap = s_.m.cmp(c, pred::kIuge, end, byte);
+    const V inside = s_.m.cmp(c, pred::kIule, end, size);
+    return s_.m.bin(c, Bin::And, no_wrap, inside);
+}
+
+std::vector<V> Lower::bounded_raw_words(V handle, V byte, std::uint32_t count) {
+    const V fits = raw_byte_fits(handle, byte, count * static_cast<std::uint32_t>(sizeof(std::uint32_t)));
+    const V zero = s_.m.f32(0);
+    const auto bounds = begin_guarded(fits);
+    const V mask = s_.m.i8(static_cast<std::uint8_t>((1u << count) - 1));
+    const V loaded = s_.op(cur_, "rawBufferLoad.f32", Attr::ReadOnly, s_.t.res_ret, 139,
+                           {handle, byte, s_.m.undef(s_.t.i32), mask, s_.m.i32(sizeof(std::uint32_t))});
+    std::vector<std::pair<V, V>> words;
+    words.reserve(count);
+    for (std::uint32_t k = 0; k < count; ++k) words.emplace_back(s_.m.extract(cur_, loaded, k), zero);
+    return end_guarded(bounds, words);
 }
 
 }  // namespace g6shim::shader::emit

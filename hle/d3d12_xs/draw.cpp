@@ -3,6 +3,7 @@
 #include "draw.hpp"
 
 #include "descriptor_host.hpp"
+#include "host.hpp"
 #include "indirect.hpp"
 #include "later.hpp"
 #include "pipeline.hpp"
@@ -598,8 +599,22 @@ bool State::bind(host::HostList& list, const pipeline_host::HostPipeline& pipeli
                     });
                     continue;
                 }
-                const auto gpu = root_view(list, entry->value, srv != 0);
-                if (!gpu) continue;
+                std::optional<std::uint64_t> gpu = root_view(list, entry->value, srv != 0);
+                if (!gpu) {
+                    const host::StandIn stand = host::stand_in();
+                    if (stand.gpu == 0) {
+                        static std::once_flag failed;
+                        std::call_once(failed, [] {
+                            G6SHIM_WARN("d3d12_xs: a draw or dispatch dropped: a root view has no host copy");
+                        });
+                        return false;
+                    }
+                    static std::once_flag once;
+                    std::call_once(once, [] {
+                        G6SHIM_WARN("d3d12_xs: a root view with no host copy reads a zero stand-in");
+                    });
+                    gpu = stand.gpu;
+                }
                 if (compute)
                     srv == 0 ? commands->SetComputeRootConstantBufferView(parameter, *gpu)
                              : commands->SetComputeRootShaderResourceView(parameter, *gpu);
