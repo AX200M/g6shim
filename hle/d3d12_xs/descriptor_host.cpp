@@ -208,6 +208,17 @@ bool empty_buffer_view(std::uint32_t elements) {
     std::call_once(once, [] { G6SHIM_INFO("d3d12_xs: a buffer view with no elements is made a null view"); });
     return true;
 }
+std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> exact_copy(std::uint64_t address, std::uint64_t bytes,
+                                                                 bool unordered) {
+    if (bytes == 0 || bytes > (std::uint64_t{1} << 28)) return std::nullopt;
+    host::Host* gpu = host::host();
+    if (gpu == nullptr) return std::nullopt;
+    auto made = unordered ? gpu->shared_buffer(bytes) : gpu->upload_buffer(bytes);
+    if (!made || made->second == nullptr) return std::nullopt;
+    std::memcpy(made->second, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(address)),
+                static_cast<std::size_t>(bytes));
+    return std::move(made->first);
+}
 
 std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> buffer_srv(std::uint64_t address, std::uint64_t bytes,
                                                                  D3D12_SHADER_RESOURCE_VIEW_DESC desc,
@@ -218,9 +229,13 @@ std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> buffer_srv(std::uint64_t a
     const std::uint64_t element = element_size(desc);
     const std::uint64_t offset = (*shadow)->offset(address);
     if (element == 0 || offset % element != 0) {
-        G6SHIM_WARN("d3d12_xs: buffer view not on an element of its host copy (offset %llu, element %llu)",
-                    static_cast<unsigned long long>(offset), static_cast<unsigned long long>(element));
-        return std::nullopt;
+        auto copy = exact_copy(address, bytes, false);
+        if (!copy) return std::nullopt;
+        desc.Buffer.FirstElement = 0;
+        host::Host* gpu = host::host();
+        if (gpu == nullptr) return std::nullopt;
+        gpu->device()->CreateShaderResourceView(copy->Get(), &desc, at);
+        return copy;
     }
     desc.Buffer.FirstElement += static_cast<UINT>(offset / element);
     host::Host* gpu = host::host();
@@ -249,8 +264,14 @@ std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> buffer_uav(std::uint64_t a
                   : format ? format->first : 0;
     const std::uint64_t offset = (*shadow)->offset(address);
     if (element == 0 || offset % element != 0) {
-        G6SHIM_WARN("d3d12_xs: unordered buffer view not on an element of its host copy");
-        return std::nullopt;
+        auto copy = exact_copy(address, bytes, true);
+        if (!copy) return std::nullopt;
+        desc.Buffer.FirstElement = 0;
+        desc.Buffer.CounterOffsetInBytes = 0;
+        host::Host* gpu = host::host();
+        if (gpu == nullptr) return std::nullopt;
+        gpu->device()->CreateUnorderedAccessView(copy->Get(), nullptr, &desc, at);
+        return copy;
     }
     desc.Buffer.FirstElement += static_cast<UINT>(offset / element);
     desc.Buffer.CounterOffsetInBytes = 0;

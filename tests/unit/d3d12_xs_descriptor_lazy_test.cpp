@@ -493,3 +493,54 @@ TEST(d3d12_xs_lazy_off_mirrors_a_write_before_the_next_draw) {
     CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
     release(heap_object);
 }
+
+TEST(d3d12_xs_an_off_element_buffer_view_keeps_its_own_copy) {
+    host::Host* gpu = host::host();
+    if (gpu == nullptr) return;
+    LazyOff eager;
+    Object* heap = make_heap(4);
+    Object* buffer = make_buffer(256);
+    CHECK(heap != nullptr && buffer != nullptr);
+    if (heap == nullptr || buffer == nullptr) {
+        release(heap);
+        release(buffer);
+        return;
+    }
+    std::uint8_t* bytes = reinterpret_cast<std::uint8_t*>(title_words(buffer));
+    CHECK(bytes != nullptr);
+    if (bytes == nullptr) {
+        release(heap);
+        release(buffer);
+        return;
+    }
+    bytes[8] = 0x5A;
+    publish(buffer);
+    const std::uint64_t handle = static_cast<descriptor::Heap*>(heap)->start;
+    std::array<std::uint32_t, 14> resource{};
+    resource[0] = D3D12_RESOURCE_DIMENSION_BUFFER;
+    resource[4] = 56;
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+    srv.Format = DXGI_FORMAT_UNKNOWN;
+    srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Buffer.NumElements = 1;
+    srv.Buffer.StructureByteStride = 56;
+    std::array<std::uint32_t, 16> words{};
+    std::memcpy(words.data(), &srv, sizeof srv);
+    const std::uint64_t address = reinterpret_cast<std::uint64_t>(bytes) + 8;
+    words[10] = static_cast<std::uint32_t>(address);
+    words[11] = static_cast<std::uint32_t>(address >> 32);
+    descriptor::create_placed_srv(nullptr, resource.data(), words.data(), handle);
+    descriptor_host::HostHeap* host_heap = descriptor_host::for_heap(heap);
+    CHECK(host_heap != nullptr);
+    if (host_heap == nullptr) {
+        release(heap);
+        release(buffer);
+        return;
+    }
+    const auto view = descriptor_host::materialize_for_draw(heap, 0, handle);
+    CHECK(view.has_value());
+    CHECK(host_heap->kept(0).Get() != nullptr);
+    release(heap);
+    release(buffer);
+}
