@@ -253,6 +253,10 @@ struct SubmissionHook {
 std::mutex submission_hook_mutex;
 SubmissionHook submission_hook;
 
+bool submission_hook_installed() {
+    std::lock_guard<std::mutex> lock(submission_hook_mutex);
+    return submission_hook.step != nullptr;
+}
 bool submission_confirmed(const SubmissionResult& result, HRESULT removed) {
     return SUCCEEDED(result.signal) && SUCCEEDED(result.armed) && result.wait == WAIT_OBJECT_0 &&
            SUCCEEDED(removed);
@@ -692,7 +696,7 @@ struct Host::Composer {
     std::array<Pipeline, kPresentPipelineSlots> pipelines{};
 };
 
-Host::~Host() = default;
+Host::~Host() { stop_completion(); }
 
 Host* Host::get() {
     static Host* instance = []() -> Host* {
@@ -760,7 +764,15 @@ std::unique_ptr<HostList> Host::new_list() {
     return made;
 }
 
+void record_submission_timing(SubmissionTiming sample) { note_submission_timing(std::move(sample)); }
+
+IntervalTiming take_submission_interval() { return take_interval_timing(); }
+
 void Host::execute(const std::vector<HostList*>& runs) {
+    const bool async = completion_thread_enabled() && !submission_hook_installed();
+    if (!async) wait_idle();
+    Object* bound = submitting_queue();
+    begin_queue_submission(nullptr);
     std::lock_guard<std::mutex> submitted_lock(submitted_mutex_);
     release_retained();
     SubmissionTiming timing;
@@ -770,87 +782,161 @@ void Host::execute(const std::vector<HostList*>& runs) {
     std::vector<ID3D12CommandList*> lists;
     lists.reserve(runs.size() * 2 + 3);
     for (HostList* list : runs) {
+        if (list == nullptr) continue;
         list->run_deferred(batch);
         if (ID3D12CommandList* prelude = list->prelude()) lists.push_back(prelude);
         lists.push_back(list->list());
     }
     batch.flush();
-    std::vector<std::tuple<std::shared_ptr<shadow::Shadow>, std::size_t, std::size_t>> back;
     for (HostList* list : runs) {
+        if (list == nullptr) continue;
         std::lock_guard<std::mutex> lock(list->deferred_mutex_);
         for (const Step& step : list->deferred_.copies) {
             const auto* write = std::get_if<GpuWriteStep>(&step);
-            if (write == nullptr) continue;
+            if (write == nullptr || !write->shadow) continue;
             write->shadow->arm_card(write->address, write->bytes);
-            const bool known = std::any_of(back.begin(), back.end(), [&](const auto& entry) {
-                return std::get<0>(entry).get() == write->shadow.get() && std::get<1>(entry) == write->address &&
-                       std::get<2>(entry) == write->bytes;
-            });
-            if (!known) back.emplace_back(write->shadow, write->address, write->bytes);
         }
     }
     card::Batch cards = card::take_batch();
-    if (ID3D12CommandList* prepare = cards.prepare(device_.Get())) lists.insert(lists.begin(), prepare);
+    const bool card_prepare = cards.needs_prepare();
+    const bool card_read = cards.needs_readback();
+    bool cards_open = false;
+    if (card_prepare || card_read) {
+        card::wait_recorder();
+        if (card_prepare) {
+            if (ID3D12CommandList* prepare = cards.prepare(device_.Get())) lists.insert(lists.begin(), prepare);
+        }
+        card::mark_recorder_busy();
+        cards_open = true;
+    }
     timing.prepare.milliseconds = milliseconds_since(prepared);
     timing.prepare.bytes = batch.copied();
-    const bool timed = bracket_timestamps(lists);
+    const bool timed = !async && bracket_timestamps(lists);
     ++submitted_;
     const auto executed = std::chrono::steady_clock::now();
-    queue_->ExecuteCommandLists(static_cast<UINT>(lists.size()), lists.data());
+    if (!lists.empty()) queue_->ExecuteCommandLists(static_cast<UINT>(lists.size()), lists.data());
     timing.execute_call.milliseconds = milliseconds_since(executed);
-    const auto waited = std::chrono::steady_clock::now();
-    const SubmissionResult result = complete_submission(queue_.Get(), fence_.Get(), submitted_, event_);
-    timing.wait.milliseconds = milliseconds_since(waited);
+    if (!async) {
+        const auto waited = std::chrono::steady_clock::now();
+        const SubmissionResult result = complete_submission(queue_.Get(), fence_.Get(), submitted_, event_);
+        timing.wait.milliseconds = milliseconds_since(waited);
+        const HRESULT removed = device_->GetDeviceRemovedReason();
+        if (!submission_confirmed(result, removed)) {
+            log_submission_failure(result, removed);
+            if (FAILED(removed)) {
+                for (HostList* list : runs)
+                    if (list != nullptr) list->discard_unpublished();
+                held_.clear();
+            } else {
+                retain_incomplete(runs, SUCCEEDED(result.signal));
+            }
+            log_messages();
+            note_submission_timing(std::move(timing));
+            if (cards_open) card::release_recorder();
+            return;
+        }
+        if (timed) {
+            if (const std::optional<double> gpu = resolve_timestamps()) {
+                timing.gpu.milliseconds = *gpu;
+                timing.gpu_known = true;
+            }
+        }
+        if (cards_open) cards.read_changed(device_.Get(), queue_.Get());
+        const auto copied_at = std::chrono::steady_clock::now();
+        std::vector<std::tuple<std::shared_ptr<shadow::Shadow>, std::size_t, std::size_t>> back;
+        for (HostList* list : runs) {
+            if (list == nullptr) continue;
+            std::lock_guard<std::mutex> lock(list->deferred_mutex_);
+            for (const Step& step : list->deferred_.copies) {
+                const auto* write = std::get_if<GpuWriteStep>(&step);
+                if (write == nullptr || !write->shadow) continue;
+                const bool known = std::any_of(back.begin(), back.end(), [&](const auto& entry) {
+                    return std::get<0>(entry).get() == write->shadow.get() && std::get<1>(entry) == write->address &&
+                           std::get<2>(entry) == write->bytes;
+                });
+                if (!known) back.emplace_back(write->shadow, write->address, write->bytes);
+            }
+        }
+        std::uint64_t copied = 0;
+        for (const auto& [copy, address, bytes] : back) copied += copy->copy_back(address, bytes);
+        if (cards_open) {
+            cards.sync_kept(device_.Get(), queue_.Get());
+            card::release_recorder();
+            cards_open = false;
+        }
+        timing.copy_back.bytes = copied;
+        timing.copy_back.milliseconds = milliseconds_since(copied_at);
+        note_submission_timing(std::move(timing));
+        for (HostList* list : runs) {
+            if (list == nullptr) continue;
+            std::lock_guard<std::mutex> lock(list->deferred_mutex_);
+            for (const WriteStep& write : list->deferred_.writes)
+                write.written.write(write.destination, write.bytes);
+        }
+        confirmed_ = submitted_;
+        release_retained();
+        log_messages();
+        shadow::submission_completed();
+        return;
+    }
+    const HRESULT signalled = queue_->Signal(fence_.Get(), submitted_);
     const HRESULT removed = device_->GetDeviceRemovedReason();
-    if (!submission_confirmed(result, removed)) {
+    if (FAILED(signalled) || FAILED(removed)) {
+        SubmissionResult result;
+        result.signal = signalled;
+        result.wait = WAIT_FAILED;
         log_submission_failure(result, removed);
         if (FAILED(removed)) {
             for (HostList* list : runs)
                 if (list != nullptr) list->discard_unpublished();
             held_.clear();
         } else {
-            retain_incomplete(runs, SUCCEEDED(result.signal));
+            retain_incomplete(runs, SUCCEEDED(signalled));
         }
         log_messages();
         note_submission_timing(std::move(timing));
+        if (cards_open) {
+            if (FAILED(signalled)) queue_->Signal(fence_.Get(), submitted_);
+            complete_submission(queue_.Get(), fence_.Get(), submitted_, event_);
+            card::release_recorder();
+        }
         return;
     }
-    if (timed) {
-        if (const std::optional<double> gpu = resolve_timestamps()) {
-            timing.gpu.milliseconds = *gpu;
-            timing.gpu_known = true;
-        }
-    }
-    const auto copied_at = std::chrono::steady_clock::now();
-    bool card_ready = true;
-    if (ID3D12CommandList* compare = cards.compare(device_.Get())) {
-        ++submitted_;
-        queue_->ExecuteCommandLists(1, &compare);
-        const SubmissionResult compared = complete_submission(queue_.Get(), fence_.Get(), submitted_, event_);
-        const HRESULT compare_removed = device_->GetDeviceRemovedReason();
-        card_ready = submission_confirmed(compared, compare_removed);
-        if (!card_ready) {
-            log_submission_failure(compared, compare_removed);
-            if (FAILED(compare_removed))
-                fail("the host GPU device was removed after a card compare");
-        } else {
-            cards.fetch(device_.Get(), queue_.Get());
-        }
-    }
-    std::uint64_t copied = 0;
-    for (const auto& [copy, address, bytes] : back) copied += copy->copy_back(address, bytes);
-    if (card_ready) cards.sync_kept(device_.Get(), queue_.Get());
-    timing.copy_back.bytes = copied;
-    timing.copy_back.milliseconds = milliseconds_since(copied_at);
-    note_submission_timing(std::move(timing));
+    FlightInput flight;
+    flight.host_value = submitted_;
+    flight.queue = bound;
+    flight.timing = timing;
     for (HostList* list : runs) {
-        std::lock_guard<std::mutex> lock(list->deferred_mutex_);
-        for (const WriteStep& write : list->deferred_.writes) write.written.write(write.destination, write.bytes);
+        if (list == nullptr) continue;
+        list->retain_objects(flight.kept);
+        {
+            std::lock_guard<std::mutex> lock(list->deferred_mutex_);
+            for (const Step& step : list->deferred_.copies) {
+                const auto* write = std::get_if<GpuWriteStep>(&step);
+                if (write != nullptr && write->shadow)
+                    flight.writes.emplace_back(write->shadow, write->address, write->bytes);
+            }
+            list->deferred_.copies.erase(std::remove_if(list->deferred_.copies.begin(), list->deferred_.copies.end(),
+                                                        [](const Step& step) {
+                                                            return std::holds_alternative<GpuWriteStep>(step);
+                                                        }),
+                                         list->deferred_.copies.end());
+            flight.deferred.insert(flight.deferred.end(), list->deferred_.writes.begin(), list->deferred_.writes.end());
+            list->deferred_.writes.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock(list->scratch_mutex_);
+            for (const auto& chunk : list->chunks_)
+                if (chunk.buffer) flight.kept.emplace_back(chunk.buffer.Get());
+            list->chunks_.clear();
+            list->current_chunk_ = 0;
+            list->used_ = 0;
+        }
     }
-    confirmed_ = submitted_;
-    release_retained();
+    flight.cards = std::move(cards);
+    flight.cards_open = cards_open;
+    enqueue_flight(std::move(flight));
     log_messages();
-    shadow::submission_completed();
 }
 
 bool Host::ensure_timestamps() {
@@ -1158,6 +1244,7 @@ std::optional<bool> Host::present(ID3D12Resource* texture, std::uint32_t state, 
     list->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
     presenter->copy->close();
     execute({presenter->copy.get()});
+    wait_idle();
     presenter->swap_chain->Present(kPresentInterval, 0);
     if (capturing) finish_capture(number, desc, capture);
     presenter->meter.frame(presenter->hwnd);
@@ -1353,6 +1440,7 @@ std::optional<bool> Host::present(std::span<const PresentedPlane> planes, std::u
     }
     presenter->copy->close();
     execute({presenter->copy.get()});
+    wait_idle();
     presenter->swap_chain->Present(kPresentInterval, 0);
     if (capturing) finish_capture(number, capture_desc, capture);
     presenter->meter.frame(presenter->hwnd);

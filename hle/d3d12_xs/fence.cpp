@@ -70,17 +70,21 @@ HRESULT set_event_on_completion(Object* object, std::uint64_t value, void* event
 
 HRESULT signal_impl(Object* object, std::uint64_t value) {
     Fence* fence = fence_of(object);
-    std::lock_guard<std::mutex> lock(fence->mutex);
-    fence->value.store(value, std::memory_order_release);
-    auto& waiters = fence->waiters;
-    for (auto it = waiters.begin(); it != waiters.end();) {
-        if (it->value <= value) {
-            set_event(it->event);
-            it = waiters.erase(it);
-        } else {
-            ++it;
+    std::vector<void*> wake;
+    {
+        std::lock_guard<std::mutex> lock(fence->mutex);
+        fence->value.store(value, std::memory_order_release);
+        auto& waiters = fence->waiters;
+        for (auto it = waiters.begin(); it != waiters.end();) {
+            if (it->value <= value) {
+                wake.push_back(it->event);
+                it = waiters.erase(it);
+            } else {
+                ++it;
+            }
         }
     }
+    for (void* event : wake) set_event(event);
     return S_OK;
 }
 

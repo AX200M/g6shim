@@ -97,9 +97,14 @@ TEST(d3d12_xs_submitted_lists_run_on_the_host) {
     slot<void (*)(Object*, std::uint32_t, Object* const*)>(queue_object, 0x50)(queue_object, 1, submitted);
     Object* fence_object = nullptr;
     CHECK(fence::create(nullptr, 0, 0, &fence::kIids[0], &fence_object) == S_OK);
+    HANDLE event = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    CHECK(event != nullptr);
+    CHECK(slot<HRESULT (*)(Object*, std::uint64_t, void*)>(fence_object, 0x48)(fence_object, 42, event) == S_OK);
     CHECK(slot<HRESULT (*)(Object*, Object*, std::uint64_t)>(queue_object, 0x80)(queue_object, fence_object, 42) ==
           S_OK);
+    CHECK(::WaitForSingleObject(event, 5000) == WAIT_OBJECT_0);
     CHECK(slot<std::uint64_t (*)(Object*)>(fence_object, 0x40)(fence_object) == 42);
+    ::CloseHandle(event);
     CHECK(slot<std::uint32_t (*)(Object*)>(queue_object, 0x10)(queue_object) == 0);
     CHECK(slot<std::uint32_t (*)(Object*)>(commands, 0x10)(commands) == 0);
     CHECK(slot<std::uint32_t (*)(Object*)>(allocator, 0x10)(allocator) == 0);

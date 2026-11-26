@@ -178,6 +178,7 @@ bool dispatch_read(host::Host* gpu, const ShaderRead& reader, std::uint32_t offs
     commands->Dispatch(1, 1, 1);
     list->close();
     gpu->execute({list.get()});
+    host::wait_idle();
     return true;
 }
 
@@ -328,6 +329,7 @@ TEST(d3d12_xs_lazy_rewrite_between_draws_is_read_at_execution) {
     commands->Dispatch(1, 1, 1);
     list->close();
     gpu->execute({list.get()});
+    host::wait_idle();
     const auto* read = reinterpret_cast<const std::uint32_t*>(output->second);
     CHECK(read[0] == kLater);
     CHECK(read[1] == kLater);

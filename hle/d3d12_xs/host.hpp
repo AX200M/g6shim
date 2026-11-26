@@ -3,6 +3,7 @@
 #pragma once
 
 #include "object.hpp"
+#include "card.hpp"
 
 #include <windows.h>
 #include <d3d12.h>
@@ -180,6 +181,36 @@ struct IntervalTiming {
 void add_submission_timing(IntervalTiming& interval, const SubmissionTiming& sample);
 IntervalTiming summarise_interval(std::span<const SubmissionTiming> samples);
 std::optional<double> last_gpu_milliseconds_for_test();
+
+inline constexpr std::uint32_t kCompletionDepth = 3;
+
+struct FlightInput {
+    std::uint64_t host_value = 0;
+    Object* queue = nullptr;
+    std::vector<std::tuple<std::shared_ptr<shadow::Shadow>, std::size_t, std::size_t>> writes;
+    std::vector<WriteStep> deferred;
+    std::vector<Microsoft::WRL::ComPtr<IUnknown>> kept;
+    card::Batch cards;
+    bool cards_open = false;
+    SubmissionTiming timing;
+};
+
+bool completion_thread_enabled();
+void begin_queue_submission(Object* queue);
+Object* submitting_queue();
+void wait_for_writes(const void* address, std::size_t bytes);
+void wait_idle();
+void note_queue_signal(Object* queue, Object* fence, std::uint64_t value);
+void note_queue_wait(Object* queue, Object* fence, std::uint64_t value);
+void await_queue_waits(Object* queue);
+void enqueue_flight(FlightInput flight);
+void record_submission_timing(SubmissionTiming sample);
+IntervalTiming take_submission_interval();
+void stop_completion();
+std::uint32_t in_flight_for_test();
+void pause_completion_for_test(bool pause);
+void abandon_in_flight_for_test();
+void set_device_removed_for_test(bool removed);
 
 class HostList;
 

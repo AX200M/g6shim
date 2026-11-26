@@ -164,6 +164,7 @@ void check_indexed_buffer_results(Lowered lowered) {
         commands->Dispatch(1, 1, 1);
         list->close();
         gpu->execute({list.get()});
+        host::wait_idle();
         std::memcpy(result.data(), output->second, sizeof result);
         return result;
     };

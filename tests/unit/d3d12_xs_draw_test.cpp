@@ -288,6 +288,7 @@ TEST(d3d12_xs_list_dispatches_through_a_host_pipeline) {
         reader->list()->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
         reader->close();
         gpu->execute({reader.get()});
+        host::wait_idle();
         CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
         void* mapped = nullptr;
         const D3D12_RANGE range{0, static_cast<SIZE_T>(total)};

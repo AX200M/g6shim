@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cstring>
 #include <mutex>
+#include <condition_variable>
 #include <optional>
 #include <utility>
 
@@ -98,6 +99,9 @@ struct Recorder {
 };
 
 std::mutex g_mutex;
+std::mutex g_recorder_mutex;
+std::condition_variable g_recorder_ready;
+bool g_recorder_busy = false;
 std::vector<std::weak_ptr<Side>> g_live;
 std::atomic<std::uint64_t> g_reserved{0};
 Recorder g_recorder;
@@ -470,7 +474,20 @@ Batch take_batch() {
     return batch;
 }
 
+bool Batch::needs_prepare() const {
+    for (const auto& side : sides_)
+        if (side && (!side->baseline_ || !side->uploads_.empty())) return true;
+    return false;
+}
+
+bool Batch::needs_readback() const {
+    for (const auto& side : sides_)
+        if (side && side->baseline_ && !side->watched_.empty()) return true;
+    return false;
+}
+
 ID3D12CommandList* Batch::prepare(ID3D12Device* device) {
+    if (!needs_prepare()) return nullptr;
     ID3D12GraphicsCommandList* list = g_recorder.begin(device);
     if (list == nullptr) return nullptr;
     bool any = false;
@@ -539,4 +556,26 @@ void Batch::sync_kept(ID3D12Device* device, ID3D12CommandQueue* queue) {
     if (any && closed != nullptr) g_recorder.submit(queue, closed);
 }
 
+void Batch::read_changed(ID3D12Device* device, ID3D12CommandQueue* queue) {
+    if (ID3D12CommandList* compared = compare(device)) g_recorder.submit(queue, compared);
+    fetch(device, queue);
+}
+
+void wait_recorder() {
+    std::unique_lock<std::mutex> lock(g_recorder_mutex);
+    g_recorder_ready.wait(lock, [] { return !g_recorder_busy; });
+}
+
+void mark_recorder_busy() {
+    std::lock_guard<std::mutex> lock(g_recorder_mutex);
+    g_recorder_busy = true;
+}
+
+void release_recorder() {
+    {
+        std::lock_guard<std::mutex> lock(g_recorder_mutex);
+        g_recorder_busy = false;
+    }
+    g_recorder_ready.notify_all();
+}
 }  // namespace g6shim::d3d12_xs::card

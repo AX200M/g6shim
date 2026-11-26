@@ -48,6 +48,8 @@ int main(int argc, char** argv) {
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
 #endif
     using namespace g6shim::test;
+    extern void g6shim_completion_tests_anchor();
+    g6shim_completion_tests_anchor();
     const char* only = argc > 1 ? argv[1] : nullptr;
     int run = 0;
     for (const auto& c : cases()) {

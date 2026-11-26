@@ -237,6 +237,7 @@ TEST(d3d12_xs_present_composes_scaled_planes_over_the_first) {
     list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
     commands->close();
     gpu->execute({commands.get()});
+    host::wait_idle();
     CHECK(device->GetDeviceRemovedReason() == S_OK);
 
     void* mapped = nullptr;

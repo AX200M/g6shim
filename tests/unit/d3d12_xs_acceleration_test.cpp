@@ -178,6 +178,7 @@ TEST(d3d12_xs_command_list_builds_copies_and_queries_an_acceleration_structure) 
     Object* queue_object = nullptr;
     CHECK(queue::create(nullptr, &queue_desc, &queue::kIids[0], &queue_object) == S_OK);
     slot<void (*)(Object*, std::uint32_t, Object* const*)>(queue_object, 0x50)(queue_object, 1, &commands);
+    host::wait_idle();
     CHECK(host::host()->device()->GetDeviceRemovedReason() == S_OK);
 
     const std::uint8_t* built = window.readback + blas;

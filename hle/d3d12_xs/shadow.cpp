@@ -257,51 +257,56 @@ std::size_t Shadow::merge_card(std::size_t address, std::size_t bytes) {
 }
 
 std::size_t Shadow::copy_back(std::size_t address, std::size_t bytes) {
-    std::lock_guard<std::mutex> snapshot_lock(before_mutex_);
     std::size_t written = 0;
-    const auto [from, to] = inside(address, bytes);
-    const std::size_t start = static_cast<std::size_t>(start_);
-    if (card_) {
-        written = merge_card(address, bytes);
-    } else if (before_ && before_->first <= from && to <= before_->first + before_->second.size() && from < to) {
-        const std::vector<std::uint8_t>& before = before_->second;
-        constexpr std::size_t kPiece = 64 << 10;
-        std::vector<std::uint8_t> title(kPiece, 0);
-        std::vector<std::size_t> synced;
-        std::size_t at = from;
-        while (at < to) {
-            const std::size_t n = std::min(kPiece - (start + at) % kPiece, to - at);
-            std::uint8_t* host = data_ + at;
-            const std::uint8_t* old = before.data() + (at - from);
-            if (std::memcmp(host, old, n) != 0 &&
-                host::read_into(reinterpret_cast<const std::uint8_t*>(start + at),
-                                std::span<std::uint8_t>(title.data(), n))) {
-                bool changed = false;
-                for (std::size_t i = 0; i < n; ++i) {
-                    if (host[i] != old[i] && title[i] != host[i]) {
-                        title[i] = host[i];
-                        changed = true;
+    {
+        std::lock_guard<std::mutex> snapshot_lock(before_mutex_);
+        const auto [from, to] = inside(address, bytes);
+        const std::size_t start = static_cast<std::size_t>(start_);
+        if (card_) {
+            written = merge_card(address, bytes);
+        } else if (before_ && before_->first <= from && to <= before_->first + before_->second.size() && from < to) {
+            const std::vector<std::uint8_t>& before = before_->second;
+            constexpr std::size_t kPiece = 64 << 10;
+            std::vector<std::uint8_t> title(kPiece, 0);
+            std::vector<std::size_t> synced;
+            std::size_t at = from;
+            while (at < to) {
+                const std::size_t n = std::min(kPiece - (start + at) % kPiece, to - at);
+                std::uint8_t* host = data_ + at;
+                const std::uint8_t* old = before.data() + (at - before_->first);
+                if (n == 0 || host == nullptr || old == nullptr) break;
+                if (host::read_into(reinterpret_cast<const std::uint8_t*>(start + at),
+                                    std::span<std::uint8_t>(title.data(), n))) {
+                    bool changed = false;
+                    for (std::size_t i = 0; i < n; ++i) {
+                        if (title[i] != old[i]) {
+                            host[i] = title[i];
+                        } else if (host[i] != old[i]) {
+                            title[i] = host[i];
+                            changed = true;
+                        }
                     }
-                    host[i] = title[i];
+                    if (changed) {
+                        watch::writing(start + at, n);
+                        host::write_mapped(reinterpret_cast<std::uint8_t*>(start + at), title.data(), n);
+                        written += n;
+                    }
+                    if (n > 0 && host != nullptr && old != nullptr && (changed || std::memcmp(host, old, n) != 0))
+                        synced.push_back((start + at) / watch::kPageBytes);
                 }
-                if (changed) {
-                    watch::writing(start + at, n);
-                    host::write_mapped(reinterpret_cast<std::uint8_t*>(start + at), title.data(), n);
-                    written += n;
-                }
-                synced.push_back((start + at) / watch::kPageBytes);
+                at += n;
             }
-            at += n;
-        }
-        const std::size_t first = (start + from + watch::kPageBytes - 1) / watch::kPageBytes;
-        const std::size_t last = (start + to) / watch::kPageBytes;
-        if (first < last && !synced.empty() && watched_.load(std::memory_order_relaxed) != kNotWatched) {
-            const auto pages = watch::writes(first * watch::kPageBytes, last * watch::kPageBytes, true);
-            if (pages) {
-                const std::size_t base = start / watch::kPageBytes;
-                std::lock_guard<std::mutex> lock(copied_mutex_);
-                for (const std::size_t page : synced)
-                    if (page >= first && page < last) copied_[page - base] = pages->asked;
+            const std::size_t first = (start + from + watch::kPageBytes - 1) / watch::kPageBytes;
+            const std::size_t last = (start + to) / watch::kPageBytes;
+            if (first < last && !synced.empty() && watched_.load(std::memory_order_relaxed) != kNotWatched) {
+                const auto pages = watch::writes(first * watch::kPageBytes, last * watch::kPageBytes, true);
+                if (pages) {
+                    const std::size_t base = start / watch::kPageBytes;
+                    std::lock_guard<std::mutex> lock(copied_mutex_);
+                    for (const std::size_t page : synced)
+                        if (page >= base && page - base < copied_.size() && page >= first && page < last)
+                            copied_[page - base] = pages->asked;
+                }
             }
         }
     }
@@ -309,26 +314,32 @@ std::size_t Shadow::copy_back(std::size_t address, std::size_t bytes) {
         std::lock_guard<std::mutex> lock(pending_mutex_);
         const auto range = std::make_pair(address, address + bytes);
         pending_.erase(std::remove(pending_.begin(), pending_.end(), range), pending_.end());
-        if (pending_.empty() && before_) {
-            give_back(std::move(before_->second));
-            before_.reset();
+        if (pending_.empty()) {
+            std::lock_guard<std::mutex> snapshot_lock(before_mutex_);
+            if (before_) {
+                give_back(std::move(before_->second));
+                before_.reset();
+            }
         }
     }
     return written;
 }
 
 void Shadow::discard_write(std::size_t address, std::size_t bytes) {
-    std::lock_guard<std::mutex> snapshot_lock(before_mutex_);
     std::lock_guard<std::mutex> lock(pending_mutex_);
     const auto range = std::make_pair(address, address + bytes);
     pending_.erase(std::remove(pending_.begin(), pending_.end(), range), pending_.end());
-    if (pending_.empty() && before_) {
-        give_back(std::move(before_->second));
-        before_.reset();
+    if (pending_.empty()) {
+        std::lock_guard<std::mutex> snapshot_lock(before_mutex_);
+        if (before_) {
+            give_back(std::move(before_->second));
+            before_.reset();
+        }
     }
 }
 
 std::size_t Shadow::update(std::size_t address, std::size_t bytes) {
+    host::wait_for_writes(reinterpret_cast<const void*>(address), bytes);
     const std::size_t start = static_cast<std::size_t>(start_);
     const std::size_t end = static_cast<std::size_t>(start_ + bytes_);
     if (address >= end || bytes == 0) return 0;

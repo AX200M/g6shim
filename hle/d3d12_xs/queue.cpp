@@ -41,7 +41,7 @@ void query_interface(Object* object, const Iid* iid, Object** out) {
 
 std::uint32_t release_queue(Object* object) { return release_boxed<Queue>(object); }
 
-void execute(Object*, std::uint32_t count, Object* const* lists) {
+void execute(Object* queue_object, std::uint32_t count, Object* const* lists) {
     if (lists == nullptr) return;
     if (host::Host* gpu = host::host()) {
         std::vector<host::HostList*> runs;
@@ -51,6 +51,8 @@ void execute(Object*, std::uint32_t count, Object* const* lists) {
                 runs.push_back(host_list);
         }
         if (runs.empty()) return;
+        host::await_queue_waits(queue_object);
+        host::begin_queue_submission(queue_object);
         gpu->execute(runs);
         return;
     }
@@ -66,17 +68,19 @@ void execute_x(Object* object, std::uint32_t count, Object* const* lists, std::u
 
 void marker(Object*) {}
 
-HRESULT signal(Object*, Object* fence_object, std::uint64_t value) {
+HRESULT signal(Object* queue_object, Object* fence_object, std::uint64_t value) {
     if (fence_object == nullptr) return E_INVALIDARG;
-    return fence::signal(fence_object, value);
+    host::note_queue_signal(queue_object, fence_object, value);
+    return S_OK;
 }
 
 HRESULT signal2_x(Object* object, Object* fence_object, std::uint64_t value, const void*, const void*) {
     return signal(object, fence_object, value);
 }
 
-HRESULT wait(Object*, Object* fence_object, std::uint64_t) {
+HRESULT wait(Object* queue_object, Object* fence_object, std::uint64_t value) {
     if (fence_object == nullptr) return E_INVALIDARG;
+    host::note_queue_wait(queue_object, fence_object, value);
     return S_OK;
 }
 

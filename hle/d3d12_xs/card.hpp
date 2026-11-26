@@ -31,8 +31,11 @@ class Side;
 
 class Batch {
 public:
+    bool needs_prepare() const;
+    bool needs_readback() const;
     ID3D12CommandList* prepare(ID3D12Device* device);
     ID3D12CommandList* compare(ID3D12Device* device);
+    void read_changed(ID3D12Device* device, ID3D12CommandQueue* queue);
     void fetch(ID3D12Device* device, ID3D12CommandQueue* queue);
     void sync_kept(ID3D12Device* device, ID3D12CommandQueue* queue);
 
@@ -42,6 +45,10 @@ private:
 };
 
 Batch take_batch();
+void wait_recorder();
+void mark_recorder_busy();
+void release_recorder();
+
 
 class Side {
 public:

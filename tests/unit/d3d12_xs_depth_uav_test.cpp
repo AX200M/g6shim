@@ -462,6 +462,7 @@ TEST(d3d12_xs_depth_unordered_write_matches_depth_test) {
                 reader->list()->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
                 reader->close();
                 gpu->execute({reader.get()});
+                host::wait_idle();
                 void* mapped = nullptr;
                 const D3D12_RANGE range{0, static_cast<SIZE_T>(total)};
                 CHECK(SUCCEEDED(depth_read->Map(0, &range, &mapped)));

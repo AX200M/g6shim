@@ -27,7 +27,10 @@
 
 using namespace g6shim::d3d12_xs;
 
+void g6shim_completion_tests_anchor();
+
 namespace {
+
 
 constexpr DWORD kWriteWatch = 0x0020'0000;
 
@@ -38,6 +41,7 @@ struct WarpEnvironment {
 const WarpEnvironment g_warp_environment;
 
 host::Host* test_host() {
+    g6shim_completion_tests_anchor();
     static host::Host* instance = [] {
         ::SetEnvironmentVariableA("G6SHIM_D3D_WARP", "1");
         return host::host();
@@ -411,6 +415,7 @@ TEST(d3d12_xs_host_completed_submission_publishes_deferred_writes) {
     list->defer_write(reinterpret_cast<std::uint8_t*>(&destination), host::Written::of(0x11), 8);
     list->close();
     gpu->execute({list.get()});
+    host::wait_idle();
     CHECK(destination == 0x11);
     CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
 }
@@ -453,8 +458,14 @@ TEST(d3d12_xs_host_interval_timing_sums_and_keeps_the_max) {
 }
 
 struct FrameTimingGuard {
-    FrameTimingGuard() { ::SetEnvironmentVariableA("G6SHIM_FRAME_TIMING", "1"); }
-    ~FrameTimingGuard() { ::SetEnvironmentVariableA("G6SHIM_FRAME_TIMING", nullptr); }
+    FrameTimingGuard() {
+        ::SetEnvironmentVariableA("G6SHIM_FRAME_TIMING", "1");
+        ::SetEnvironmentVariableA("G6SHIM_COMPLETION_THREAD", "0");
+    }
+    ~FrameTimingGuard() {
+        ::SetEnvironmentVariableA("G6SHIM_FRAME_TIMING", nullptr);
+        ::SetEnvironmentVariableA("G6SHIM_COMPLETION_THREAD", nullptr);
+    }
 };
 
 TEST(d3d12_xs_host_timestamps_resolve_to_a_non_negative_gpu_duration) {
@@ -699,6 +710,7 @@ void refresh_all(host::Host* gpu, const std::shared_ptr<shadow::Shadow>& copy, s
     copy->refresh(*list, address, copy->bytes());
     list->close();
     gpu->execute({list.get()});
+    host::wait_idle();
 }
 
 }  // namespace
@@ -779,6 +791,7 @@ TEST(d3d12_xs_card_uploads_a_cpu_write_between_submissions) {
         list->list()->CopyBufferRegion(readback.Get(), 0, copy->buffer(), 128, 1);
     list->close();
     gpu->execute({list.get()});
+    host::wait_idle();
     if (readback) {
         void* mapped = nullptr;
         CHECK(SUCCEEDED(readback->Map(0, nullptr, &mapped)));
@@ -824,6 +837,7 @@ TEST(d3d12_xs_card_reads_back_only_the_piece_the_gpu_wrote) {
     list->list()->CopyBufferRegion(copy->buffer(), 0, source->first.Get(), 0, sizeof gpu_value);
     list->close();
     gpu->execute({list.get()});
+    host::wait_idle();
     CHECK(copy->fetched_pieces() == 1);
     CHECK(load_u32(title.data()) == gpu_value);
     CHECK(title[static_cast<std::size_t>(card::kPieceBytes)] == 0x11);
@@ -868,6 +882,7 @@ TEST(d3d12_xs_card_keeps_a_cpu_dword_beside_a_gpu_write) {
     list->list()->CopyBufferRegion(copy->buffer(), 0, source->first.Get(), 0, sizeof gpu_value);
     list->close();
     gpu->execute({list.get()});
+    host::wait_idle();
     CHECK(load_u32(title.data()) == gpu_value);
     CHECK(load_u32(title.data() + 4) == cpu_value);
     CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);

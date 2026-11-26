@@ -3,6 +3,7 @@
 #include "resource.hpp"
 
 #include "descriptor.hpp"
+#include "host.hpp"
 
 #include <g6shim/log.hpp>
 
@@ -280,7 +281,10 @@ HRESULT resource_query(Object* object, const Iid* iid, Object** out) {
 std::uint32_t resource_release(Object* object) { return release_boxed<Resource>(object); }
 
 HRESULT map(Object* object, std::uint32_t, const void*, std::uint8_t** out) {
-    if (out != nullptr) *out = resource_of(object)->data();
+    Resource* resource = resource_of(object);
+    if (resource != nullptr && resource->desc.dimension == kBuffer && resource->data() != nullptr)
+        host::wait_for_writes(resource->data(), static_cast<std::size_t>(resource->desc.width));
+    if (out != nullptr) *out = resource != nullptr ? resource->data() : nullptr;
     return S_OK;
 }
 
