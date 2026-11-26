@@ -45,6 +45,21 @@ static_assert(sizeof(D3D12_UNORDERED_ACCESS_VIEW_DESC) == 40);
 
 std::mutex g_ranges_mutex;
 
+struct RetiredView {
+    Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+    std::uint64_t until = 0;
+};
+
+std::mutex g_retire_mutex;
+std::vector<RetiredView> g_retired;
+std::uint64_t g_retire_clock = 0;
+
+void retire_replaced(Microsoft::WRL::ComPtr<ID3D12Resource> resource) {
+    if (!resource) return;
+    std::lock_guard<std::mutex> lock(g_retire_mutex);
+    g_retired.push_back(RetiredView{std::move(resource), g_retire_clock + 2});
+}
+
 struct GpuRange {
     std::uint64_t start;
     std::uint64_t bytes;
@@ -871,10 +886,15 @@ void HostHeap::null_sampler(std::uint32_t index) { create_null_sampler(cpu(index
 void HostHeap::keep(std::uint32_t index, Microsoft::WRL::ComPtr<ID3D12Resource> resource) {
     const std::uint64_t stamp =
         resource && shadow::live_loose(resource.Get()) ? shadow::eviction_generation() + 1 : kNoWindow;
-    std::lock_guard<std::mutex> lock(kept_mutex_);
-    if (index >= kept_.size()) return;
-    kept_[index] = std::move(resource);
-    window_generation_[index].store(stamp, std::memory_order_relaxed);
+    Microsoft::WRL::ComPtr<ID3D12Resource> previous;
+    {
+        std::lock_guard<std::mutex> lock(kept_mutex_);
+        if (index >= kept_.size()) return;
+        previous = std::move(kept_[index]);
+        kept_[index] = std::move(resource);
+        window_generation_[index].store(stamp, std::memory_order_relaxed);
+    }
+    if (previous && previous.Get() != kept(index).Get()) retire_replaced(std::move(previous));
 }
 
 Microsoft::WRL::ComPtr<ID3D12Resource> HostHeap::kept(std::uint32_t index) {
@@ -1796,6 +1816,17 @@ DescriptorStats take_descriptor_stats() {
     stats.materialized = g_materialized.exchange(0, std::memory_order_relaxed);
     stats.skipped = g_skipped.exchange(0, std::memory_order_relaxed);
     return stats;
+}
+
+void release_retired_views() {
+    std::lock_guard<std::mutex> lock(g_retire_mutex);
+    ++g_retire_clock;
+    std::erase_if(g_retired, [](const RetiredView& entry) { return entry.until <= g_retire_clock; });
+}
+
+std::uint64_t retired_view_count() {
+    std::lock_guard<std::mutex> lock(g_retire_mutex);
+    return g_retired.size();
 }
 
 }  // namespace g6shim::d3d12_xs::descriptor_host

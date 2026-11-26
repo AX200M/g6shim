@@ -694,7 +694,10 @@ void State::table_entry(host::HostList& list, const g6shim::shader::UsedResource
     const auto index = heap->index(handle);
     if (host_heap == nullptr || !index) return;
     const auto view = descriptor_host::materialize_for_draw(const_cast<descriptor::Heap*>(heap), *index, handle);
-    if (view) readable(list, used, *view);
+    if (view) {
+        readable(list, used, *view);
+        list.keep(host_heap->kept(*index).Get());
+    }
 }
 
 std::vector<std::pair<std::uint8_t, std::uint32_t>> State::tables(
@@ -783,6 +786,7 @@ std::vector<std::pair<std::uint8_t, std::uint32_t>> State::tables(
                     host_heap->constant_at(host_index, scratch->first, constant->size);
                 } else {
                     host_heap->make_at(host_index, *view);
+                    list.keep(host_heap->kept(host_index).Get());
                     if (entry != nullptr) readable(list, *entry, *view);
                 }
             } else {

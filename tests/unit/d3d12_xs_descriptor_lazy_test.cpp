@@ -544,3 +544,41 @@ TEST(d3d12_xs_an_off_element_buffer_view_keeps_its_own_copy) {
     release(heap);
     release(buffer);
 }
+
+TEST(d3d12_xs_a_replaced_view_is_kept_until_submissions_complete) {
+    host::Host* gpu = host::host();
+    if (gpu == nullptr) return;
+    for (int step = 0; step < 4; ++step) descriptor_host::release_retired_views();
+    Object* heap = make_heap(4);
+    Object* first = make_buffer(64);
+    Object* second = make_buffer(64);
+    CHECK(heap != nullptr && first != nullptr && second != nullptr);
+    if (heap == nullptr || first == nullptr || second == nullptr) {
+        release(heap);
+        release(first);
+        release(second);
+        return;
+    }
+    const std::uint64_t handle = static_cast<descriptor::Heap*>(heap)->start;
+    write_raw_srv(first, handle, 1);
+    descriptor_host::HostHeap* host_heap = descriptor_host::for_heap(heap);
+    CHECK(host_heap != nullptr);
+    if (host_heap == nullptr) {
+        release(heap);
+        release(first);
+        release(second);
+        return;
+    }
+    CHECK(descriptor_host::materialize_for_draw(heap, 0, handle).has_value());
+    const std::uint64_t before = descriptor_host::retired_view_count();
+    write_raw_srv(second, handle, 1);
+    CHECK(descriptor_host::materialize_for_draw(heap, 0, handle).has_value());
+    CHECK(descriptor_host::retired_view_count() > before);
+    descriptor_host::release_retired_views();
+    CHECK(descriptor_host::retired_view_count() > before);
+    descriptor_host::release_retired_views();
+    CHECK(descriptor_host::retired_view_count() == before);
+    release(heap);
+    release(first);
+    release(second);
+}

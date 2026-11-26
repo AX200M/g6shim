@@ -899,6 +899,7 @@ void Host::execute(const std::vector<HostList*>& runs) {
         release_retained();
         log_messages();
         shadow::submission_completed();
+        descriptor_host::release_retired_views();
         return;
     }
     const HRESULT signalled = queue_->Signal(fence_.Get(), submitted_);

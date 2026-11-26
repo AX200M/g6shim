@@ -98,6 +98,8 @@ void refresh_descriptor_settings();
 void sweep_before_submission(std::span<host::HostList* const> lists);
 void refresh_heap(Object* heap);
 std::optional<descriptor::View> materialize_for_draw(Object* heap, std::uint32_t index, std::uint64_t handle);
+void release_retired_views();
+std::uint64_t retired_view_count();
 DescriptorStats take_descriptor_stats();
 
 bool view_is_buffer(const descriptor::View& view);

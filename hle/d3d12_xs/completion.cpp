@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "host.hpp"
 
+#include "descriptor_host.hpp"
 #include "fence.hpp"
 #include "shadow.hpp"
 
@@ -201,6 +202,7 @@ std::uint64_t copy_back_flight(Flight& flight) {
     if (flight.cards_open) sync_cards(flight);
     for (const WriteStep& write : flight.deferred) write.written.write(write.destination, write.bytes);
     shadow::submission_completed();
+    descriptor_host::release_retired_views();
     return copied;
 }
 
