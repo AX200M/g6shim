@@ -188,6 +188,7 @@ std::optional<std::pair<const std::uint8_t*, ResourceDesc>> texture_memory(Objec
 std::optional<std::pair<std::uint8_t*, std::uint64_t>> buffer_bytes(Object* resource_object);
 std::optional<std::uint32_t> view_format(Object* resource_object);
 bool host_resource(Object* resource_object);
+std::uint32_t release_resource(Object* resource_object);
 
 struct TextureObjects {
     std::int64_t committed = 0;

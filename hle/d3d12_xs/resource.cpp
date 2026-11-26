@@ -287,6 +287,12 @@ HRESULT resource_query(Object* object, const Iid* iid, Object** out) {
 
 std::uint32_t resource_release(Object* object) { return release_boxed<Resource>(object); }
 
+}  // namespace
+
+std::uint32_t release_resource(Object* object) { return object != nullptr ? resource_release(object) : 0; }
+
+namespace {
+
 HRESULT map(Object* object, std::uint32_t, const void*, std::uint8_t** out) {
     Resource* resource = resource_of(object);
     if (resource != nullptr && resource->desc.dimension == kBuffer && resource->data() != nullptr)

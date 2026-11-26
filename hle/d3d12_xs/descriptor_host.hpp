@@ -26,6 +26,7 @@ namespace g6shim::d3d12_xs::descriptor_host {
 
 inline constexpr std::uint32_t kPortableViews = 1'000'000;
 inline constexpr std::uint32_t kDynamicSlots = 1 << 18;
+inline constexpr std::uint32_t kLargeHeapDynamicSlots = 1 << 20;
 inline constexpr std::uint32_t kMinDynamicSlots = 1 << 16;
 inline constexpr std::uint8_t kBufferSlotKind = 1;
 inline constexpr std::uint8_t kTextureSlotKind = 2;

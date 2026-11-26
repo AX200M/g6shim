@@ -35,7 +35,7 @@ constexpr std::uint32_t kRenderTarget = 0x4;
 constexpr std::uint32_t kDepthWrite = 0x10;
 constexpr std::uint32_t kShaderResource = 0x40 | 0x80;
 constexpr std::uint32_t kUnorderedAccess = 0x8;
-constexpr std::uint64_t kSrvViewBytes = 1 << 20;
+constexpr std::uint64_t kSrvViewBytes = 16 << 20;
 constexpr std::uint64_t kCbvViewBytes = 1 << 16;
 constexpr std::uint32_t kTriangles = 4;
 constexpr std::uint32_t kRectangleTopology = 17;
@@ -73,8 +73,12 @@ std::uint64_t descriptor_hash(std::uint64_t table, std::uint32_t count) {
 }
 
 std::optional<std::uint64_t> root_view(host::HostList& list, std::uint64_t address, bool srv) {
-    const auto found = shadow::find(address, 1);
+    auto found = shadow::find(address, 1);
     if (!found) return std::nullopt;
+    if (srv && (*found)->left(address) < kSrvViewBytes && shadow::live_loose((*found)->buffer())) {
+        const auto wider = shadow::find(address, kSrvViewBytes);
+        if (wider) found = wider;
+    }
     const auto& shadow = *found;
     const std::uint64_t length = std::min(shadow->left(address), srv ? kSrvViewBytes : kCbvViewBytes);
     const std::uint64_t gpu = shadow->gpu(address);

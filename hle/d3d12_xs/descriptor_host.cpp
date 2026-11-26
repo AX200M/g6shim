@@ -789,7 +789,8 @@ std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> make(const descriptor::Vie
 }
 
 std::mutex g_placed_mutex;
-constexpr std::uint64_t kPlacedIdleFrames = 8;
+constexpr std::uint64_t kPlacedIdleFrames = 2;
+constexpr std::uint32_t kOwnReference = 1;
 
 struct PlacedTexture {
     Object* object = nullptr;
@@ -896,9 +897,11 @@ std::unique_ptr<HostHeap> HostHeap::create(bool sampler, std::uint32_t count) {
             return nullptr;
         }
     } else {
-        count = std::min(count, std::numeric_limits<std::uint32_t>::max() - kDynamicSlots);
-        heap = make_heap(count + kDynamicSlots);
+        count = std::min(count, std::numeric_limits<std::uint32_t>::max() - kLargeHeapDynamicSlots);
+        if (count >= kDynamicSlots) heap = make_heap(count + kLargeHeapDynamicSlots);
         if (heap) {
+            dynamic = kLargeHeapDynamicSlots;
+        } else if ((heap = make_heap(count + kDynamicSlots)) != nullptr) {
             dynamic = kDynamicSlots;
         } else if ((heap = make_heap(count + kMinDynamicSlots)) != nullptr) {
             dynamic = kMinDynamicSlots;
@@ -1669,7 +1672,7 @@ std::optional<descriptor::View> placed_texture(const descriptor::View& view) {
         std::lock_guard<std::mutex> lock(g_placed_mutex);
         const auto [at, fresh] = g_placed.try_emplace(key, PlacedTexture{out, frame::current_frame()});
         if (!fresh) {
-            release(out);
+            resource::release_resource(out);
             out = at->second.object;
             at->second.used_frame = frame::current_frame();
         }
@@ -1693,7 +1696,9 @@ std::size_t expire_placed_textures() {
         if (g_placed_swept_frame == now) return 0;
         g_placed_swept_frame = now;
         for (auto it = g_placed.begin(); it != g_placed.end();) {
-            if (now - it->second.used_frame < kPlacedIdleFrames) {
+            ID3D12Resource* shown = texture::host_texture(it->second.object);
+            if (now - it->second.used_frame < kPlacedIdleFrames ||
+                (shown != nullptr && host::references(shown) > kOwnReference)) {
                 ++it;
                 continue;
             }
@@ -1701,7 +1706,7 @@ std::size_t expire_placed_textures() {
             it = g_placed.erase(it);
         }
     }
-    for (Object* object : idle) release(object);
+    for (Object* object : idle) resource::release_resource(object);
     return idle.size();
 }
 
