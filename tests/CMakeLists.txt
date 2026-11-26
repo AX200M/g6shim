@@ -146,6 +146,7 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/sampler.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/shader_cache.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/shadow.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/card.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/signature.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/texture.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/depth_uav.cpp"
@@ -207,9 +208,11 @@ target_include_directories(g6shim_tests PRIVATE
   "${PROJECT_SOURCE_DIR}/src/tools/run"
   "${PROJECT_SOURCE_DIR}/winrt")
 g6shim_add_compute_dxil(g_bvh_build_dxil "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh/build.hlsl" main)
+g6shim_add_compute_dxil(g_card_piece_dxil "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/card_hash.hlsl" main)
 g6shim_add_compute_dxil(g_present_plane_vs "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/present.hlsl" present_vs vs_6_0)
 g6shim_add_compute_dxil(g_present_plane_ps "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/present.hlsl" present_ps ps_6_0)
 g6shim_target_compute_dxil(g6shim_tests g_bvh_build_dxil)
+g6shim_target_compute_dxil(g6shim_tests g_card_piece_dxil)
 g6shim_target_compute_dxil(g6shim_tests g_present_plane_vs)
 g6shim_target_compute_dxil(g6shim_tests g_present_plane_ps)
 g6shim_add_compute_dxil(g_depth_copy_vs "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/depth_copy.hlsl" copy_vs vs_6_0)

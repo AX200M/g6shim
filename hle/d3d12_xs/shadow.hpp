@@ -16,6 +16,10 @@
 #include <utility>
 #include <vector>
 
+namespace g6shim::d3d12_xs::card {
+class Side;
+}
+
 namespace g6shim::d3d12_xs::shadow {
 
 inline constexpr std::uint64_t kIdleSubmissions = 512;
@@ -30,6 +34,7 @@ class Shadow : public std::enable_shared_from_this<Shadow> {
 public:
     Shadow(Microsoft::WRL::ComPtr<ID3D12Resource> buffer, std::uint8_t* data, std::uint64_t gpu,
            std::uint64_t start, std::uint64_t bytes);
+    ~Shadow();
 
     std::uint64_t gpu(std::uint64_t address) const { return gpu_ + (address - start_); }
     std::uint64_t left(std::uint64_t address) const;
@@ -38,6 +43,10 @@ public:
     std::uint64_t bytes() const { return bytes_; }
     std::uint8_t* data() const { return data_; }
     ID3D12Resource* buffer() const { return buffer_.Get(); }
+    bool on_card() const { return card_ != nullptr; }
+    std::size_t fetched_pieces() const;
+    void bind_card(std::shared_ptr<g6shim::d3d12_xs::card::Side> side);
+    void arm_card(std::size_t address, std::size_t bytes);
     void used(std::uint64_t submission) { last_used_.store(submission, std::memory_order_relaxed); }
     std::uint64_t last_used() const { return last_used_.load(std::memory_order_relaxed); }
 
@@ -51,10 +60,10 @@ public:
 private:
     std::pair<std::size_t, std::size_t> inside(std::size_t address, std::size_t bytes) const;
     std::size_t update_free(std::size_t from, std::size_t to);
+    std::size_t merge_card(std::size_t address, std::size_t bytes);
     std::size_t copy_stale(std::size_t from, std::size_t to, std::uint64_t now,
                            const std::vector<std::pair<std::size_t, std::uint64_t>>& written);
     std::size_t copy_range(std::size_t from, std::size_t to);
-
     Microsoft::WRL::ComPtr<ID3D12Resource> buffer_;
     std::uint8_t* data_ = nullptr;
     std::uint64_t gpu_ = 0;
@@ -68,6 +77,7 @@ private:
     std::mutex before_mutex_;
     std::optional<std::pair<std::size_t, std::vector<std::uint8_t>>> before_;
     std::atomic<std::uint64_t> last_used_{0};
+    std::shared_ptr<g6shim::d3d12_xs::card::Side> card_;
 };
 
 void register_buffer(std::uintptr_t resource, std::uint64_t start, std::uint64_t bytes);
@@ -78,5 +88,6 @@ void submission_completed();
 std::uint64_t eviction_generation();
 bool live_loose(ID3D12Resource* buffer);
 LooseStats loose_stats();
+std::uint64_t card_minimum_bytes();
 
 }  // namespace g6shim::d3d12_xs::shadow

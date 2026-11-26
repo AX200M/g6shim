@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "shadow.hpp"
 
+#include "card.hpp"
 #include "watch.hpp"
 
 #include <g6shim/log.hpp>
@@ -119,6 +120,23 @@ Shadow::Shadow(Microsoft::WRL::ComPtr<ID3D12Resource> buffer, std::uint8_t* data
     copied_.assign(last > first ? last - first : 0, 0);
 }
 
+Shadow::~Shadow() = default;
+
+void Shadow::bind_card(std::shared_ptr<g6shim::d3d12_xs::card::Side> side) { card_ = std::move(side); }
+
+void Shadow::arm_card(std::size_t address, std::size_t bytes) {
+    if (!card_) return;
+    const auto [from, to] = inside(address, bytes);
+    if (from < to) card_->note_writes(from, to - from);
+}
+
+std::size_t Shadow::fetched_pieces() const { return card_ ? card_->fetched_count() : 0; }
+
+std::uint64_t card_minimum_bytes() {
+    host::Host* gpu = host::host();
+    if (gpu == nullptr) return 16ull << 20;
+    return card::minimum_bytes(gpu->device());
+}
 std::uint64_t Shadow::left(std::uint64_t address) const {
     const std::uint64_t end = start_ + bytes_;
     return end > address ? end - address : 0;
@@ -172,12 +190,80 @@ void Shadow::writing(std::size_t address, std::size_t bytes) {
     before_ = std::make_pair(start, std::move(grown));
 }
 
+std::size_t Shadow::merge_card(std::size_t address, std::size_t bytes) {
+    if (!card_ || !before_) return 0;
+    const auto [from, to] = inside(address, bytes);
+    if (from >= to) return 0;
+    if (before_->first > from || to > before_->first + before_->second.size()) return 0;
+    const std::size_t start = static_cast<std::size_t>(start_);
+    std::size_t written = 0;
+    constexpr std::size_t kPiece = static_cast<std::size_t>(card::kPieceBytes);
+    const std::size_t last = (to - 1) / kPiece;
+    for (std::size_t piece = from / kPiece; piece <= last; ++piece) {
+        const std::uint8_t* gpu = card_->fetched(static_cast<std::uint32_t>(piece));
+        if (gpu == nullptr) continue;
+        const std::size_t piece_from = piece * kPiece;
+        const std::size_t piece_to = std::min(piece_from + kPiece, static_cast<std::size_t>(bytes_));
+        const std::size_t lo = std::max(from, piece_from);
+        const std::size_t hi = std::min(to, piece_to);
+        if (lo >= hi) continue;
+        const std::size_t n = hi - lo;
+        std::vector<std::uint8_t> title(n);
+        if (!host::read_into(reinterpret_cast<const std::uint8_t*>(start + lo),
+                             std::span<std::uint8_t>(title.data(), n)))
+            continue;
+        bool changed = false;
+        bool kept = false;
+        std::size_t i = 0;
+        while (i + 4 <= n && ((lo + i) & 3u) == 0) {
+            std::uint32_t gpu_dw = 0;
+            std::uint32_t old_dw = 0;
+            std::uint32_t title_dw = 0;
+            std::memcpy(&gpu_dw, gpu + (lo - piece_from) + i, 4);
+            std::memcpy(&old_dw, before_->second.data() + (lo - before_->first) + i, 4);
+            std::memcpy(&title_dw, title.data() + i, 4);
+            if (gpu_dw != old_dw) {
+                if (title_dw == old_dw) {
+                    std::memcpy(title.data() + i, &gpu_dw, 4);
+                    changed = true;
+                } else {
+                    kept = true;
+                }
+            }
+            std::memcpy(data_ + lo + i, title.data() + i, 4);
+            i += 4;
+        }
+        for (; i < n; ++i) {
+            const std::uint8_t gpu_b = gpu[(lo - piece_from) + i];
+            const std::uint8_t old_b = before_->second[(lo - before_->first) + i];
+            if (gpu_b != old_b) {
+                if (title[i] == old_b) {
+                    title[i] = gpu_b;
+                    changed = true;
+                } else {
+                    kept = true;
+                }
+            }
+            data_[lo + i] = title[i];
+        }
+        if (changed) {
+            watch::writing(start + lo, n);
+            host::write_mapped(reinterpret_cast<std::uint8_t*>(start + lo), title.data(), n);
+            written += n;
+        }
+        if (kept) card_->note_kept(static_cast<std::uint32_t>(piece), lo, n);
+    }
+    return written;
+}
+
 std::size_t Shadow::copy_back(std::size_t address, std::size_t bytes) {
     std::lock_guard<std::mutex> snapshot_lock(before_mutex_);
     std::size_t written = 0;
     const auto [from, to] = inside(address, bytes);
     const std::size_t start = static_cast<std::size_t>(start_);
-    if (before_ && before_->first <= from && to <= before_->first + before_->second.size() && from < to) {
+    if (card_) {
+        written = merge_card(address, bytes);
+    } else if (before_ && before_->first <= from && to <= before_->first + before_->second.size() && from < to) {
         const std::vector<std::uint8_t>& before = before_->second;
         constexpr std::size_t kPiece = 64 << 10;
         std::vector<std::uint8_t> title(kPiece, 0);
@@ -319,6 +405,7 @@ std::size_t Shadow::copy_range(std::size_t from, std::size_t to) {
     to = std::min(to, end);
     if (from >= to) return 0;
     host::copy_mapped(data_ + (from - start), reinterpret_cast<const std::uint8_t*>(from), to - from, false);
+    if (card_) card_->note_upload(from - start, to - from);
     return to - from;
 }
 
@@ -357,15 +444,20 @@ std::optional<std::shared_ptr<Shadow>> find(std::uint64_t address, std::uint64_t
             const std::uint64_t len = entry.end - key.first;
             host::Host* gpu_host = host::host();
             if (gpu_host == nullptr) return std::nullopt;
-            const std::uint64_t rounded = (len + kCopyAlignment - 1) / kCopyAlignment * kCopyAlignment;
-            auto buffer = gpu_host->shared_buffer(rounded);
-            if (!buffer) return std::nullopt;
-            host::name(buffer->first.Get(), "title buffer");
-            const std::uint64_t gpu = buffer->first->GetGPUVirtualAddress();
-            if (len >= (16 << 20))
-                G6SHIM_INFO("d3d12_xs: large title buffer %llx+%llx copied to the host",
-                            static_cast<unsigned long long>(key.first), static_cast<unsigned long long>(len));
-            entry.shadow = std::make_shared<Shadow>(std::move(buffer->first), buffer->second, gpu, key.first, len);
+            if (auto side = card::Side::try_create(gpu_host->device(), len)) {
+                entry.shadow = std::make_shared<Shadow>(side->buffer(), side->staging(), side->gpu(), key.first, len);
+                entry.shadow->bind_card(std::move(side));
+            } else {
+                const std::uint64_t rounded = (len + kCopyAlignment - 1) / kCopyAlignment * kCopyAlignment;
+                auto buffer = gpu_host->shared_buffer(rounded);
+                if (!buffer) return std::nullopt;
+                host::name(buffer->first.Get(), "title buffer");
+                const std::uint64_t gpu = buffer->first->GetGPUVirtualAddress();
+                if (len >= (16 << 20))
+                    G6SHIM_INFO("d3d12_xs: large title buffer %llx+%llx copied to the host",
+                                static_cast<unsigned long long>(key.first), static_cast<unsigned long long>(len));
+                entry.shadow = std::make_shared<Shadow>(std::move(buffer->first), buffer->second, gpu, key.first, len);
+            }
         }
         return entry.shadow;
     }

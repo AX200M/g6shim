@@ -6,6 +6,7 @@
 #include "d3d12_xs/descriptor_host.hpp"
 #include "d3d12_xs/host.hpp"
 #include "d3d12_xs/resource.hpp"
+#include "d3d12_xs/card.hpp"
 #include "d3d12_xs/shadow.hpp"
 #include "d3d12_xs/texture.hpp"
 #include "d3d12_xs/watch.hpp"
@@ -644,4 +645,231 @@ TEST(d3d12_xs_host_logs_why_presentation_could_not_start) {
     CHECK(count_of(after, failure) == failures_before + 1);
     CHECK(count_of(after, skipped) == skipped_before + 1);
     CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
+}
+
+namespace {
+
+struct CardFlag {
+    explicit CardFlag(const char* value) {
+        const DWORD length = ::GetEnvironmentVariableA("G6SHIM_CARD_BUFFERS", saved_, sizeof saved_);
+        had_ = length > 0 && length < sizeof saved_;
+        if (!had_) saved_[0] = '\0';
+        ::SetEnvironmentVariableA("G6SHIM_CARD_BUFFERS", value);
+    }
+    ~CardFlag() { ::SetEnvironmentVariableA("G6SHIM_CARD_BUFFERS", had_ ? saved_ : nullptr); }
+    bool had_ = false;
+    char saved_[32] = {};
+};
+
+bool heap_type(ID3D12Resource* resource, D3D12_HEAP_TYPE type) {
+    if (resource == nullptr) return false;
+    D3D12_HEAP_PROPERTIES properties{};
+    resource->GetHeapProperties(&properties, nullptr);
+    return properties.Type == type;
+}
+
+Microsoft::WRL::ComPtr<ID3D12Resource> readback_of(ID3D12Device* device, std::uint64_t bytes) {
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = D3D12_HEAP_TYPE_READBACK;
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    desc.Width = bytes;
+    desc.Height = 1;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    Microsoft::WRL::ComPtr<ID3D12Resource> buffer;
+    if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
+                                               nullptr, IID_PPV_ARGS(&buffer))))
+        return nullptr;
+    return buffer;
+}
+
+std::uint32_t load_u32(const std::uint8_t* bytes) {
+    std::uint32_t value = 0;
+    std::memcpy(&value, bytes, sizeof value);
+    return value;
+}
+
+void refresh_all(host::Host* gpu, const std::shared_ptr<shadow::Shadow>& copy, std::uint64_t address) {
+    auto list = gpu->new_list();
+    CHECK(list != nullptr);
+    if (!list) return;
+    copy->refresh(*list, address, copy->bytes());
+    list->close();
+    gpu->execute({list.get()});
+}
+
+}  // namespace
+
+TEST(d3d12_xs_card_keeps_small_buffers_in_system_memory) {
+    host::Host* gpu = test_host();
+    if (gpu == nullptr) return;
+    const CardFlag enabled("1");
+    const std::uint64_t minimum = shadow::card_minimum_bytes();
+    CHECK(minimum > 1);
+    std::vector<std::uint8_t> below(static_cast<std::size_t>(minimum - 1), 1);
+    std::vector<std::uint8_t> above(static_cast<std::size_t>(minimum), 2);
+    const auto below_at = reinterpret_cast<std::uint64_t>(below.data());
+    const auto above_at = reinterpret_cast<std::uint64_t>(above.data());
+    constexpr std::uintptr_t kSmall = 0xC4D0;
+    constexpr std::uintptr_t kLarge = 0xC4D1;
+    shadow::register_buffer(kSmall, below_at, below.size());
+    shadow::register_buffer(kLarge, above_at, above.size());
+    const auto below_copy = shadow::find(below_at, below.size());
+    const auto above_copy = shadow::find(above_at, above.size());
+    CHECK(below_copy.has_value());
+    CHECK(above_copy.has_value());
+    if (below_copy) CHECK(!(*below_copy)->on_card());
+    if (above_copy) {
+        CHECK((*above_copy)->on_card());
+        CHECK(heap_type((*above_copy)->buffer(), D3D12_HEAP_TYPE_DEFAULT));
+    }
+    shadow::unregister_buffer(kSmall, below_at);
+    shadow::unregister_buffer(kLarge, above_at);
+}
+
+TEST(d3d12_xs_card_setting_keeps_the_system_memory_copy) {
+    host::Host* gpu = test_host();
+    if (gpu == nullptr) return;
+    const CardFlag disabled("0");
+    const std::uint64_t minimum = shadow::card_minimum_bytes();
+    std::vector<std::uint8_t> title(static_cast<std::size_t>(minimum), 3);
+    const auto address = reinterpret_cast<std::uint64_t>(title.data());
+    constexpr std::uintptr_t kSlot = 0xC4D2;
+    shadow::register_buffer(kSlot, address, title.size());
+    const auto copy = shadow::find(address, title.size());
+    CHECK(copy.has_value());
+    if (copy) {
+        CHECK(!(*copy)->on_card());
+        CHECK(heap_type((*copy)->buffer(), D3D12_HEAP_TYPE_CUSTOM));
+    }
+    shadow::unregister_buffer(kSlot, address);
+}
+
+TEST(d3d12_xs_card_uploads_a_cpu_write_between_submissions) {
+    host::Host* gpu = test_host();
+    if (gpu == nullptr) return;
+    const CardFlag enabled("1");
+    const std::uint64_t minimum = shadow::card_minimum_bytes();
+    std::vector<std::uint8_t> title(static_cast<std::size_t>(minimum), 1);
+    const auto address = reinterpret_cast<std::uint64_t>(title.data());
+    constexpr std::uintptr_t kSlot = 0xC4D3;
+    shadow::register_buffer(kSlot, address, title.size());
+    const auto found = shadow::find(address, title.size());
+    CHECK(found.has_value());
+    if (!found || !(*found)->on_card()) {
+        shadow::unregister_buffer(kSlot, address);
+        return;
+    }
+    const auto& copy = *found;
+    refresh_all(gpu, copy, address);
+    title[128] = 9;
+    auto list = gpu->new_list();
+    CHECK(list != nullptr);
+    if (!list) {
+        shadow::unregister_buffer(kSlot, address);
+        return;
+    }
+    copy->refresh(*list, address, copy->bytes());
+    auto readback = readback_of(gpu->device(), 4);
+    CHECK(readback != nullptr);
+    if (readback)
+        list->list()->CopyBufferRegion(readback.Get(), 0, copy->buffer(), 128, 1);
+    list->close();
+    gpu->execute({list.get()});
+    if (readback) {
+        void* mapped = nullptr;
+        CHECK(SUCCEEDED(readback->Map(0, nullptr, &mapped)));
+        if (mapped) CHECK(*static_cast<std::uint8_t*>(mapped) == 9);
+    }
+    CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
+    shadow::unregister_buffer(kSlot, address);
+}
+
+TEST(d3d12_xs_card_reads_back_only_the_piece_the_gpu_wrote) {
+    host::Host* gpu = test_host();
+    if (gpu == nullptr) return;
+    const CardFlag enabled("1");
+    const std::uint64_t minimum = shadow::card_minimum_bytes();
+    CHECK(minimum >= card::kPieceBytes * 2);
+    std::vector<std::uint8_t> title(static_cast<std::size_t>(minimum), 0x11);
+    const auto address = reinterpret_cast<std::uint64_t>(title.data());
+    constexpr std::uintptr_t kSlot = 0xC4D4;
+    shadow::register_buffer(kSlot, address, title.size());
+    const auto found = shadow::find(address, title.size());
+    CHECK(found.has_value());
+    if (!found || !(*found)->on_card()) {
+        shadow::unregister_buffer(kSlot, address);
+        return;
+    }
+    const auto& copy = *found;
+    refresh_all(gpu, copy, address);
+    const std::uint32_t gpu_value = 0xA1B2C3D4u;
+    auto source = gpu->upload_buffer(sizeof gpu_value);
+    CHECK(source.has_value());
+    if (!source) {
+        shadow::unregister_buffer(kSlot, address);
+        return;
+    }
+    std::memcpy(source->second, &gpu_value, sizeof gpu_value);
+    auto list = gpu->new_list();
+    CHECK(list != nullptr);
+    if (!list) {
+        shadow::unregister_buffer(kSlot, address);
+        return;
+    }
+    copy->gpu_writes(*list, address, card::kPieceBytes * 2);
+    list->list()->CopyBufferRegion(copy->buffer(), 0, source->first.Get(), 0, sizeof gpu_value);
+    list->close();
+    gpu->execute({list.get()});
+    CHECK(copy->fetched_pieces() == 1);
+    CHECK(load_u32(title.data()) == gpu_value);
+    CHECK(title[static_cast<std::size_t>(card::kPieceBytes)] == 0x11);
+    CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
+    shadow::unregister_buffer(kSlot, address);
+}
+
+TEST(d3d12_xs_card_keeps_a_cpu_dword_beside_a_gpu_write) {
+    host::Host* gpu = test_host();
+    if (gpu == nullptr) return;
+    const CardFlag enabled("1");
+    const std::uint64_t minimum = shadow::card_minimum_bytes();
+    std::vector<std::uint8_t> title(static_cast<std::size_t>(minimum), 0x11);
+    const auto address = reinterpret_cast<std::uint64_t>(title.data());
+    constexpr std::uintptr_t kSlot = 0xC4D5;
+    shadow::register_buffer(kSlot, address, title.size());
+    const auto found = shadow::find(address, title.size());
+    CHECK(found.has_value());
+    if (!found || !(*found)->on_card()) {
+        shadow::unregister_buffer(kSlot, address);
+        return;
+    }
+    const auto& copy = *found;
+    refresh_all(gpu, copy, address);
+    const std::uint32_t cpu_value = 0x22222222u;
+    const std::uint32_t gpu_value = 0x11111111u;
+    std::memcpy(title.data() + 4, &cpu_value, sizeof cpu_value);
+    auto source = gpu->upload_buffer(sizeof gpu_value);
+    CHECK(source.has_value());
+    if (!source) {
+        shadow::unregister_buffer(kSlot, address);
+        return;
+    }
+    std::memcpy(source->second, &gpu_value, sizeof gpu_value);
+    auto list = gpu->new_list();
+    CHECK(list != nullptr);
+    if (!list) {
+        shadow::unregister_buffer(kSlot, address);
+        return;
+    }
+    copy->gpu_writes(*list, address, card::kPieceBytes);
+    list->list()->CopyBufferRegion(copy->buffer(), 0, source->first.Get(), 0, sizeof gpu_value);
+    list->close();
+    gpu->execute({list.get()});
+    CHECK(load_u32(title.data()) == gpu_value);
+    CHECK(load_u32(title.data() + 4) == cpu_value);
+    CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
+    shadow::unregister_buffer(kSlot, address);
 }

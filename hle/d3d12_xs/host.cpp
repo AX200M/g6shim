@@ -4,6 +4,7 @@
 
 #include "g_present_plane_ps.h"
 #include "g_present_plane_vs.h"
+#include "card.hpp"
 #include "descriptor_host.hpp"
 #include "queue.hpp"
 #include "resource.hpp"
@@ -350,15 +351,17 @@ void log_adapter(ID3D12Device* device, IDXGIAdapter* adapter, const DXGI_ADAPTER
             SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &non_local));
     }
     char local_budget[64] = {};
+    char local_use[64] = {};
     char non_local_budget[64] = {};
     write_budget(local_budget, sizeof local_budget, local_ok, local.Budget);
+    write_budget(local_use, sizeof local_use, local_ok, local.CurrentUsage);
     write_budget(non_local_budget, sizeof non_local_budget, non_local_ok, non_local.Budget);
     G6SHIM_INFO("d3d12_xs: host adapter %ls, LUID %08lX:%08lX, vendor %04X, device %04X, driver %s, %s, UMA %s, "
-                "cache-coherent UMA %s, local budget %s, non-local budget %s",
+                "cache-coherent UMA %s, local budget %s, local use %s, non-local budget %s",
                 name, static_cast<unsigned long>(desc.AdapterLuid.HighPart),
                 static_cast<unsigned long>(desc.AdapterLuid.LowPart), desc.VendorId, desc.DeviceId, driver,
                 (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0 ? "software" : "hardware", uma, coherent, local_budget,
-                non_local_budget);
+                local_use, non_local_budget);
 }
 
 void log_host_adapter(ID3D12Device* device) {
@@ -765,13 +768,29 @@ void Host::execute(const std::vector<HostList*>& runs) {
     descriptor_host::sweep_before_submission(runs);
     Batch batch;
     std::vector<ID3D12CommandList*> lists;
-    lists.reserve(runs.size() * 2 + 2);
+    lists.reserve(runs.size() * 2 + 3);
     for (HostList* list : runs) {
         list->run_deferred(batch);
         if (ID3D12CommandList* prelude = list->prelude()) lists.push_back(prelude);
         lists.push_back(list->list());
     }
     batch.flush();
+    std::vector<std::tuple<std::shared_ptr<shadow::Shadow>, std::size_t, std::size_t>> back;
+    for (HostList* list : runs) {
+        std::lock_guard<std::mutex> lock(list->deferred_mutex_);
+        for (const Step& step : list->deferred_.copies) {
+            const auto* write = std::get_if<GpuWriteStep>(&step);
+            if (write == nullptr) continue;
+            write->shadow->arm_card(write->address, write->bytes);
+            const bool known = std::any_of(back.begin(), back.end(), [&](const auto& entry) {
+                return std::get<0>(entry).get() == write->shadow.get() && std::get<1>(entry) == write->address &&
+                       std::get<2>(entry) == write->bytes;
+            });
+            if (!known) back.emplace_back(write->shadow, write->address, write->bytes);
+        }
+    }
+    card::Batch cards = card::take_batch();
+    if (ID3D12CommandList* prepare = cards.prepare(device_.Get())) lists.insert(lists.begin(), prepare);
     timing.prepare.milliseconds = milliseconds_since(prepared);
     timing.prepare.bytes = batch.copied();
     const bool timed = bracket_timestamps(lists);
@@ -803,21 +822,24 @@ void Host::execute(const std::vector<HostList*>& runs) {
         }
     }
     const auto copied_at = std::chrono::steady_clock::now();
-    std::vector<std::tuple<std::shared_ptr<shadow::Shadow>, std::size_t, std::size_t>> back;
-    for (HostList* list : runs) {
-        std::lock_guard<std::mutex> lock(list->deferred_mutex_);
-        for (const Step& step : list->deferred_.copies) {
-            const auto* write = std::get_if<GpuWriteStep>(&step);
-            if (write == nullptr) continue;
-            const bool known = std::any_of(back.begin(), back.end(), [&](const auto& entry) {
-                return std::get<0>(entry).get() == write->shadow.get() && std::get<1>(entry) == write->address &&
-                       std::get<2>(entry) == write->bytes;
-            });
-            if (!known) back.emplace_back(write->shadow, write->address, write->bytes);
+    bool card_ready = true;
+    if (ID3D12CommandList* compare = cards.compare(device_.Get())) {
+        ++submitted_;
+        queue_->ExecuteCommandLists(1, &compare);
+        const SubmissionResult compared = complete_submission(queue_.Get(), fence_.Get(), submitted_, event_);
+        const HRESULT compare_removed = device_->GetDeviceRemovedReason();
+        card_ready = submission_confirmed(compared, compare_removed);
+        if (!card_ready) {
+            log_submission_failure(compared, compare_removed);
+            if (FAILED(compare_removed))
+                fail("the host GPU device was removed after a card compare");
+        } else {
+            cards.fetch(device_.Get(), queue_.Get());
         }
     }
     std::uint64_t copied = 0;
     for (const auto& [copy, address, bytes] : back) copied += copy->copy_back(address, bytes);
+    if (card_ready) cards.sync_kept(device_.Get(), queue_.Get());
     timing.copy_back.bytes = copied;
     timing.copy_back.milliseconds = milliseconds_since(copied_at);
     note_submission_timing(std::move(timing));
