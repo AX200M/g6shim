@@ -6,6 +6,7 @@
 #include <array>
 #include <bit>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <cstdint>
 #include <limits>
@@ -181,6 +182,20 @@ bool reads_mask_as_data(const Structured& st, const IrInst& inst) {
         if (read && is_mask(*read)) return true;
     }
     return false;
+}
+
+bool join_edge_known(const Structured& st, Bool bits) {
+    for (const Atom& atom : st.bools.support(bits)) {
+        if (atom.kind == Atom::Kind::Opaque || atom.kind == Atom::Kind::Quad) return false;
+    }
+    return true;
+}
+
+
+const std::vector<Bool>* join_edges(const Structured& st, Value id) {
+    const auto found = st.phi_masks.find(id);
+    if (found == st.phi_masks.end()) return nullptr;
+    return &found->second;
 }
 
 std::optional<std::pair<std::uint8_t, std::uint8_t>> packed_half(
@@ -1232,17 +1247,20 @@ void Lower::fill_mask_words() {
         const std::size_t offset = x_->p->blocks[block].offset;
         std::vector<std::pair<V, std::size_t>> lo_in;
         std::vector<std::pair<V, std::size_t>> hi_in;
+        const std::vector<Bool>* edges = join_edges(*x_->st, id);
+        if (edges == nullptr || edges->size() != x_->p->blocks[block].preds.size())
+            throw Stop::failure(offset, kUntrackedMaskJoin);
         for (std::size_t n = 0; n < x_->p->blocks[block].preds.size(); ++n) {
             const std::size_t q = x_->p->blocks[block].preds[n];
             if (!tail_[q]) continue;
             const std::size_t qb = edges_.contains({q, block}) ? edges_.at({q, block}) : *tail_[q];
-            if (n >= phi.args.size()) fail("a lane-mask join of an untracked mask");
+            if (n >= phi.args.size()) throw Stop::failure(offset, kUntrackedMaskJoin);
             const Value arg = phi.args[n];
-            if (arg == id) fail("a lane mask whose lanes depend on its own value");
-            if (!(x_->st->masks.contains(arg) || x_->st->highs.contains(arg)))
-                fail("a lane-mask join of an untracked mask");
+            const bool tracked = x_->st->masks.contains(arg) || x_->st->highs.contains(arg);
+            if (!tracked && !join_edge_known(*x_->st, (*edges)[n]))
+                throw Stop::failure(offset, kUntrackedMaskJoin);
             const std::pair<V, V> incoming =
-                stop_at(offset, [&]() { return mask_pair(arg); });
+                stop_at(offset, [&]() { return combine_mask((*edges)[n], qb); });
             lo_in.emplace_back(incoming.first, qb);
             hi_in.emplace_back(incoming.second, qb);
         }
@@ -2235,10 +2253,28 @@ void Lower::fill_phis() {
             const std::size_t q = p.blocks[b].preds[n];
             if (!tail_[q]) continue;
             const std::size_t qb = edges_.contains({q, b}) ? edges_.at({q, b}) : *tail_[q];
-            const auto mask = x_->st->masks.find(phi.args[n]);
-            if (mask == x_->st->masks.end())
-                throw Stop::failure(offset, "a lane-mask join of an untracked mask");
-            const V x = stop_at(offset, [&]() { return boolean(mask->second, qb); });
+            const std::vector<Bool>* edges = join_edges(*x_->st, phi.value);
+            if (edges == nullptr || n >= edges->size() || n >= phi.args.size())
+                throw Stop::failure(offset, kUntrackedMaskJoin);
+            const Value arg = phi.args[n];
+            const bool tracked = x_->st->masks.contains(arg) || x_->st->highs.contains(arg);
+            if (!tracked && !join_edge_known(*x_->st, (*edges)[n]))
+                throw Stop::failure(offset, kUntrackedMaskJoin);
+            for (const Atom& atom : x_->st->bools.support((*edges)[n])) {
+                std::optional<std::size_t> born;
+                if (atom.kind == Atom::Kind::Lane) {
+                    if (const auto def = def_block_.find(atom.value); def != def_block_.end()) born = def->second;
+                } else if (atom.kind == Atom::Kind::Phi) {
+                    if (const auto at = phi_at_.find(atom.value); at != phi_at_.end()) born = at->second.first;
+                } else if (atom.kind == Atom::Kind::Uniform) {
+                    if (const auto def = def_block_.find(atom.value); def != def_block_.end()) born = def->second;
+                }
+                if (born && rpo_[*born] > rpo_[q]) throw Stop::failure(offset, kUntrackedMaskJoin);
+            }
+            std::size_t at = qb;
+            if (const auto def = def_block_.find(arg); def != def_block_.end() && tail_[def->second])
+                at = *tail_[def->second];
+            const V x = stop_at(offset, [&]() { return boolean((*edges)[n], at); });
             incoming.emplace_back(x, qb);
         }
         s_.m.set_phi(v, incoming);

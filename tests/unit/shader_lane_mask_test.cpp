@@ -77,7 +77,8 @@ ID3D12Device* warp_device() {
 }
 
 bool run_mask(ID3D12Device* device, const std::vector<std::uint8_t>& dxil,
-              std::vector<std::uint32_t>* out) {
+              std::vector<std::uint32_t>* out, std::uint32_t first = kBelow,
+              std::uint32_t second = kWider, std::uint32_t third = 0) {
     D3D12_ROOT_PARAMETER parameter{};
     parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     parameter.Descriptor.ShaderRegister = 0;
@@ -136,8 +137,9 @@ bool run_mask(ID3D12Device* device, const std::vector<std::uint8_t>& dxil,
     if (FAILED(constants->Map(0, nullptr, &mapped))) return false;
     auto* words = static_cast<std::uint32_t*>(mapped);
     std::fill(words, words + 64, 0u);
-    words[0] = kBelow;
-    words[1] = kWider;
+    words[0] = first;
+    words[1] = second;
+    words[2] = third;
     constants->Unmap(0, nullptr);
     buffer.Width = bytes;
     ComPtr<ID3D12Resource> readback;
@@ -273,4 +275,79 @@ TEST(lane_masks_read_as_data_match_the_wave) {
         CHECK(row[kElsewhere] == elsewhere);
         CHECK(row[kWave] == wave);
     }
+}
+
+void check_joined_lanes(const char* name, std::uint32_t first, std::uint32_t second,
+                        std::uint32_t third, std::uint32_t limit) {
+    const Fixture* fixture = fixture_named(name);
+    CHECK(fixture != nullptr);
+    if (fixture == nullptr) return;
+    Lowered lowered;
+    bool translated = true;
+    try {
+        _putenv("G6SHIM_HOST_WAVE=1");
+        lowered = lower_mask(fixture->words, {kThreads, 1, 1});
+        _putenv("G6SHIM_HOST_WAVE=");
+    } catch (const std::exception& error) {
+        _putenv("G6SHIM_HOST_WAVE=");
+        std::printf("%s did not translate: %s\n", name, error.what());
+        translated = false;
+    }
+    CHECK(translated);
+    if (!translated) return;
+    check_dxil(lowered.dxil, name);
+    ComPtr<ID3D12Device> device(warp_device());
+    if (!device) {
+        std::printf("  skipped: no WARP device\n");
+        return;
+    }
+    std::vector<std::uint32_t> got;
+    const bool ran = run_mask(device.Get(), lowered.dxil, &got, first, second, third);
+    CHECK(ran);
+    if (!ran || got.size() < kDwordsPerThread) return;
+    for (std::uint32_t thread = 0; thread < kThreads; ++thread) {
+        const std::uint32_t* row = got.data() + thread * kDwordsPerThread;
+        CHECK(row[0] == (thread < limit ? 1u : 0u));
+    }
+}
+
+TEST(a_lane_mask_join_keeps_a_constant_and_a_compare) {
+    check_joined_lanes("lane_mask_join_constant", 1, 2, 0, 2);
+    check_joined_lanes("lane_mask_join_constant", 0, 2, 0, 0);
+}
+
+TEST(a_lane_mask_join_keeps_a_saved_mask_and_a_constant) {
+    check_joined_lanes("lane_mask_join_saveexec", 0, 2, 0, kThreads);
+    check_joined_lanes("lane_mask_join_saveexec", 1, 2, 0, 0);
+}
+
+TEST(a_lane_mask_join_keeps_a_joined_mask) {
+    check_joined_lanes("lane_mask_join_nested", 0, 2, 0, kThreads);
+    check_joined_lanes("lane_mask_join_nested", 1, 2, 1, 2);
+}
+
+TEST(a_lane_mask_join_keeps_a_loop_accumulator) {
+    check_joined_lanes("lane_mask_join_loop", 0, 2, 0, 2);
+}
+
+TEST(a_lane_mask_join_keeps_a_spilled_mask) {
+    check_joined_lanes("lane_mask_join_spill", 0, 2, 0, 2);
+    check_joined_lanes("lane_mask_join_spill", 1, 2, 0, 2);
+}
+
+TEST(a_lane_mask_join_of_an_unknown_value_is_refused) {
+    const std::vector<std::uint32_t> words = {
+        0xBE850380u, 0xF4080202u, 0xFA000000u, 0x7E020200u, 0x7E040201u, 0x7E060202u, 0x7E080203u,
+        0x9386FF00u, 0x00080000u, 0xBF068001u, 0xBF850002u, 0xD4C20006u, 0x02020280u, 0xD5010000u,
+        0x00190280u, 0xBF8CC07Fu, 0xE0700000u, 0x80020000u, 0xBF810000u};
+    bool refused = false;
+    std::string reason;
+    try {
+        (void)lower_mask(words, {1, 1, 1});
+    } catch (const std::exception& error) {
+        refused = true;
+        reason = error.what();
+    }
+    CHECK(refused);
+    CHECK(reason.find("a lane-mask join of an untracked mask") != std::string::npos);
 }

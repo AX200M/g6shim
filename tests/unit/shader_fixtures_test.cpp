@@ -595,6 +595,31 @@ TEST(shader_fixtures_translate_a_select_on_raw_lane_bits) {
     }
 }
 
+TEST(shader_fixtures_translate_a_wave64_lane_mask_join) {
+    const std::vector<std::uint32_t> words = {
+        0xBE850380u, 0xF4080202u, 0xFA000000u, 0x7E020200u, 0x7E040201u, 0x7E060202u, 0x7E080203u,
+        0xD7650005u, 0x020100C1u, 0xBF068000u, 0xBF850003u, 0xD4C10006u, 0x02000305u, 0xBF820001u,
+        0xBE860480u, 0xD5010000u, 0x00190280u, 0x340A0A85u, 0xBF8CC07Fu, 0xE0701000u, 0x80020005u,
+        0xBF810000u};
+    NativeProgram native;
+    native.stage = HwStage::Cs;
+    native.wave64 = true;
+    native.vgprs = kFixtureVgprs;
+    native.io = ComputeIo{kUserSgprs << kUserSgprShift, {1, 1, 1}};
+    native.layout = {root_param(RootType::Kind::Constants, kConstantsUserData, kConstantsSlot),
+                     root_param(RootType::Kind::Table, kTableUserData, kTableSlot)};
+    native.used = {used_uav(kTableUserData, kTableSlot)};
+    native.code = bytes_of(words);
+    bool translated = true;
+    try {
+        check_dxil(lower_native(native).dxil, "lane_mask_join_wave64");
+    } catch (const std::exception& error) {
+        std::printf("wave64 lane-mask join did not translate: %s\n", error.what());
+        translated = false;
+    }
+    CHECK(translated);
+}
+
 TEST(shader_fixtures_translate_image_dimensions_without_an_image_operation) {
     const Fixture* fixture = find_fixture(kImageShapeOnly);
     CHECK(fixture != nullptr);

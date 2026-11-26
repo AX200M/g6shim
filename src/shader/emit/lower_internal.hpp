@@ -79,6 +79,7 @@ inline constexpr Why kLaneMask = "a lane mask read as data";
 inline constexpr Why kLaneMaskElsewhere = "a lane mask holding lanes elsewhere read as data";
 inline constexpr Why kQuadMask = "a whole-quad lane mask read as data";
 inline constexpr Why kOpaqueMask = "an opaque lane mask read as data";
+inline constexpr Why kUntrackedMaskJoin = "a lane-mask join of an untracked mask";
 
 inline constexpr std::array<std::uint32_t, 9> kHalfConstants = {0x3800, 0xB800, 0x3C00, 0xBC00, 0x4000,
                                                                0xC000, 0x4400, 0xC400, 0x3118};

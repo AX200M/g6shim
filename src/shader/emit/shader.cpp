@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "g6shim/shader/emit/shader.hpp"
+#include "g6shim/shader/error.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -385,7 +387,12 @@ std::vector<std::uint8_t> Shader::finish() {
     m.named_md("dx.shaderModel", {shader_model});
     m.named_md("dx.entryPoints", {entry_node});
 
-    const std::vector<std::uint8_t> bitcode = m.write();
+    std::vector<std::uint8_t> bitcode;
+    try {
+        bitcode = m.write();
+    } catch (const std::logic_error& error) {
+        ::g6shim::shader::detail::fail_unsupported(0, error.what());
+    }
     std::vector<std::uint8_t> dxil;
     dxil.reserve(kDxilHeaderSize + bitcode.size());
     append_u32(dxil, program_kind << kProgramKindShift | kProgramKindMask);

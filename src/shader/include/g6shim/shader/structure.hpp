@@ -149,6 +149,7 @@ struct Structured {
     std::unordered_map<Value, Value, ValueHash> highs;
     std::unordered_set<Value, ValueHash> active;
     std::unordered_set<Value, ValueHash> lane_data;
+    std::unordered_map<Value, std::vector<Bool>, ValueHash> phi_masks;
 
     std::optional<Bool> mask_bits(Value low, std::optional<Value> high) const;
 };
