@@ -231,6 +231,9 @@ public:
             if (!value) throw TraceError{"a descriptor not in SGPRs"};
             words.push_back(origin(*value));
         }
+        if (inst.name().find("format") == std::string_view::npos) {
+            if (const auto raw = made_raw(words)) words.assign(raw->begin(), raw->end());
+        }
         Known known;
         if (lanes_ != nullptr && at < lanes_->reach.size()) known.emplace_back(lanes_->reach[at], true);
         std::vector<std::size_t> joins;
@@ -1208,6 +1211,52 @@ public:
     }
 
 private:
+    std::optional<Term> other_operand(Value value, std::string_view name, std::uint32_t constant) const {
+        const auto op = sop2(value, {name});
+        if (!op) return std::nullopt;
+        const Term& a = op->second[0];
+        const Term& b = op->second[1];
+        if (b.kind == Term::Kind::Const && b.constant == constant) return a;
+        if (a.kind == Term::Kind::Const && a.constant == constant) return b;
+        return std::nullopt;
+    }
+
+    std::optional<std::array<Term, 4>> made_raw(const std::vector<Term>& words) const {
+        constexpr std::uint32_t kStrideCleared = 0xC000'FFFF;
+        constexpr std::uint32_t kByteBounds = 0x3000'0000;
+        constexpr std::uint32_t kBoundsCleared = 0xCFFF'FFFF;
+        constexpr std::uint32_t kStrideField = 0x000E'0010;
+        constexpr std::uint32_t kLeastStride = 1;
+        if (words.size() != 4) return std::nullopt;
+        for (std::size_t k = 1; k < words.size(); ++k)
+            if (words[k].kind != Term::Kind::Value) return std::nullopt;
+        const auto stride_cleared = other_operand(words[1].value, "s_and_b32", kStrideCleared);
+        if (!stride_cleared) return std::nullopt;
+        const auto bounds_set = other_operand(words[3].value, "s_or_b32", kByteBounds);
+        if (!bounds_set || bounds_set->kind != Term::Kind::Value) return std::nullopt;
+        const auto bounds_word = other_operand(bounds_set->value, "s_and_b32", kBoundsCleared);
+        if (!bounds_word) return std::nullopt;
+        const auto bytes = sop2(words[2].value, {"s_mul_i32"});
+        if (!bytes) return std::nullopt;
+        const auto stride_of = [&](const Term& term) -> std::optional<Term> {
+            if (term.kind != Term::Kind::Value) return std::nullopt;
+            return other_operand(term.value, "s_max_u32", kLeastStride);
+        };
+        std::optional<Term> records;
+        std::optional<Term> stride = stride_of(bytes->second[1]);
+        if (stride) {
+            records = bytes->second[0];
+        } else if ((stride = stride_of(bytes->second[0]))) {
+            records = bytes->second[1];
+        }
+        if (!stride || !records || stride->kind != Term::Kind::Value) return std::nullopt;
+        const auto field = sop2(stride->value, {"s_bfe_u32"});
+        if (!field || field->second[1].kind != Term::Kind::Const || field->second[1].constant != kStrideField)
+            return std::nullopt;
+        if (field->second[0] != *stride_cleared) return std::nullopt;
+        return std::array<Term, 4>{words[0], *stride_cleared, *records, *bounds_word};
+    }
+
     std::optional<std::pair<Term, std::uint32_t>> set_bits(Value value) const {
         if (const auto or_ = sop2(value, {"s_or_b32"})) {
             const Term& a = or_->second[0];

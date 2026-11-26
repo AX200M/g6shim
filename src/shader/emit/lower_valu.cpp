@@ -1225,6 +1225,38 @@ V Lower::integer(const IrInst& inst, std::string_view name) {
         }
         return s_.m.bin(c, op, x, y);
     }
+    if (name == "v_dot4c_i32_i8") {
+        constexpr std::uint32_t kDot4AddI8Packed = 163;
+        const V a = src(inst, 0);
+        const V b = src(inst, 1);
+        const auto* target = fields->dst ? std::get_if<VectorOperand>(&*fields->dst) : nullptr;
+        if (target == nullptr) fail("an accumulator");
+        const std::optional<Value> before = inst.read(Reg::v(target->reg));
+        if (!before) fail("an accumulator");
+        return s_.op(c, "dot4AddPacked.i32", Attr::ReadNone, s_.t.i32, kDot4AddI8Packed, {i32_of(*before), a, b});
+    }
+    if (name == "v_dot4_i32_i8") {
+        constexpr std::uint32_t kDot4AddI8Packed = 163;
+        constexpr std::uint32_t kHalfBits = 16;
+        constexpr std::uint32_t kLowHalf = 0xFFFF;
+        if (fields->clamp || fields->neg_hi != 0) fail("a saturating or negated dot product");
+        std::array<V, 2> packed{};
+        for (std::size_t n = 0; n < packed.size(); ++n) {
+            const V x = src(inst, n);
+            const bool low_from_top = (fields->opsel >> n & 1) != 0;
+            const bool high_from_top = (fields->opsel_hi >> n & 1) != 0;
+            if (!low_from_top && high_from_top) {
+                packed[n] = x;
+                continue;
+            }
+            const V top = s_.m.bin(c, Bin::LShr, x, k(kHalfBits));
+            const V bottom = s_.m.bin(c, Bin::And, x, k(kLowHalf));
+            const V high = s_.m.bin(c, Bin::Shl, high_from_top ? top : bottom, k(kHalfBits));
+            packed[n] = s_.m.bin(c, Bin::Or, low_from_top ? top : bottom, high);
+        }
+        return s_.op(c, "dot4AddPacked.i32", Attr::ReadNone, s_.t.i32, kDot4AddI8Packed,
+                     {src(inst, 2), packed[0], packed[1]});
+    }
     if (name == "v_xnor_b32") {
         const V a = src(inst, 0);
         const V b = src(inst, 1);

@@ -26,6 +26,7 @@ struct FourCC {
 };
 
 inline constexpr FourCC kDxil{'D', 'X', 'I', 'L'};
+inline constexpr FourCC kAccc{'A', 'C', 'C', 'C'};
 inline constexpr FourCC kStat{'S', 'T', 'A', 'T'};
 inline constexpr FourCC kRts0{'R', 'T', 'S', '0'};
 inline constexpr FourCC kPsv0{'P', 'S', 'V', '0'};

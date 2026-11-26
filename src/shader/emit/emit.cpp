@@ -166,6 +166,7 @@ std::uint32_t stage_loop_limit(std::uint32_t named, bool pixel, bool mesh, bool 
 HostShader translate(std::span<const std::uint8_t> container) {
     const Container parsed = Container::parse(container);
     const Part* part = parsed.part(kDxil);
+    if (part == nullptr) part = parsed.part(kAccc);
     if (part == nullptr) detail::fail_malformed("no DXIL part");
     const std::vector<NativeProgram> programs = native_programs(part->data);
     const NativeProgram* native = nullptr;

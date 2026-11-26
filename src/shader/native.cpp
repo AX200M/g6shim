@@ -22,6 +22,32 @@ namespace {
 constexpr std::size_t kXdatOffset = 0x18;
 constexpr std::size_t kMaxXdatEntries = 64;
 constexpr std::uint32_t kKindNative = 0x0D;
+constexpr std::string_view kFspxMagic = "FSPX";
+constexpr std::uint32_t kFspxVersion = 1;
+constexpr std::size_t kFspxHeader = 0x10;
+constexpr std::size_t kFspxEntry = 16;
+constexpr std::uint32_t kFspxPacket = 0;
+constexpr std::uint32_t kFspxCode = 6;
+constexpr std::uint32_t kFspxMetadata = 7;
+constexpr std::size_t kFspxCodeDwords = 8;
+constexpr std::size_t kFspxRecords = 0x18;
+constexpr std::size_t kFspxRecord = 32;
+constexpr std::uint8_t kFspxResourceRecord = 0x41;
+constexpr std::uint8_t kFspxViewRecord = 0x42;
+constexpr std::uint8_t kFspxHashRecord = 0x43;
+constexpr std::size_t kFspxResourceType = 4;
+constexpr std::size_t kFspxRootType = 5;
+constexpr std::size_t kFspxTableOffset = 8;
+constexpr std::size_t kFspxRegister = 12;
+constexpr std::size_t kFspxDescriptorDwords = 20;
+constexpr std::size_t kFspxUserData = 21;
+constexpr std::size_t kFspxRootSlot = 22;
+constexpr std::size_t kPacketThreads = 0x0c;
+constexpr std::size_t kPacketFlags = 0x12;
+constexpr std::uint16_t kPacketWave32 = 1 << 4;
+constexpr std::size_t kPacketRsrc1 = 0x14;
+constexpr std::size_t kPacketRsrc2 = 0x18;
+constexpr std::uint32_t kVgprGranuleMask = 0x3F;
 constexpr std::uint32_t kXbchVersion = 3;
 constexpr std::size_t kXbchHeader = 0x18;
 constexpr std::uint32_t kFssmVersion = 0x101;
@@ -373,7 +399,78 @@ std::vector<std::uint8_t> NativeProgram::patched_code() const {
     return patched;
 }
 
+namespace {
+
+std::span<const std::uint8_t> fspx_entry(std::span<const std::uint8_t> part, std::size_t count, std::uint32_t kind) {
+    for (std::size_t i = 0; i < count; ++i) {
+        const std::size_t at = kFspxHeader + kFspxEntry * i;
+        if (detail::read_u32(part, at) != kind) continue;
+        return unwrap(detail::bytes(part, detail::read_u32(part, at + 4), detail::read_u32(part, at + 8)),
+                      "FSPX entry out of bounds");
+    }
+    detail::fail_malformed("FSPX entry missing");
+}
+
+NativeProgram fspx_program(std::span<const std::uint8_t> part) {
+    if (detail::read_u32(part, 4) != kFspxVersion) detail::fail_malformed("unknown FSPX version");
+    const std::size_t count = detail::read_u32(part, 8);
+    if (count > kMaxXdatEntries) detail::fail_malformed("implausible FSPX entry count");
+    const auto packet = fspx_entry(part, count, kFspxPacket);
+    const auto code = fspx_entry(part, count, kFspxCode);
+    const auto meta = fspx_entry(part, count, kFspxMetadata);
+    if (static_cast<std::uint64_t>(detail::read_u32(meta, kFspxCodeDwords)) * 4 != code.size())
+        detail::fail_malformed("FSPX code size disagrees");
+    NativeProgram program;
+    program.stage = HwStage::Cs;
+    program.wave64 = (detail::read_u16(packet, kPacketFlags) & kPacketWave32) == 0;
+    const std::uint32_t granules = (detail::read_u32(packet, kPacketRsrc1) & kVgprGranuleMask) + 1;
+    program.vgprs = static_cast<std::uint16_t>(std::min(granules * (program.wave64 ? 4u : 8u), kMaxVgprs));
+    for (std::size_t at = kFspxRecords; at + kFspxRecord <= meta.size(); at += kFspxRecord) {
+        const std::span<const std::uint8_t> record = meta.subspan(at, kFspxRecord);
+        if (record[0] == kFspxViewRecord) continue;
+        if (record[0] == kFspxHashRecord) break;
+        if (record[0] != kFspxResourceRecord) detail::fail_malformed("unknown FSPX metadata record");
+        UsedResource used;
+        used.kind = resource_type_from_raw(record[kFspxResourceType]);
+        used.root = root_type_from_raw(record[kFspxRootType]);
+        used.table_offset_dwords = detail::read_u32(record, kFspxTableOffset);
+        used.lower_bound = detail::read_u32(record, kFspxRegister);
+        used.dwords = record[kFspxDescriptorDwords];
+        used.user_data = record[kFspxUserData];
+        used.slot = record[kFspxRootSlot];
+        std::uint32_t sgprs = 0;
+        if (used.root.kind == RootType::Kind::Table)
+            sgprs = 1;
+        else if (used.root.kind == RootType::Kind::Descriptor)
+            sgprs = 2;
+        else if (used.root.kind != RootType::Kind::ImmediateSampler)
+            detail::fail_malformed("an FSPX resource of an unknown root type");
+        const bool known = std::any_of(program.layout.begin(), program.layout.end(),
+                                       [&](const RootParam& param) { return param.slot == used.slot; });
+        if (sgprs > 0 && !known) {
+            RootParam param;
+            param.root = used.root;
+            param.sgprs = sgprs;
+            param.base_register = used.lower_bound;
+            param.user_data = used.user_data;
+            param.slot = used.slot;
+            program.layout.push_back(param);
+        }
+        program.used.push_back(used);
+    }
+    ComputeIo io;
+    io.rsrc2 = detail::read_u32(packet, kPacketRsrc2);
+    for (std::size_t axis = 0; axis < io.threads.size(); ++axis)
+        io.threads[axis] = detail::read_u16(packet, kPacketThreads + 2 * axis);
+    program.io = io;
+    program.code.assign(code.begin(), code.end());
+    return program;
+}
+
+}  // namespace
+
 std::vector<NativeProgram> native_programs(std::span<const std::uint8_t> part) {
+    if (starts_with(part, kFspxMagic)) return {fspx_program(part)};
     if (!starts_with(part.subspan(std::min(kXdatOffset, part.size())), "XDAT")) return {};
     const std::size_t count = detail::read_u32(part, kXdatOffset + 4);
     if (count > kMaxXdatEntries) detail::fail_malformed("implausible XDAT entry count");

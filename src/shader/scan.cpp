@@ -47,6 +47,7 @@ constexpr std::uint64_t kSecondPrime = 0x9E3779B185EBCA87ull;
 constexpr char kPackedFailure[] = "packed shader record";
 constexpr char kContainerFailure[] = "container";
 constexpr char kDxilFailure[] = "DXIL";
+constexpr char kNativeOnlyStage[] = "cs";
 constexpr char kNativeFailure[] = "native";
 constexpr char kDecodeFailure[] = "instruction";
 constexpr char kTranslationPrefix[] = "translation: ";
@@ -203,19 +204,24 @@ Outcome analyze(std::span<const std::uint8_t> bytes, const std::string& hash,
     Outcome outcome;
     try {
         const Container container = Container::parse(bytes);
-        const Part* const dxil = container.part(kDxil);
+        const Part* const native_only = container.part(kAccc);
+        const Part* const dxil = container.part(kDxil) != nullptr ? container.part(kDxil) : native_only;
         if (dxil == nullptr) {
             outcome.reason = kDxilFailure;
             outcome.message = "no DXIL part";
             return outcome;
         }
-        const std::optional<ShaderKind> kind = header_kind(dxil->data);
-        if (!kind) {
-            outcome.reason = kDxilFailure;
-            outcome.message = "program header does not parse";
-            return outcome;
+        if (dxil == native_only) {
+            outcome.stage = kNativeOnlyStage;
+        } else {
+            const std::optional<ShaderKind> kind = header_kind(dxil->data);
+            if (!kind) {
+                outcome.reason = kDxilFailure;
+                outcome.message = "program header does not parse";
+                return outcome;
+            }
+            outcome.stage = shader_stage(*kind);
         }
-        outcome.stage = shader_stage(*kind);
         std::vector<NativeProgram> programs;
         try {
             programs = native_programs(dxil->data);

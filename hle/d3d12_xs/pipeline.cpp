@@ -143,7 +143,9 @@ const Translated* Shader::translated() const {
         Translated done;
         try {
             const g6shim::shader::Container parsed = g6shim::shader::Container::parse(container);
-            if (const g6shim::shader::Part* part = parsed.part(g6shim::shader::kDxil); part != nullptr) {
+            const g6shim::shader::Part* part = parsed.part(g6shim::shader::kDxil);
+            if (part == nullptr) part = parsed.part(g6shim::shader::kAccc);
+            if (part != nullptr) {
                 for (const g6shim::shader::NativeProgram& program : g6shim::shader::native_programs(part->data)) {
                     if (program.stage == g6shim::shader::HwStage::Vs ||
                         program.stage == g6shim::shader::HwStage::Ps ||
