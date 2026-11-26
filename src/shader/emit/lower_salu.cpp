@@ -964,14 +964,30 @@ V Lower::read_image_heap_word(const ImageHeapWord& word) {
     const std::size_t c = read.block;
     if (!read.shape) {
         using Data = ImageHeapData;
-        const auto [data, valid_slot] = read_heap_record(c, read.byte_address, read.binding);
-        const V present = s_.m.cmp(c, pred::kNe, s_.m.extract(c, data, Data::kPresent), s_.m.i32(0));
-        const V valid = s_.m.bin(c, Bin::And, valid_slot, present);
+        const auto [h, count] = heap_records(read.binding);
+        constexpr std::uint32_t kRecordBytes = 16;
+        const V slot = s_.m.bin(c, Bin::LShr, read.byte_address, s_.m.i32(5));
+        const V in_range = s_.m.cmp(c, pred::kIult, slot, count);
+        const V low_bits = s_.m.bin(c, Bin::And, read.byte_address, s_.m.i32(31));
+        const V aligned = s_.m.cmp(c, pred::kEq, low_bits, s_.m.i32(0));
+        const V byte = s_.m.bin(c, Bin::Shl, slot, s_.m.i32(4));
+        const V fits = raw_byte_fits(h, byte, kRecordBytes);
+        V gate = s_.m.bin(c, Bin::And, in_range, aligned);
+        gate = s_.m.bin(c, Bin::And, gate, fits);
+        const std::size_t load_block = s_.m.new_block();
         const std::size_t abort = abort_block();
+        const std::size_t saved = cur_;
+        s_.m.terminate(c, Term::cond_br(gate, load_block, abort));
+        const auto [data, valid_slot] = read_heap_record(load_block, read.byte_address, read.binding);
+        const V present = s_.m.cmp(load_block, pred::kNe, s_.m.extract(load_block, data, Data::kPresent),
+                                   s_.m.i32(0));
+        const V valid = s_.m.bin(load_block, Bin::And, valid_slot, present);
         read.shape = data;
-        s_.m.terminate(c, Term::cond_br(valid, read.next, abort));
+        read.defined = load_block;
+        s_.m.terminate(load_block, Term::cond_br(valid, read.next, abort));
+        cur_ = saved;
     }
-    return s_.m.extract(c, *read.shape, word.channel);
+    return s_.m.extract(read.defined, *read.shape, word.channel);
 }
 
 Lower::HeapRecords Lower::heap_records(const UserData& binding) {
@@ -999,10 +1015,9 @@ std::pair<V, V> Lower::read_heap_record(std::size_t c, V byte_address, const Use
     const V low_bits = s_.m.bin(c, Bin::And, byte_address, s_.m.i32(kResourceDescriptorBytes - 1));
     const V aligned = s_.m.cmp(c, pred::kEq, low_bits, s_.m.i32(0));
     const V byte = s_.m.bin(c, Bin::Shl, slot, s_.m.i32(kRecordShift));
-    const V safe_byte = s_.m.select(c, in_range, byte, s_.m.i32(0));
     const Ty result = s_.m.named_struct("dx.types.ResRet.i32", {i32, i32, i32, i32, i32});
     const V data = s_.op(c, "rawBufferLoad.i32", Attr::ReadOnly, result, 139,
-                         {h, safe_byte, s_.m.undef(i32), s_.m.i8(0xf), s_.m.i32(sizeof(std::uint32_t))});
+                         {h, byte, s_.m.undef(i32), s_.m.i8(0xf), s_.m.i32(sizeof(std::uint32_t))});
     return {data, s_.m.bin(c, Bin::And, in_range, aligned)};
 }
 

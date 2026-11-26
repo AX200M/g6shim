@@ -5,6 +5,7 @@
 
 #include "d3d12_xs/descriptor_host.hpp"
 #include "d3d12_xs/host.hpp"
+#include "d3d12_xs/indirect.hpp"
 
 #include <algorithm>
 #include <array>
@@ -83,7 +84,7 @@ Lowered lower_fixture(const Fixture& fixture, const std::vector<UsedResource>& u
                          used, kUserSgprs << kUserSgprShift, {1, 1, 1});
 }
 
-void check_indexed_buffer_results(Lowered lowered) {
+void check_indexed_buffer_results(Lowered lowered, bool after_sanitize = false) {
     using namespace g6shim::d3d12_xs;
     using Microsoft::WRL::ComPtr;
     host::Host* gpu = host::host();
@@ -163,6 +164,25 @@ void check_indexed_buffer_results(Lowered lowered) {
         constants[1] = index;
         constants[2] = offset;
         auto* commands = list->list();
+        if (after_sanitize) {
+            D3D12_HEAP_PROPERTIES properties{};
+            properties.Type = D3D12_HEAP_TYPE_DEFAULT;
+            D3D12_RESOURCE_DESC arguments{};
+            arguments.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            arguments.Width = 12;
+            arguments.Height = 1;
+            arguments.DepthOrArraySize = 1;
+            arguments.MipLevels = 1;
+            arguments.SampleDesc = {1, 0};
+            arguments.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            arguments.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+            ComPtr<ID3D12Resource> args;
+            if (FAILED(gpu->device()->CreateCommittedResource(&properties, D3D12_HEAP_FLAG_NONE, &arguments,
+                                                              D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+                                                              IID_PPV_ARGS(&args))))
+                return result;
+            if (!indirect::bound(*list, args.Get(), args->GetGPUVirtualAddress(), 2, 12, 1)) return result;
+        }
         ID3D12DescriptorHeap* heaps[] = {heap->heap()};
         commands->SetDescriptorHeaps(1, heaps);
         commands->SetComputeRootSignature(root.Get());
@@ -873,6 +893,26 @@ TEST(shader_fixtures_translate_a_buffer_load_with_a_runtime_stride) {
         }
         check_dxil(lowered.dxil, fixture->name);
         check_indexed_buffer_results(lowered);
+    } catch (const std::exception& error) {
+        std::printf("fixture %s did not translate: %s\n", fixture->name, error.what());
+        CHECK(false);
+    }
+
+TEST(shader_fixtures_read_indexed_descriptor_fields_after_an_argument_clamp) {
+    const Fixture* fixture = find_fixture(kBufferHeapStride);
+    CHECK(fixture != nullptr);
+    if (fixture == nullptr) return;
+    constexpr std::uint8_t kHeapUserData = 4;
+    constexpr std::uint8_t kHeapSlot = 2;
+    constexpr std::uint8_t kOutputUserData = 6;
+    constexpr std::uint8_t kOutputSlot = 1;
+    try {
+        const auto lowered = lower_compute(fixture->words, kFixtureVgprs,
+            {root_param(RootType::Kind::Constants, kConstantsUserData, kConstantsSlot),
+             root_param(RootType::Kind::ResourceHeap, kHeapUserData, kHeapSlot),
+             root_param(RootType::Kind::Table, kOutputUserData, kOutputSlot)},
+            {used_uav(kOutputUserData, kOutputSlot)}, (kOutputUserData + 1u) << kUserSgprShift, {1, 1, 1});
+        check_indexed_buffer_results(lowered, true);
     } catch (const std::exception& error) {
         std::printf("fixture %s did not translate: %s\n", fixture->name, error.what());
         CHECK(false);

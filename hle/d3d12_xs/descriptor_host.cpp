@@ -1636,6 +1636,18 @@ HostHeap* for_heap(Object* heap) {
     return entry->host.get();
 }
 
+Object* largest_view_heap() {
+    std::shared_lock<std::shared_mutex> lock(g_heaps_mutex);
+    Object* best = nullptr;
+    std::uint32_t count = 0;
+    for (const auto& entry : g_heaps) {
+        if (!entry || entry->sampler || entry->host == nullptr || entry->count <= count) continue;
+        best = entry->heap;
+        count = entry->count;
+    }
+    return best;
+}
+
 std::optional<HeapDataBinding> image_heap_data(Object* heap) {
     const auto entry = entry_for_heap(heap);
     if (!entry || entry->sampler) return std::nullopt;

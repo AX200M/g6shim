@@ -109,6 +109,7 @@ private:
         V byte_address;
         UserData binding;
         std::optional<V> shape;
+        std::size_t defined = 0;
     };
 
     struct ImageHeapWord {
