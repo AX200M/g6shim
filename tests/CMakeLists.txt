@@ -119,6 +119,7 @@ add_executable(g6shim_tests
   unit/d3d12_xs_primitive_test.cpp
   unit/d3d12_xs_indirect_test.cpp
   unit/d3d12_xs_draw_test.cpp
+  unit/d3d12_xs_depth_uav_test.cpp
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/console.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor_host.cpp"
@@ -146,6 +147,7 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/shadow.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/signature.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/texture.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/depth_uav.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/watch.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/window.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/window_geometry.cpp"
@@ -209,6 +211,21 @@ g6shim_add_compute_dxil(g_present_plane_ps "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/p
 g6shim_target_compute_dxil(g6shim_tests g_bvh_build_dxil)
 g6shim_target_compute_dxil(g6shim_tests g_present_plane_vs)
 g6shim_target_compute_dxil(g6shim_tests g_present_plane_ps)
+g6shim_add_compute_dxil(g_depth_copy_vs "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/depth_copy.hlsl" copy_vs vs_6_0)
+g6shim_add_compute_dxil(g_depth_copy_ps "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/depth_copy.hlsl" copy_depth_ps ps_6_0)
+g6shim_add_compute_dxil(g_depth_copy_stencil_ps "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/depth_copy.hlsl" copy_stencil_ps ps_6_0)
+g6shim_add_compute_dxil(g_depth_copy_stencil_bit_ps "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/depth_copy.hlsl" copy_stencil_bit_ps ps_6_0)
+g6shim_add_compute_dxil(g_depth_uav_write "${CMAKE_CURRENT_SOURCE_DIR}/unit/depth_uav_write.hlsl" main)
+g6shim_add_compute_dxil(g_depth_equal_vs "${CMAKE_CURRENT_SOURCE_DIR}/unit/depth_equal.hlsl" equal_vs vs_6_0)
+g6shim_add_compute_dxil(g_depth_equal_ps "${CMAKE_CURRENT_SOURCE_DIR}/unit/depth_equal.hlsl" equal_ps ps_6_0)
+g6shim_target_compute_dxil(g6shim_tests g_bvh_build_dxil)
+g6shim_target_compute_dxil(g6shim_tests g_depth_copy_vs)
+g6shim_target_compute_dxil(g6shim_tests g_depth_copy_ps)
+g6shim_target_compute_dxil(g6shim_tests g_depth_copy_stencil_ps)
+g6shim_target_compute_dxil(g6shim_tests g_depth_copy_stencil_bit_ps)
+g6shim_target_compute_dxil(g6shim_tests g_depth_uav_write)
+g6shim_target_compute_dxil(g6shim_tests g_depth_equal_vs)
+g6shim_target_compute_dxil(g6shim_tests g_depth_equal_ps)
 add_test(NAME unit COMMAND g6shim_tests)
 set_tests_properties(unit PROPERTIES TIMEOUT 30
   ENVIRONMENT "G6SHIM_LOG=${CMAKE_CURRENT_BINARY_DIR}/unit.log;G6SHIM_LOG_STDERR=0")

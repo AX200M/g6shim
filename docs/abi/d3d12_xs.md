@@ -408,6 +408,13 @@ A loose window is evicted after `kIdleSubmissions` (512) completed submissions w
 | refresh | written pages since the last asking detile the whole texture; unwatched memory hashed |
 | upload | one `CopyTextureRegion` per subresource, from the staging buffer |
 
+
+## Depth unordered access
+
+A texture whose flags ask for both depth-stencil and unordered access is one image on the console. The host refuses that pair of flags unless `CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS_PREVIEW)` reports `UAVOfDepthStencilSupported` (feature 72, `D3D12_FEATURE_DATA_D3D12_OPTIONS_PREVIEW`: three group-shared sizes, then the two booleans). When that cap is set, and the format is 16-bit depth, 32-bit depth or 32-bit depth with stencil, and the sample count is 1, the host texture is created with both flags. Unordered views use the view format of the requested plane (`R16_UNORM`, `R32_FLOAT`, `R32_FLOAT_X8X24_TYPELESS` / `X32_TYPELESS_G8X24_UINT`, or `R32G32_UINT` on plane 0 when `D32S8Interleaved` is set). Shader-resource views stay on the depth texture.
+
+Otherwise each writable plane gets a colour twin with `ALLOW_UNORDERED_ACCESS`. The depth plane is `R16_UNORM` for 16-bit depth and `R32_FLOAT` for 32-bit depth. 24-bit depth has no colour unordered format, so its twin is `R32_FLOAT` holding a normalised depth in [0, 1], not a packed 24-bit unorm. The stencil plane is `R8_UINT`. An unordered view of the depth texture is created on the twin of the requested plane (plane 1, or a stencil view format, selects stencil). After a command list records a dispatch or draw that bound that view, a full-screen draw copies mip 0 of slice 0 back: depth through `SV_Depth`, stencil through `SV_StencilRef` when `PSSpecifiedStencilRefSupported` is set, otherwise one draw per stencil bit with that bit's write mask.
+
 ## Xmem private exports
 
 | Export | Signature |

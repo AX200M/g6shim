@@ -22,9 +22,24 @@
 
 namespace g6shim::d3d12_xs::later {
 
+struct DepthUavPlane {
+    Microsoft::WRL::ComPtr<ID3D12Resource> texture;
+    std::atomic<std::uint32_t> state{D3D12_RESOURCE_STATE_UNORDERED_ACCESS};
+    std::uint32_t format = 0;
+    float clear_float = 0;
+    std::uint32_t clear_uint = 0;
+};
+
+struct DepthUav {
+    bool direct = false;
+    DepthUavPlane depth;
+    DepthUavPlane stencil;
+};
+
 struct HostTexture {
     Microsoft::WRL::ComPtr<ID3D12Resource> texture;
     std::atomic<std::uint32_t> state{0};
+    std::shared_ptr<DepthUav> depth_uav;
 };
 
 }  // namespace g6shim::d3d12_xs::later
@@ -78,5 +93,20 @@ bool committed(const void* at, std::size_t bytes);
 bool title_written(ID3D12Resource* texture);
 void upload(host::HostList& list, Object* resource, ID3D12Resource* texture);
 std::optional<std::shared_ptr<Staging>> staging(Object* resource, ID3D12Resource* texture);
+
+struct DepthUavBinding {
+    ID3D12Resource* resource = nullptr;
+    std::uint32_t format = 0;
+    std::uint32_t plane = 0;
+    bool twin = false;
+};
+
+bool depth_unordered_direct(std::uint32_t format, std::uint32_t samples);
+void attach_depth_uav(later::HostTexture& host, const resource::ResourceDesc& host_desc, bool direct,
+                      const void* clear);
+std::optional<DepthUavBinding> depth_uav_binding(Object* resource, const D3D12_UNORDERED_ACCESS_VIEW_DESC* desc);
+void note_depth_uav(host::HostList& list, Object* resource, const std::uint32_t* words);
+bool copy_depth_uavs(host::HostList& list);
+void drop_depth_uav_notes(host::HostList* list);
 
 }  // namespace g6shim::d3d12_xs::texture

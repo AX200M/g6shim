@@ -455,6 +455,35 @@ std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> make(const descriptor::Vie
         }
         std::optional<D3D12_UNORDERED_ACCESS_VIEW_DESC> desc;
         if (unordered->desc) desc = uav_desc(*unordered->desc);
+        if (const auto binding = texture::depth_uav_binding(object, desc ? &*desc : nullptr)) {
+            D3D12_UNORDERED_ACCESS_VIEW_DESC made = desc.value_or(D3D12_UNORDERED_ACCESS_VIEW_DESC{});
+            if (!desc) made.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            if (binding->twin) {
+                const UINT mip = made.ViewDimension == D3D12_UAV_DIMENSION_TEXTURE2D
+                                     ? made.Texture2D.MipSlice
+                                     : made.ViewDimension == D3D12_UAV_DIMENSION_TEXTURE2DARRAY
+                                           ? made.Texture2DArray.MipSlice
+                                           : 0;
+                const UINT slice = made.ViewDimension == D3D12_UAV_DIMENSION_TEXTURE2DARRAY
+                                       ? made.Texture2DArray.FirstArraySlice
+                                       : 0;
+                if (mip != 0 || slice != 0) {
+                    static std::once_flag once;
+                    std::call_once(once, [] {
+                        G6SHIM_WARN("d3d12_xs: a depth unordered view past mip 0 slice 0 uses mip 0 slice 0");
+                    });
+                }
+                made = {};
+                made.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            } else if (made.ViewDimension == D3D12_UAV_DIMENSION_TEXTURE2D) {
+                made.Texture2D.PlaneSlice = binding->plane;
+            } else if (made.ViewDimension == D3D12_UAV_DIMENSION_TEXTURE2DARRAY) {
+                made.Texture2DArray.PlaneSlice = binding->plane;
+            }
+            made.Format = static_cast<DXGI_FORMAT>(binding->format);
+            gpu->device()->CreateUnorderedAccessView(binding->resource, nullptr, &made, at);
+            return Microsoft::WRL::ComPtr<ID3D12Resource>(binding->resource);
+        }
         std::uint32_t format = desc ? static_cast<std::uint32_t>(desc->Format) : 0;
         if (!fits(texture, desc ? &format : nullptr, true)) return std::nullopt;
         if (desc) desc->Format = static_cast<DXGI_FORMAT>(format);

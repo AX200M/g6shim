@@ -120,6 +120,70 @@ ID3D12CommandSignature* signature_for(std::uint32_t kind, std::uint32_t stride) 
     return raw;
 }
 
+struct RecordedGraphics {
+    std::vector<D3D12_VIEWPORT> viewports;
+    std::vector<RECT> scissors;
+    float blend[4]{};
+    bool blend_set = false;
+    std::uint32_t stencil = 0;
+    bool stencil_set = false;
+    std::uint32_t topology = 0;
+    bool topology_set = false;
+};
+
+std::mutex g_graphics_mutex;
+std::map<host::HostList*, RecordedGraphics> g_graphics;
+
+void record_viewports(host::HostList& list, std::span<const D3D12_VIEWPORT> viewports) {
+    std::lock_guard<std::mutex> lock(g_graphics_mutex);
+    g_graphics[&list].viewports.assign(viewports.begin(), viewports.end());
+}
+
+void record_scissors(host::HostList& list, std::span<const RECT> rects) {
+    std::lock_guard<std::mutex> lock(g_graphics_mutex);
+    g_graphics[&list].scissors.assign(rects.begin(), rects.end());
+}
+
+void record_blend(host::HostList& list, const float* factor) {
+    if (factor == nullptr) return;
+    std::lock_guard<std::mutex> lock(g_graphics_mutex);
+    auto& saved = g_graphics[&list];
+    std::copy_n(factor, 4, saved.blend);
+    saved.blend_set = true;
+}
+
+void record_stencil(host::HostList& list, std::uint32_t reference) {
+    std::lock_guard<std::mutex> lock(g_graphics_mutex);
+    auto& saved = g_graphics[&list];
+    saved.stencil = reference;
+    saved.stencil_set = true;
+}
+
+void record_topology(host::HostList& list, std::uint32_t topology) {
+    std::lock_guard<std::mutex> lock(g_graphics_mutex);
+    auto& saved = g_graphics[&list];
+    saved.topology = topology;
+    saved.topology_set = true;
+}
+
+void restore_graphics(host::HostList& list) {
+    RecordedGraphics saved;
+    {
+        std::lock_guard<std::mutex> lock(g_graphics_mutex);
+        const auto found = g_graphics.find(&list);
+        if (found == g_graphics.end()) return;
+        saved = found->second;
+    }
+    if (!saved.viewports.empty())
+        list.list()->RSSetViewports(static_cast<UINT>(saved.viewports.size()), saved.viewports.data());
+    if (!saved.scissors.empty())
+        list.list()->RSSetScissorRects(static_cast<UINT>(saved.scissors.size()), saved.scissors.data());
+    if (saved.blend_set) list.list()->OMSetBlendFactor(saved.blend);
+    if (saved.stencil_set) list.list()->OMSetStencilRef(saved.stencil);
+    if (saved.topology_set)
+        list.list()->IASetPrimitiveTopology(static_cast<D3D_PRIMITIVE_TOPOLOGY>(saved.topology));
+}
+
 void readable(host::HostList& list, const g6shim::shader::UsedResource& used, const descriptor::View& original) {
     descriptor::View view = original;
     const auto placed = descriptor_host::placed_texture(original);
@@ -141,7 +205,9 @@ void readable(host::HostList& list, const g6shim::shader::UsedResource& used, co
         host::ensure_state(list, object, kShaderResource);
     } else if (const auto* unordered = std::get_if<descriptor::UnorderedView>(&view);
                unordered != nullptr && used.kind.kind == ResourceKind::Kind::Uav) {
-        host::ensure_state(list, reinterpret_cast<Object*>(unordered->resource), kUnorderedAccess);
+        auto* object = reinterpret_cast<Object*>(unordered->resource);
+        host::ensure_state(list, object, kUnorderedAccess);
+        texture::note_depth_uav(list, object, unordered->desc ? unordered->desc->data() : nullptr);
     }
 }
 
@@ -198,6 +264,7 @@ void State::set_topology(host::HostList& list, std::uint32_t topology) {
         host_topology = kTriangles;
     }
     list.list()->IASetPrimitiveTopology(static_cast<D3D_PRIMITIVE_TOPOLOGY>(host_topology));
+    record_topology(list, host_topology);
 }
 
 void State::set_pipeline(Object* pipeline) { pipeline_ = reinterpret_cast<std::uintptr_t>(pipeline); }
@@ -250,6 +317,9 @@ void State::clear_vertex_buffers(std::uint32_t start, std::uint32_t count) {
 void State::set_index_buffer(const IndexView* view) { index_ = view != nullptr ? *view : IndexView{}; }
 
 void State::set_targets(host::HostList& list, std::span<const std::uint64_t> handles, std::uint64_t depth) {
+    targets_set_ = true;
+    target_handles_.assign(handles.begin(), handles.end());
+    depth_handle_ = depth;
     host::Host* gpu = host::host();
     if (gpu == nullptr) return;
     targets_.clear();
@@ -559,6 +629,16 @@ void State::dispatch(host::HostList& list, std::uint32_t x, std::uint32_t y, std
     }
     list.list()->Dispatch(x, y, z);
     g_dispatched.fetch_add(1, std::memory_order_relaxed);
+    finish_depth_uav(list);
+}
+
+void State::finish_depth_uav(host::HostList& list) {
+    if (!texture::copy_depth_uavs(list)) return;
+    host_pipeline_ = nullptr;
+    host_roots_ = {nullptr, nullptr};
+    host_heaps_ = {nullptr, nullptr};
+    if (targets_set_) set_targets(list, target_handles_, depth_handle_);
+    restore_graphics(list);
 }
 
 void State::dispatch_mesh(host::HostList& list, std::uint32_t x) {
@@ -573,6 +653,7 @@ void State::dispatch_mesh(host::HostList& list, std::uint32_t x) {
         }
     }
     if (!ran) drop();
+    finish_depth_uav(list);
 }
 
 void State::table_entry(host::HostList& list, const g6shim::shader::UsedResource& used, bool compute) {
@@ -705,6 +786,7 @@ void State::draw(host::HostList& list, std::uint32_t vertices, std::uint32_t ins
     } else {
         drop();
     }
+    finish_depth_uav(list);
 }
 
 bool State::rectangles(host::HostList& list, std::uint32_t count, std::uint32_t first) {
@@ -764,6 +846,7 @@ void State::draw_indexed(host::HostList& list, std::uint32_t indices, std::uint3
     } else {
         drop();
     }
+    finish_depth_uav(list);
 }
 
 bool State::execute_indirect(host::HostList& list, std::tuple<std::uint32_t, std::uint32_t, std::uint32_t> signature,
@@ -803,6 +886,7 @@ bool State::execute_indirect(host::HostList& list, std::tuple<std::uint32_t, std
     }
     if (!ran) {
         indirect::done(list, (*args)->buffer());
+        finish_depth_uav(list);
         return false;
     }
     list.list()->ExecuteIndirect(host_signature, max, (*args)->buffer(), (*args)->offset(arguments),
@@ -813,21 +897,30 @@ bool State::execute_indirect(host::HostList& list, std::tuple<std::uint32_t, std
         g_dispatched.fetch_add(1, std::memory_order_relaxed);
     else
         g_drawn.fetch_add(1, std::memory_order_relaxed);
+    finish_depth_uav(list);
     return true;
 }
 
 void viewports(host::HostList& list, std::span<const D3D12_VIEWPORT> viewports) {
     if (viewports.empty()) return;
     list.list()->RSSetViewports(static_cast<UINT>(viewports.size()), viewports.data());
+    record_viewports(list, viewports);
 }
 
 void scissors(host::HostList& list, std::span<const RECT> rects) {
     if (rects.empty()) return;
     list.list()->RSSetScissorRects(static_cast<UINT>(rects.size()), rects.data());
+    record_scissors(list, rects);
 }
 
-void blend_factor(host::HostList& list, const float* factor) { list.list()->OMSetBlendFactor(factor); }
+void blend_factor(host::HostList& list, const float* factor) {
+    list.list()->OMSetBlendFactor(factor);
+    record_blend(list, factor);
+}
 
-void stencil_ref(host::HostList& list, std::uint32_t reference) { list.list()->OMSetStencilRef(reference); }
+void stencil_ref(host::HostList& list, std::uint32_t reference) {
+    list.list()->OMSetStencilRef(reference);
+    record_stencil(list, reference);
+}
 
 }  // namespace g6shim::d3d12_xs::draw

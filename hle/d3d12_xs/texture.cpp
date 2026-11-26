@@ -54,13 +54,15 @@ std::shared_ptr<later::HostTexture> create_host_texture(const resource::Resource
     host_desc.layout = 0;
     host_desc.alignment = 0;
     host_desc.flags &= kPcFlags;
-    if ((host_desc.flags & kDepth) != 0) host_desc.flags &= ~kUnordered;
     host_desc.format = resource::pc_format(host_desc.format);
     if ((host_desc.flags & kDenyShaderResource) == 0) {
         const auto depth = std::find_if(resource::kDepthFormats.begin(), resource::kDepthFormats.end(),
                                         [&](const auto& pair) { return pair.first == host_desc.format; });
         if (depth != resource::kDepthFormats.end()) host_desc.format = depth->second;
     }
+    const bool both = (host_desc.flags & kDepth) != 0 && (host_desc.flags & kUnordered) != 0;
+    bool direct = both && depth_unordered_direct(host_desc.format, host_desc.sample_count);
+    if ((host_desc.flags & kDepth) != 0 && !direct) host_desc.flags &= ~kUnordered;
     if ((host_desc.flags & kUnordered) != 0) {
         const auto srgb = std::find_if(resource::kSrgbFormats.begin(), resource::kSrgbFormats.end(),
                                        [&](const auto& pair) { return pair.first == host_desc.format; });
@@ -75,12 +77,21 @@ std::shared_ptr<later::HostTexture> create_host_texture(const resource::Resource
     D3D12_HEAP_PROPERTIES heap{};
     heap.Type = D3D12_HEAP_TYPE_DEFAULT;
     Microsoft::WRL::ComPtr<ID3D12Resource> texture;
-    const std::uint32_t initial = host::legal_for(host_desc.flags, host::texture_state(state));
+    std::uint32_t initial = host::legal_for(host_desc.flags, host::texture_state(state));
     const void* clear_pointer = has_clear ? static_cast<const void*>(clear_value.data()) : nullptr;
-    const HRESULT made = gpu->device()->CreateCommittedResource(
-        &heap, D3D12_HEAP_FLAG_NONE, reinterpret_cast<const D3D12_RESOURCE_DESC*>(&host_desc),
-        static_cast<D3D12_RESOURCE_STATES>(initial), static_cast<const D3D12_CLEAR_VALUE*>(clear_pointer),
-        IID_PPV_ARGS(&texture));
+    auto create = [&]() {
+        return gpu->device()->CreateCommittedResource(
+            &heap, D3D12_HEAP_FLAG_NONE, reinterpret_cast<const D3D12_RESOURCE_DESC*>(&host_desc),
+            static_cast<D3D12_RESOURCE_STATES>(initial), static_cast<const D3D12_CLEAR_VALUE*>(clear_pointer),
+            IID_PPV_ARGS(&texture));
+    };
+    HRESULT made = create();
+    if (FAILED(made) && direct) {
+        host_desc.flags &= ~kUnordered;
+        direct = false;
+        initial = host::legal_for(host_desc.flags, host::texture_state(state));
+        made = create();
+    }
     if (FAILED(made)) {
         G6SHIM_WARN("d3d12_xs: no host texture (dimension %u, format %u, 0x%08lX)", host_desc.dimension,
                     host_desc.format, static_cast<unsigned long>(made));
@@ -94,6 +105,7 @@ std::shared_ptr<later::HostTexture> create_host_texture(const resource::Resource
     auto host_texture = std::make_shared<later::HostTexture>();
     host_texture->texture = std::move(texture);
     host_texture->state.store(initial, std::memory_order_relaxed);
+    if (both) attach_depth_uav(*host_texture, host_desc, direct, clear);
     return host_texture;
 }
 

@@ -1404,13 +1404,13 @@ void HostList::close() {
 }
 
 void HostList::reset() {
+    texture::drop_depth_uav_notes(this);
     {
         std::lock_guard<std::mutex> lock(deferred_mutex_);
         deferred_ = Deferred{};
     }
     if (allocator_busy_) replace_busy_allocators();
     {
-        std::lock_guard<std::mutex> lock(states_mutex_);
         states_.clear();
     }
     {
@@ -1486,6 +1486,13 @@ std::optional<std::pair<ID3D12Resource*, std::uint32_t>> HostList::transition(Ob
     entry->second.last = state;
     if (before != state) return std::make_pair(texture, before);
     return std::nullopt;
+}
+
+void HostList::note_state(Object* object, std::uint32_t state) {
+    std::shared_ptr<later::HostTexture> copy = resource::host_copy(object);
+    if (!copy) return;
+    std::lock_guard<std::mutex> lock(states_mutex_);
+    states_[reinterpret_cast<std::uintptr_t>(copy.get())] = State{state, state, std::move(copy)};
 }
 
 void HostList::defer_copy(std::uint8_t* destination, const std::uint8_t* source, std::size_t bytes) {

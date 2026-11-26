@@ -91,6 +91,7 @@ private:
     std::vector<std::pair<std::uint8_t, std::uint32_t>> tables(host::HostList& list,
                                                                std::span<const g6shim::shader::UsedResource> used,
                                                                bool compute);
+    void finish_depth_uav(host::HostList& list);
 
     std::uintptr_t pipeline_ = 0;
     std::array<Object*, 2> heaps_{nullptr, nullptr};
@@ -99,6 +100,9 @@ private:
     std::array<VertexView, 32> vertex_{};
     IndexView index_{};
     std::vector<Object*> targets_;
+    std::vector<std::uint64_t> target_handles_;
+    std::uint64_t depth_handle_ = 0;
+    bool targets_set_ = false;
     Object* depth_ = nullptr;
     std::uint32_t topology_ = 0;
     ID3D12PipelineState* host_pipeline_ = nullptr;

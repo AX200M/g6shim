@@ -289,6 +289,7 @@ public:
     void close();
     void reset();
     std::optional<std::pair<ID3D12Resource*, std::uint32_t>> transition(Object* resource, std::uint32_t wanted);
+    void note_state(Object* resource, std::uint32_t state);
 
     void defer_copy(std::uint8_t* destination, const std::uint8_t* source, std::size_t bytes);
     void defer_fill(std::uint8_t* destination, const std::uint8_t* source, std::size_t bytes);
