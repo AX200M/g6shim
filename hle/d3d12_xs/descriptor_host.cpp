@@ -17,6 +17,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <shared_mutex>
 
 namespace g6shim::d3d12_xs::descriptor_host {
 
@@ -85,24 +86,25 @@ struct HeapEntry {
     bool sampler = false;
     bool tried = false;
     std::unique_ptr<HostHeap> host;
+    std::atomic<HostHeap*> ready{nullptr};
     std::optional<HeapData> image_data;
     std::optional<BufferHeap> buffer_data;
     std::vector<std::uint32_t> pending;
     std::mutex mutex;
 };
 
-std::mutex g_heaps_mutex;
+std::shared_mutex g_heaps_mutex;
 std::vector<std::shared_ptr<HeapEntry>> g_heaps;
 
 std::shared_ptr<HeapEntry> entry_for_handle(std::uint64_t handle) {
-    std::lock_guard<std::mutex> lock(g_heaps_mutex);
+    std::shared_lock<std::shared_mutex> lock(g_heaps_mutex);
     for (const auto& entry : g_heaps)
         if (handle >= entry->start && handle < entry->end) return entry;
     return nullptr;
 }
 
 std::shared_ptr<HeapEntry> entry_for_heap(Object* heap) {
-    std::lock_guard<std::mutex> lock(g_heaps_mutex);
+    std::shared_lock<std::shared_mutex> lock(g_heaps_mutex);
     for (const auto& entry : g_heaps)
         if (entry->heap == heap) return entry;
     return nullptr;
@@ -1287,12 +1289,12 @@ void register_heap(Object* heap, std::uint64_t start, std::uint64_t end) {
     entry->count = descriptor_heap->desc.count;
     entry->step = *step;
     entry->sampler = descriptor_heap->desc.kind == descriptor::kSamplersKind;
-    std::lock_guard<std::mutex> lock(g_heaps_mutex);
+    std::unique_lock<std::shared_mutex> lock(g_heaps_mutex);
     g_heaps.push_back(std::move(entry));
 }
 
 void drop_heap(Object* heap) {
-    std::lock_guard<std::mutex> lock(g_heaps_mutex);
+    std::unique_lock<std::shared_mutex> lock(g_heaps_mutex);
     g_heaps.erase(std::remove_if(g_heaps.begin(), g_heaps.end(),
                                  [heap](const auto& entry) { return entry->heap == heap; }),
                   g_heaps.end());
@@ -1323,6 +1325,7 @@ void release_dynamic(Object* heap, std::uint32_t first, std::uint32_t count) {
 HostHeap* for_heap(Object* heap) {
     std::shared_ptr<HeapEntry> entry = entry_for_heap(heap);
     if (!entry) return nullptr;
+    if (HostHeap* ready = entry->ready.load(std::memory_order_acquire)) return ready;
     std::lock_guard<std::mutex> lock(entry->mutex);
     if (!entry->host && !entry->tried) {
         entry->tried = true;
@@ -1333,6 +1336,7 @@ HostHeap* for_heap(Object* heap) {
     entry->pending.clear();
     for (const std::uint32_t index : pending)
         entry->host->mirror(index, entry->start + static_cast<std::uint64_t>(index) * entry->step, false);
+    entry->ready.store(entry->host.get(), std::memory_order_release);
     return entry->host.get();
 }
 
