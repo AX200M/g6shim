@@ -939,9 +939,10 @@ void Lower::defer_image_heap_read(const IrInst& inst, Site site, std::uint8_t co
     const V byte_address = heap_byte_address(site, 0);
     const std::size_t read_index = image_heap_reads_.size();
     const std::size_t read = s_.m.new_block();
+    const std::size_t load = s_.m.new_block();
     const std::size_t next = s_.m.new_block();
     const UserData binding{0, root.slot, root.root, 0, UserData::Source::ImageHeapData};
-    image_heap_reads_.push_back({read, next, byte_address, binding, std::nullopt});
+    image_heap_reads_.push_back({read, next, byte_address, binding, std::nullopt, load});
     s_.m.terminate(cur_, Term::br(read));
     cur_ = next;
     using Data = ImageHeapData;
@@ -964,6 +965,8 @@ V Lower::read_image_heap_word(const ImageHeapWord& word) {
     const std::size_t c = read.block;
     if (!read.shape) {
         using Data = ImageHeapData;
+        const std::size_t saved = cur_;
+        cur_ = c;
         const auto [h, count] = heap_records(read.binding);
         constexpr std::uint32_t kRecordBytes = 16;
         const V slot = s_.m.bin(c, Bin::LShr, read.byte_address, s_.m.i32(5));
@@ -972,11 +975,11 @@ V Lower::read_image_heap_word(const ImageHeapWord& word) {
         const V aligned = s_.m.cmp(c, pred::kEq, low_bits, s_.m.i32(0));
         const V byte = s_.m.bin(c, Bin::Shl, slot, s_.m.i32(4));
         const V fits = raw_byte_fits(h, byte, kRecordBytes);
+        cur_ = saved;
         V gate = s_.m.bin(c, Bin::And, in_range, aligned);
         gate = s_.m.bin(c, Bin::And, gate, fits);
-        const std::size_t load_block = s_.m.new_block();
+        const std::size_t load_block = read.defined;
         const std::size_t abort = abort_block();
-        const std::size_t saved = cur_;
         s_.m.terminate(c, Term::cond_br(gate, load_block, abort));
         const auto [data, valid_slot] = read_heap_record(load_block, read.byte_address, read.binding);
         const V present = s_.m.cmp(load_block, pred::kNe, s_.m.extract(load_block, data, Data::kPresent),
