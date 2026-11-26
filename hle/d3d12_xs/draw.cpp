@@ -402,9 +402,15 @@ std::optional<std::uint32_t> State::descriptor_value(
     }
     if (data.source == Source::ImageHeapData || data.source == Source::BufferHeapData) {
         if (heaps_[0] == nullptr) return std::nullopt;
+        std::vector<std::uint32_t> named;
+        if (data.source == Source::BufferHeapData) {
+            for (const Root& root : roots(compute))
+                if (root.kind == Root::Kind::kConstants)
+                    named.insert(named.end(), root.constants.begin(), root.constants.end());
+        }
         const auto binding = data.source == Source::ImageHeapData
                                  ? descriptor_host::image_heap_data(heaps_[0])
-                                 : descriptor_host::buffer_heap_data(heaps_[0], list);
+                                 : descriptor_host::buffer_heap_data(heaps_[0], list, named);
         if (!binding) return std::nullopt;
         list.keep(binding->resource.Get());
         return binding->index;

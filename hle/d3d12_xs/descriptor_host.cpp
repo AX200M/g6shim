@@ -15,10 +15,13 @@
 #include <atomic>
 #include <bit>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <shared_mutex>
 #include <span>
 #include <thread>
@@ -185,6 +188,7 @@ struct HeapEntry {
     std::atomic<HostHeap*> ready{nullptr};
     std::optional<HeapData> image_data;
     std::optional<BufferHeap> buffer_data;
+    std::uint64_t buffers_refreshed_frame = 0;
     std::vector<std::uint32_t> pending;
     SlotBits dirty;
     SlotBits seen;
@@ -1833,7 +1837,8 @@ std::optional<HeapDataBinding> image_heap_data(Object* heap) {
     return entry->image_data->binding;
 }
 
-std::optional<HeapDataBinding> buffer_heap_data(Object* heap, host::HostList& list) {
+std::optional<HeapDataBinding> buffer_heap_data(Object* heap, host::HostList& list,
+                                                std::span<const std::uint32_t> named) {
     const auto entry = entry_for_heap(heap);
     if (!entry || entry->sampler) return std::nullopt;
     std::vector<BufferHeapAlias> stale;
@@ -1849,9 +1854,17 @@ std::optional<HeapDataBinding> buffer_heap_data(Object* heap, host::HostList& li
                 write_buffer_slot(*entry->host, buffers, index, descriptor::view(handle));
             }
         }
-        if (list.first_refresh(entry.get(), entry->buffer_data->generation)) {
-            for (const auto& item : entry->buffer_data->aliases)
+        const std::uint64_t frame_stamp = frame::current_frame() + 1;
+        const auto& aliases = entry->buffer_data->aliases;
+        if (entry->buffers_refreshed_frame != frame_stamp) {
+            entry->buffers_refreshed_frame = frame_stamp;
+            for (const auto& item : aliases)
                 if (item.second.backing) stale.push_back(item.second);
+        } else {
+            for (const std::uint32_t slot : named) {
+                const auto found = aliases.find(slot);
+                if (found != aliases.end() && found->second.backing) stale.push_back(found->second);
+            }
         }
         binding = entry->buffer_data->data.binding;
     }
@@ -1860,6 +1873,86 @@ std::optional<HeapDataBinding> buffer_heap_data(Object* heap, host::HostList& li
 }
 
 namespace {
+
+class Workers {
+public:
+    static Workers& shared() {
+        static Workers* const made = new Workers;
+        return *made;
+    }
+
+    std::size_t width() const { return kWidth; }
+
+    void run(std::size_t jobs, const std::function<void(std::size_t)>& job) {
+        if (jobs == 0) return;
+        std::lock_guard<std::mutex> turn(turn_);
+        start();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            job_ = &job;
+            jobs_ = jobs;
+            next_ = 0;
+            left_ = jobs;
+            ++round_;
+        }
+        wake_.notify_all();
+        work();
+        std::unique_lock<std::mutex> lock(mutex_);
+        done_.wait(lock, [this] { return left_ == 0; });
+        job_ = nullptr;
+    }
+
+private:
+    static constexpr std::size_t kWidth = 8;
+
+    void start() {
+        if (started_) return;
+        started_ = true;
+        unsigned threads = std::thread::hardware_concurrency();
+        if (threads == 0) threads = 2;
+        threads = std::min<unsigned>(threads, kWidth);
+        for (unsigned index = 1; index < threads; ++index) std::thread([this] { loop(); }).detach();
+    }
+
+    void loop() {
+        std::uint64_t seen = 0;
+        for (;;) {
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                wake_.wait(lock, [&] { return round_ != seen; });
+                seen = round_;
+            }
+            work();
+        }
+    }
+
+    void work() {
+        for (;;) {
+            const std::function<void(std::size_t)>* job = nullptr;
+            std::size_t index = 0;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (job_ == nullptr || next_ >= jobs_) return;
+                job = job_;
+                index = next_++;
+            }
+            (*job)(index);
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (--left_ == 0) done_.notify_all();
+        }
+    }
+
+    std::mutex turn_;
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    std::condition_variable done_;
+    const std::function<void(std::size_t)>* job_ = nullptr;
+    std::size_t jobs_ = 0;
+    std::size_t next_ = 0;
+    std::size_t left_ = 0;
+    std::uint64_t round_ = 0;
+    bool started_ = false;
+};
 
 void materialize_indices(HostHeap& host, std::uint64_t start, std::uint32_t step,
                          std::span<const std::uint32_t> slots) {
@@ -1871,21 +1964,14 @@ void materialize_indices(HostHeap& host, std::uint64_t start, std::uint32_t step
         for (const std::uint32_t index : slots) one(index);
         return;
     }
-    unsigned workers = std::thread::hardware_concurrency();
-    if (workers == 0) workers = 2;
-    workers = std::min(workers, 8u);
-    const std::size_t chunk = (slots.size() + workers - 1) / workers;
-    std::vector<std::thread> threads;
-    threads.reserve(workers);
-    for (unsigned worker = 0; worker < workers; ++worker) {
-        const std::size_t from = static_cast<std::size_t>(worker) * chunk;
-        if (from >= slots.size()) break;
+    Workers& workers = Workers::shared();
+    const std::size_t chunk = (slots.size() + workers.width() - 1) / workers.width();
+    const std::size_t chunks = (slots.size() + chunk - 1) / chunk;
+    workers.run(chunks, [&](std::size_t part) {
+        const std::size_t from = part * chunk;
         const std::size_t to = std::min(slots.size(), from + chunk);
-        threads.emplace_back([&one, &slots, from, to] {
-            for (std::size_t i = from; i < to; ++i) one(slots[i]);
-        });
-    }
-    for (std::thread& thread : threads) thread.join();
+        for (std::size_t i = from; i < to; ++i) one(slots[i]);
+    });
 }
 
 void note_evicted(HeapEntry& entry) {
@@ -2094,23 +2180,10 @@ void sync_records(const std::shared_ptr<HeapEntry>& entry, std::span<host::HostL
         for (std::size_t n = 0; n < parts.size(); ++n) look(n);
     } else {
         const std::size_t groups = (parts.size() + kSyncPages - 1) / kSyncPages;
-        unsigned workers = std::thread::hardware_concurrency();
-        if (workers == 0) workers = 2;
-        workers = std::min(workers, 8u);
-        const std::size_t chunk = (groups + workers - 1) / workers;
-        std::vector<std::thread> threads;
-        threads.reserve(workers);
-        for (unsigned worker = 0; worker < workers; ++worker) {
-            const std::size_t from = static_cast<std::size_t>(worker) * chunk;
-            if (from >= groups) break;
-            const std::size_t to = std::min(groups, from + chunk);
-            threads.emplace_back([&, from, to] {
-                for (std::size_t group = from; group < to; ++group)
-                    for (std::size_t n = group * kSyncPages; n < std::min(parts.size(), (group + 1) * kSyncPages); ++n)
-                        look(n);
-            });
-        }
-        for (std::thread& thread : threads) thread.join();
+        Workers::shared().run(groups, [&](std::size_t group) {
+            for (std::size_t n = group * kSyncPages; n < std::min(parts.size(), (group + 1) * kSyncPages); ++n)
+                look(n);
+        });
     }
     std::vector<std::uint32_t> make;
     for (const auto& part : found) {
