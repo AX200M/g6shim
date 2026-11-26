@@ -75,6 +75,7 @@ struct BufferHeapAlias {
 struct BufferHeap {
     HeapData data;
     std::map<std::uint32_t, BufferHeapAlias> aliases;
+    std::uint64_t generation = 0;
 };
 
 struct HeapEntry {
@@ -1131,6 +1132,7 @@ std::optional<BufferData::Record> buffer_slot(HostHeap& host_heap, BufferHeap& h
         desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
         gpu->device()->CreateShaderResourceView((*backing)->buffer(), &desc, host_heap.cpu(alias->second.index));
         alias->second = {alias->second.index, *backing, view.address, view.bytes};
+        ++heap.generation;
     }
     return BufferData::Record{alias->second.index + 1, view.stride, prefix, view.records};
 }
@@ -1142,7 +1144,10 @@ void write_buffer_slot(HostHeap& host_heap, BufferHeap& heap, std::uint32_t inde
     const auto record = view ? buffer_slot(host_heap, heap, index, *view) : std::nullopt;
     if (!record) {
         const auto alias = heap.aliases.find(index);
-        if (alias != heap.aliases.end()) alias->second.backing.reset();
+        if (alias != heap.aliases.end() && alias->second.backing) {
+            alias->second.backing.reset();
+            ++heap.generation;
+        }
         if (view || (descriptor && !null_shader_buffer(*descriptor) && shader_buffer_desc(*descriptor))) {
             static std::once_flag once;
             std::call_once(once, [] {
@@ -1358,22 +1363,27 @@ std::optional<HeapDataBinding> image_heap_data(Object* heap) {
 std::optional<HeapDataBinding> buffer_heap_data(Object* heap, host::HostList& list) {
     const auto entry = entry_for_heap(heap);
     if (!entry || entry->sampler) return std::nullopt;
-    std::lock_guard<std::mutex> lock(entry->mutex);
-    if (!entry->buffer_data) {
-        auto data = create_heap_data(*entry);
-        if (!data) return std::nullopt;
-        auto& buffers = entry->buffer_data.emplace(BufferHeap{std::move(*data), {}});
-        for (std::uint32_t index = 0; index < buffers.data.count; ++index) {
-            const std::uint64_t handle = entry->start + static_cast<std::uint64_t>(index) * entry->step;
-            write_buffer_slot(*entry->host, buffers, index, descriptor::view(handle));
+    std::vector<BufferHeapAlias> stale;
+    HeapDataBinding binding;
+    {
+        std::lock_guard<std::mutex> lock(entry->mutex);
+        if (!entry->buffer_data) {
+            auto data = create_heap_data(*entry);
+            if (!data) return std::nullopt;
+            auto& buffers = entry->buffer_data.emplace(BufferHeap{std::move(*data), {}});
+            for (std::uint32_t index = 0; index < buffers.data.count; ++index) {
+                const std::uint64_t handle = entry->start + static_cast<std::uint64_t>(index) * entry->step;
+                write_buffer_slot(*entry->host, buffers, index, descriptor::view(handle));
+            }
         }
+        if (list.first_refresh(entry.get(), entry->buffer_data->generation)) {
+            for (const auto& item : entry->buffer_data->aliases)
+                if (item.second.backing) stale.push_back(item.second);
+        }
+        binding = entry->buffer_data->data.binding;
     }
-    for (const auto& item : entry->buffer_data->aliases) {
-        const BufferHeapAlias& alias = item.second;
-        if (!alias.backing) continue;
-        alias.backing->refresh(list, alias.address, alias.bytes);
-    }
-    return entry->buffer_data->data.binding;
+    for (const BufferHeapAlias& alias : stale) alias.backing->refresh(list, alias.address, alias.bytes);
+    return binding;
 }
 
 }  // namespace g6shim::d3d12_xs::descriptor_host

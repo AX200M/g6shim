@@ -1119,6 +1119,7 @@ void HostList::defer_copy(std::uint8_t* destination, const std::uint8_t* source,
     std::lock_guard<std::mutex> lock(deferred_mutex_);
     deferred_.copies.push_back(CopyStep{destination, source, bytes, true});
     deferred_.refreshed.clear();
+    deferred_.refreshed_sets.clear();
 }
 
 void HostList::defer_fill(std::uint8_t* destination, const std::uint8_t* source, std::size_t bytes) {
@@ -1149,6 +1150,7 @@ void HostList::defer(std::function<void()> work) {
     std::lock_guard<std::mutex> lock(deferred_mutex_);
     deferred_.copies.push_back(WorkStep{std::move(work), true});
     deferred_.refreshed.clear();
+    deferred_.refreshed_sets.clear();
 }
 
 void HostList::defer_host(std::function<void()> work) {
@@ -1256,6 +1258,11 @@ void HostList::keep(IUnknown* object) {
 bool HostList::first_use(std::size_t key) {
     std::lock_guard<std::mutex> lock(deferred_mutex_);
     return deferred_.textures.insert(key).second;
+}
+
+bool HostList::first_refresh(const void* owner, std::uint64_t generation) {
+    std::lock_guard<std::mutex> lock(deferred_mutex_);
+    return deferred_.refreshed_sets.emplace(owner, generation).second;
 }
 
 void HostList::used_pipeline(const std::string& name) {

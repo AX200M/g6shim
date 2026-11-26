@@ -119,6 +119,7 @@ struct Deferred {
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> uploads;
     std::vector<Microsoft::WRL::ComPtr<IUnknown>> kept;
     std::set<std::tuple<std::size_t, std::size_t, std::size_t>> refreshed;
+    std::set<std::pair<const void*, std::uint64_t>> refreshed_sets;
     std::unordered_set<std::size_t> textures;
     std::vector<WriteStep> writes;
     bool budget_zeroed = false;
@@ -235,6 +236,7 @@ public:
     std::optional<std::uint64_t> budget();
     void keep(IUnknown* object);
     bool first_use(std::size_t key);
+    bool first_refresh(const void* owner, std::uint64_t generation);
     void used_pipeline(const std::string& name);
 
 private:
