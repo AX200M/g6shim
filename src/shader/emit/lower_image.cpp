@@ -127,7 +127,7 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
         const std::uint8_t narrow = cmpswap ? kNarrowCmpMask : kNarrowMask;
         const bool wide = dmask != narrow;
         const bool glc = fields->cache.glc;
-        if (d16 || a16) fail("a 16-bit image atomic");
+        if (d16) fail("a 16-bit image atomic");
         if (wide && dmask != (cmpswap ? kWideCmpMask : kWideMask)) fail("a 64-bit image atomic");
         const V iu = s_.m.undef(s_.t.i32);
         std::array<V, 3> cs{iu, iu, iu};
@@ -196,14 +196,19 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
     }
     if (store) {
         if (name != "image_store") fail("an image store to a mip level");
-        if (dmask != 0xF) fail("an image store of some channels");
+        const auto stored = static_cast<std::uint8_t>(std::popcount(static_cast<unsigned int>(dmask)));
+        if (dmask != (1u << stored) - 1u || stored == 0) fail("an image store of some channels");
         const V iu = s_.m.undef(s_.t.i32);
         std::array<V, 3> cs{iu, iu, iu};
         for (std::size_t k = 0; k < coords; ++k) cs[k] = addr_val(k);
-            const auto* data = std::get_if<VectorOperand>(&fields->data);
+        const auto* data = std::get_if<VectorOperand>(&fields->data);
         if (data == nullptr) fail("image store data");
         std::vector<V> vals;
         for (std::uint8_t k = 0; k < 4; ++k) {
+            if (k >= stored) {
+                vals.push_back(s_.m.f32(0));
+                continue;
+            }
             const std::uint8_t r = d16 ? static_cast<std::uint8_t>(k / 2) : k;
             const std::optional<Value> read = inst.read(Reg::v(static_cast<std::uint8_t>(data->reg + r)));
             if (!read) fail("image store data");

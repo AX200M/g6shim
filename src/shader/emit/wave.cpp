@@ -424,6 +424,11 @@ std::unordered_map<std::size_t, Section> sections(const Program& program, std::s
                 break;
             }
         }
+        for (std::size_t j = i + 1; !end && j < insts.size(); ++j) {
+            if (!insts[j].write(Reg::s(kExec))) continue;
+            if (insts[j].name().starts_with("s_mov_b") && constant_of(insts[j])) end = j;
+            break;
+        }
         if (!end) break;
         std::size_t last = *end;
         while (last + 1 < insts.size() && reads_lane_of_section(insts, i, *end, insts[last + 1])) ++last;

@@ -89,6 +89,18 @@ std::optional<Moved> copy_source(const Inst& inst, std::size_t k) {
     }
     if (fields->src.empty()) return std::nullopt;
     const Operand& src = fields->src.front();
+    if (name == "s_bfm_b32" && fields->src.size() >= 2) {
+        constexpr std::uint32_t kShiftMask = 31;
+        const auto immediate = [](const Operand& op) -> std::optional<std::uint32_t> {
+            if (const auto* constant = std::get_if<ConstantOperand>(&op)) return inline_constant(constant->code);
+            if (const auto* literal = std::get_if<LiteralOperand>(&op)) return literal->value;
+            return std::nullopt;
+        };
+        const auto count = immediate(fields->src[0]);
+        const auto offset = immediate(fields->src[1]);
+        if (!count || !offset) return std::nullopt;
+        return Moved::constant_value(((std::uint32_t{1} << (*count & kShiftMask)) - 1u) << (*offset & kShiftMask));
+    }
     if (name == "s_mov_b32" || name == "s_mov_b64") {
         if (const auto* scalar = std::get_if<ScalarOperand>(&src)) {
             if (scalar->code == kNull) return Moved::constant_value(0);
@@ -96,10 +108,8 @@ std::optional<Moved> copy_source(const Inst& inst, std::size_t k) {
             if (!value) return std::nullopt;
             return Moved::origin(*value);
         }
-        if (name == "s_mov_b32") {
-            if (const auto* literal = std::get_if<LiteralOperand>(&src))
-                return Moved::constant_value(literal->value);
-        }
+        if (const auto* literal = std::get_if<LiteralOperand>(&src))
+            return Moved::constant_value(k == 0 ? literal->value : 0);
         if (const auto* c = std::get_if<ConstantOperand>(&src)) {
             const auto low = inline_constant(c->code);
             if (!low) return std::nullopt;

@@ -1108,7 +1108,7 @@ void Lower::packed16(const IrInst& inst, std::string_view op, std::optional<V> g
     std::size_t n = 0;
     if (op == "fma_f16" || op == "mad_u16" || op == "mad_i16") {
         n = 3;
-    } else if (op == "add_f16" || op == "mul_f16" || op == "min_f16" || op == "max_f16" ||
+    } else if (op == "fmac_f16" || op == "add_f16" || op == "mul_f16" || op == "min_f16" || op == "max_f16" ||
                op == "add_u16" || op == "sub_u16" || op == "add_i16" || op == "sub_i16" ||
                op == "mul_lo_u16" || op == "lshlrev_b16" || op == "lshrrev_b16" ||
                op == "ashrrev_i16" || op == "max_u16" || op == "min_u16" || op == "max_i16" ||
@@ -1122,6 +1122,13 @@ void Lower::packed16(const IrInst& inst, std::string_view op, std::optional<V> g
     const std::size_t c = cur_;
     const Ty i32t = s_.t.i32;
     const Ty f32t = s_.t.f32;
+    std::optional<V> accumulator;
+    if (op == "fmac_f16") {
+        const auto* held = fields->dst ? std::get_if<VectorOperand>(&*fields->dst) : nullptr;
+        const std::optional<Value> before = held != nullptr ? inst.read(Reg::v(held->reg)) : std::nullopt;
+        if (!before) fail("an accumulator");
+        accumulator = i32_of(*before);
+    }
     std::vector<V> halves;
     for (bool high : {false, true}) {
         std::vector<V> xs;
@@ -1146,7 +1153,11 @@ void Lower::packed16(const IrInst& inst, std::string_view op, std::optional<V> g
             else if (op == "mul_f16") f = s_.m.bin(c, Bin::Mul, xs[0], xs[1]);
             else if (op == "min_f16") f = max_min(false, xs[0], xs[1]);
             else if (op == "max_f16") f = max_min(true, xs[0], xs[1]);
-            else f = fmad(xs[0], xs[1], xs[2]);
+            else if (accumulator) {
+                const V shifted = high ? s_.m.bin(c, Bin::LShr, *accumulator, s_.m.i32(16)) : *accumulator;
+                const V half = s_.m.bin(c, Bin::And, shifted, s_.m.i32(0xFFFF));
+                f = fmad(xs[0], xs[1], s_.op(c, "legacyF16ToF32", Attr::ReadNone, f32t, 131, {half}));
+            } else f = fmad(xs[0], xs[1], xs[2]);
             if (fields->clamp) f = unary(7, f);
             r = s_.op(c, "legacyF32ToF16", Attr::ReadNone, i32t, 130, {f});
         } else {
