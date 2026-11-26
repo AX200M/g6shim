@@ -1289,6 +1289,8 @@ V Lower::operand(const IrInst& inst, const Operand& op) {
         return i32_of(*value);
     }
     if (const auto* constant = std::get_if<ConstantOperand>(&op)) {
+        constexpr std::uint16_t kSccAsData = 253;
+        if (constant->code == kSccAsData) return s_.m.cast(cur_, Cast::ZExt, scc_in(inst), s_.t.i32);
         const std::optional<std::uint32_t> value = inline_constant(constant->code);
         if (!value) fail("a special operand (vccz, execz, scc, lds_direct)");
         return s_.m.i32(*value);

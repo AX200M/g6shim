@@ -77,7 +77,20 @@ void Lower::sop(const IrInst& inst) {
     }
     std::optional<Value> lo;
     if (dst_code) lo = inst.write(Reg::s(*dst_code));
-    if (inst.write(Reg::s(kExec)).has_value() || is_mask(lo)) fail(kLaneMask);
+    if (inst.write(Reg::s(kExec)).has_value() || is_mask(lo)) {
+        const std::optional<Value> exec = inst.write(Reg::s(kExec));
+        const std::optional<Value> mask = is_mask(lo) ? lo : exec;
+        const bool tests_result = name.starts_with("s_and") || name.starts_with("s_or") || name.starts_with("s_xor") ||
+                                  name.starts_with("s_nand") || name.starts_with("s_nor") ||
+                                  name.starts_with("s_xnor") || name.starts_with("s_not");
+        if (!scc || !tests_result || !is_mask(mask)) fail(kLaneMask);
+        const std::pair<V, V> words = combine_mask(x_->st->masks.at(*mask), cur_);
+        const V any = s_.m.bin(cur_, Bin::Or, words.first, words.second);
+        for (const auto& entry : inst.writes)
+            if (entry.second != *scc) vals_[entry.second] = Val::missing(kLaneMask);
+        set(scc, Val::bit(s_.m.cmp(cur_, pred::kNe, any, s_.m.i32(0))));
+        return;
+    }
     if (lo && std::binary_search(x_->io->geometry_primitive_counts.begin(),
                                  x_->io->geometry_primitive_counts.end(), *lo)) {
         constexpr std::uint32_t kPrimitivesPerInvocation = 1;

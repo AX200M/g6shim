@@ -100,15 +100,17 @@ std::unordered_map<Value, Shape, ValueHash> collect_shapes(
 }
 
 std::unordered_map<Value, Shape, ValueHash> simulate(std::span<const Inst> insts, std::uint32_t wave,
-                                                     Value saved) {
+                                                     Value saved, std::size_t restore) {
     const std::uint64_t all =
         wave == kWaveSize64 ? UINT64_MAX : static_cast<std::uint64_t>(UINT32_MAX);
     std::uint64_t exec = all;
     std::unordered_map<Value, std::vector<Sym>, ValueHash> vec;
     std::unordered_map<Value, Sym, ValueHash> uni;
     std::vector<Value> masked{saved};
-    for (const Inst& inst : insts) {
+    for (std::size_t index = 0; index < insts.size(); ++index) {
+        const Inst& inst = insts[index];
         const std::string_view name = inst.name();
+        if (index == restore) continue;
         if (inst.write(Reg::s(kExec))) {
             std::optional<std::uint64_t> low;
             if (name.starts_with("s_mov_b")) low = constant_of(inst);
@@ -369,6 +371,20 @@ bool identity_of(Op op, std::uint32_t constant) {
 
 bool counts_lanes(Op op) { return op == Op::AddU || op == Op::AddF || op == Op::Xor; }
 
+bool reads_lane_of_section(const std::vector<Inst>& insts, std::size_t start, std::size_t end, const Inst& inst) {
+    if (inst.name() != "v_readlane_b32") return false;
+    const auto* valu = std::get_if<Valu>(&inst.fields);
+    if (valu == nullptr || valu->src.empty()) return false;
+    const auto* vector = std::get_if<VectorOperand>(&valu->src.front());
+    if (vector == nullptr) return false;
+    const auto read = inst.read(Reg::v(vector->reg));
+    if (!read) return false;
+    for (std::size_t at = start + 1; at < end; ++at)
+        for (const auto& written : insts[at].writes)
+            if (written.second == *read) return true;
+    return false;
+}
+
 std::unordered_map<std::size_t, Section> sections(const Program& program, std::size_t block) {
     const std::vector<Inst>& insts = program.blocks[block].insts;
     const std::uint32_t wave = program.wave64 ? kWaveSize64 : kWaveSize32;
@@ -409,10 +425,13 @@ std::unordered_map<std::size_t, Section> sections(const Program& program, std::s
             }
         }
         if (!end) break;
+        std::size_t last = *end;
+        while (last + 1 < insts.size() && reads_lane_of_section(insts, i, *end, insts[last + 1])) ++last;
+        const std::size_t stop = last == *end ? *end : last + 1;
         std::unordered_map<Value, Shape, ValueHash> shapes =
-            simulate(std::span<const Inst>(insts).subspan(i + 1, *end - (i + 1)), wave, *saved);
-        out.emplace(i, Section{*end, std::move(shapes)});
-        i = *end + 1;
+            simulate(std::span<const Inst>(insts).subspan(i + 1, stop - (i + 1)), wave, *saved, *end - (i + 1));
+        out.emplace(i, Section{stop, std::move(shapes)});
+        i = stop;
     }
     return out;
 }
