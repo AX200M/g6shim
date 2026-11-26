@@ -165,7 +165,7 @@ std::pair<V, std::optional<V>> Lower::dpp(const IrInst& inst, const Dpp& dpp_val
             masks = std::pair<std::uint8_t, std::uint8_t>{pattern.row_mask, pattern.bank_mask};
         zero = pattern.bound_ctrl;
     }
-    V r = mesh_quad ? quad_pick(x, src) : read_lane(x, src);
+    V r = mesh_quad || (s_.pixel && quad) ? quad_pick(x, src) : read_lane(x, src);
     std::optional<V> enable;
     if (inside) {
         if (zero) {
@@ -653,6 +653,10 @@ void Lower::valu_op(const IrInst& inst, std::optional<V> guard_value) {
     if (name == "v_readlane_b32") {
         const V a = src(inst, 0);
         const V lane = src(inst, 1);
+        if (s_.pixel && same_quad_lane(inst)) {
+            write_i(inst, quad_pick(a, lane), guard_value);
+            return;
+        }
         if (mask_data_ == MaskData::Host && lane.kind != V::Kind::Const) {
             s_.flags |= feature::kWaveOps;
         } else {
@@ -685,7 +689,11 @@ void Lower::valu_op(const IrInst& inst, std::optional<V> guard_value) {
         }
         const V a = src(inst, 0);
         s_.flags |= feature::kWaveOps;
-        const V r = s_.op(c, "waveReadLaneFirst.i32", Attr::NoUnwind, s_.t.i32, 118, {a});
+        V r = s_.op(c, "waveReadLaneFirst.i32", Attr::NoUnwind, s_.t.i32, 118, {a});
+        if (s_.pixel) {
+            const V helper = s_.op(c, "isHelperLane.i1", Attr::ReadOnly, s_.t.i1, 221, {});
+            r = s_.m.select(c, helper, a, r);
+        }
         write_i(inst, r, guard_value);
         return;
     }

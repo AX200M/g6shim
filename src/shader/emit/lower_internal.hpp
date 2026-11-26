@@ -189,6 +189,7 @@ private:
     std::uint32_t wave() const;
     V lane_index();
     V quad_pick(V x, V src);
+    bool same_quad_lane(const IrInst& inst) const;
     V read_lane(V x, V lane);
     V float_of(Value v);
     std::vector<V> vgprs(const IrInst& inst, const Operand& op, std::uint8_t n);

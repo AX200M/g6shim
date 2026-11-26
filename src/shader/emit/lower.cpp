@@ -23,9 +23,11 @@
 #include <vector>
 
 #include "g6shim/shader/error.hpp"
+#include "g6shim/shader/resource.hpp"
+
+
 
 namespace g6shim::shader::emit {
-
 namespace {
 
 constexpr float kTwoPi = 6.283185307179586476925286766559f;
@@ -770,6 +772,8 @@ Lowered Lower::run() {
     out.wave_ops = (s_.flags & feature::kWaveOps) != 0;
     return out;
 }
+
+
 
 bool Lower::exported_out(std::size_t b) const { return exported_[b] || has_done_export(b); }
 
@@ -1892,6 +1896,109 @@ V Lower::quad_pick(V x, V src) {
         r = s_.m.select(c, is, read, r);
     }
     return r;
+}
+
+namespace {
+
+enum class LaneShape : std::uint8_t { Unknown, Index, Base, Slot, Same };
+
+std::optional<std::uint32_t> lane_constant(const Operand& op) {
+    if (const auto* constant = std::get_if<ConstantOperand>(&op)) return inline_constant(constant->code);
+    if (const auto* literal = std::get_if<LiteralOperand>(&op)) return literal->value;
+    return std::nullopt;
+}
+
+LaneShape lane_shape(const Program& program,
+                     const std::unordered_map<Value, std::size_t, ValueHash>& defs, Value value,
+                     int depth) {
+    if (depth > 8) return LaneShape::Unknown;
+    const auto def = defs.find(value);
+    if (def == defs.end() || def->second >= program.blocks.size()) return LaneShape::Unknown;
+    for (const IrInst& written : program.blocks[def->second].insts) {
+        bool writes = false;
+        for (const auto& entry : written.writes)
+            if (entry.second == value) writes = true;
+        if (!writes) continue;
+        const auto* fields = std::get_if<Valu>(&written.fields);
+        if (fields == nullptr || fields->src.empty()) return LaneShape::Unknown;
+        const std::string_view name = written.name();
+        const auto src_value = [&](std::size_t k) -> std::optional<Value> {
+            if (k >= fields->src.size()) return std::nullopt;
+            const auto* vector = std::get_if<VectorOperand>(&fields->src[k]);
+            if (vector == nullptr) return std::nullopt;
+            return written.read(Reg::v(vector->reg));
+        };
+        const auto src_const = [&](std::size_t k) -> std::optional<std::uint32_t> {
+            if (k >= fields->src.size()) return std::nullopt;
+            return lane_constant(fields->src[k]);
+        };
+        if (name == "v_mbcnt_lo_u32_b32") {
+            const auto mask = src_const(0);
+            const auto add = src_const(1);
+            if (mask && *mask == UINT32_MAX && add && *add == 0) return LaneShape::Index;
+            return LaneShape::Unknown;
+        }
+        if (name == "v_mov_b32") {
+            if (const auto moved = src_value(0))
+                return lane_shape(program, defs, *moved, depth + 1);
+            return LaneShape::Unknown;
+        }
+        const auto combine = [&](LaneShape left, LaneShape right, std::string_view op) {
+            if (op == "v_or_b32" && ((left == LaneShape::Base && right == LaneShape::Slot) ||
+                                     (right == LaneShape::Base && left == LaneShape::Slot)))
+                return LaneShape::Same;
+            if (op == "v_xor_b32" &&
+                (((left == LaneShape::Index || left == LaneShape::Same) && right == LaneShape::Slot) ||
+                 ((right == LaneShape::Index || right == LaneShape::Same) && left == LaneShape::Slot)))
+                return LaneShape::Same;
+            return LaneShape::Unknown;
+        };
+        if (name != "v_and_b32" && name != "v_or_b32" && name != "v_xor_b32") return LaneShape::Unknown;
+        std::optional<std::uint32_t> constant;
+        std::optional<Value> other;
+        if (const auto found = src_const(0)) {
+            constant = found;
+            other = src_value(1);
+        } else if (const auto second = src_const(1)) {
+            constant = second;
+            other = src_value(0);
+        }
+        if (!constant || !other) {
+            const auto left = src_value(0);
+            const auto right = src_value(1);
+            if (!left || !right) return LaneShape::Unknown;
+            return combine(lane_shape(program, defs, *left, depth + 1),
+                           lane_shape(program, defs, *right, depth + 1), name);
+        }
+        const LaneShape shaped = lane_shape(program, defs, *other, depth + 1);
+        if (name == "v_and_b32") {
+            if ((shaped == LaneShape::Index || shaped == LaneShape::Same) && (*constant & ~3u) == ~3u)
+                return LaneShape::Base;
+            if ((shaped == LaneShape::Index || shaped == LaneShape::Same || shaped == LaneShape::Slot) &&
+                *constant <= 3)
+                return LaneShape::Slot;
+        } else if (name == "v_xor_b32") {
+            if ((shaped == LaneShape::Index || shaped == LaneShape::Same) && *constant <= 3)
+                return LaneShape::Same;
+        } else if (shaped == LaneShape::Base && *constant <= 3) {
+            return LaneShape::Same;
+        }
+        return LaneShape::Unknown;
+    }
+    return LaneShape::Unknown;
+}
+
+}  // namespace
+
+bool Lower::same_quad_lane(const IrInst& inst) const {
+    const auto* fields = std::get_if<Valu>(&inst.fields);
+    if (fields == nullptr || fields->src.size() < 2) return false;
+    const auto* vector = std::get_if<VectorOperand>(&fields->src[1]);
+    if (vector == nullptr) return false;
+    const std::optional<Value> lane = inst.read(Reg::v(vector->reg));
+    if (!lane) return false;
+    const LaneShape shaped = lane_shape(*x_->p, def_block_, *lane, 0);
+    return shaped == LaneShape::Index || shaped == LaneShape::Same;
 }
 
 V Lower::read_lane(V x, V lane) {

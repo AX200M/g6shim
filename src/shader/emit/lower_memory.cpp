@@ -79,7 +79,7 @@ void Lower::ds(const IrInst& inst, std::size_t b, std::size_t i) {
             t = s_.m.bin(c, Bin::Or, t, or_value);
             src = s_.m.bin(c, Bin::Xor, t, xor_value);
         }
-        const V r = mesh_quad ? quad_pick(x, src) : read_lane(x, src);
+        const V r = mesh_quad || (s_.pixel && quad) ? quad_pick(x, src) : read_lane(x, src);
         if (!dst_reg) fail("a swizzle result");
         write(inst, Reg::v(*dst_reg), r, guard_value);
         return;
