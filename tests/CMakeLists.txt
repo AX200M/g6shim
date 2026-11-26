@@ -106,6 +106,7 @@ add_executable(g6shim_tests
   unit/d3d12_xs_host_test.cpp
   unit/d3d12_xs_descriptor_lazy_test.cpp
   unit/d3d12_xs_completion_test.cpp
+  unit/d3d12_xs_retirement_test.cpp
   unit/d3d12_xs_capture_test.cpp
   unit/d3d12_xs_present_test.cpp
   unit/bvh_reference_test.cpp

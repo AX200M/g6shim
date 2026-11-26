@@ -49,7 +49,9 @@ int main(int argc, char** argv) {
 #endif
     using namespace g6shim::test;
     extern void g6shim_completion_tests_anchor();
+    extern void g6shim_retirement_tests_anchor();
     g6shim_completion_tests_anchor();
+    g6shim_retirement_tests_anchor();
     const char* only = argc > 1 ? argv[1] : nullptr;
     int run = 0;
     for (const auto& c : cases()) {
