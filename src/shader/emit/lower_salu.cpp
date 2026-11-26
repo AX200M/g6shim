@@ -1310,12 +1310,8 @@ V Lower::heap_byte_address(Site load, std::uint8_t first) {
 
 V Lower::heap_index(Site load, std::uint8_t first, bool sampler) {
     const V address = heap_byte_address(load, first);
-    V index = s_.m.bin(cur_, Bin::LShr, address, s_.m.i32(sampler ? 4 : 5));
-    const IrInst& li = x_->p->blocks[load.block].insts[load.index];
-    const auto* fields = std::get_if<SmemFields>(&li.fields);
-    const auto* soffset = fields == nullptr ? nullptr : std::get_if<ScalarOperand>(&fields->soffset);
-    if (soffset == nullptr || soffset->code != kNull) index = bounded_heap_index(index, sampler);
-    return index;
+    const V index = s_.m.bin(cur_, Bin::LShr, address, s_.m.i32(sampler ? 4 : 5));
+    return bounded_heap_index(index, sampler);
 }
 
 V Lower::heap_limit(bool sampler) {

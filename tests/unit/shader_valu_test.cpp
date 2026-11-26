@@ -109,7 +109,13 @@ Lowered build_valu_cs(const std::vector<std::uint32_t>& body) {
 
 void check_valu(const std::vector<std::uint32_t>& body, const char* label) {
     const Lowered lowered = build_valu_cs(body);
-    CHECK(lowered.user_data.size() == 5);
+    std::size_t heap_limits = 0;
+    for (const UserData& entry : lowered.user_data) {
+        if (entry.source == UserData::Source::ViewHeapCount ||
+            entry.source == UserData::Source::SamplerHeapCount)
+            ++heap_limits;
+    }
+    CHECK(lowered.user_data.size() == 5 + heap_limits);
     check_dxil(lowered.dxil, label);
 }
 

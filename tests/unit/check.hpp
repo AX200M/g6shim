@@ -17,10 +17,17 @@ struct Registrar {
 #define CHECK(cond)                                                             \
     do {                                                                        \
         ::g6shim::test::count_check();                                          \
+        __pragma(warning(push))                                                 \
+        __pragma(warning(disable : 4127))                                       \
         if (!(cond)) ::g6shim::test::fail(__FILE__, __LINE__, #cond);           \
+        __pragma(warning(pop))                                                  \
     } while (0)
 
 #define TEST(name)                                                              \
     static void name();                                                         \
     static const ::g6shim::test::Registrar name##_registrar{#name, &name};      \
     static void name()
+
+#ifdef _MSC_VER
+#pragma warning(disable : 4127)
+#endif

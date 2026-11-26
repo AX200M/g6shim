@@ -60,6 +60,7 @@ constexpr std::string_view kImageHeapShape = "image_heap_shape";
 constexpr std::string_view kImageHeapShapeLoop = "image_heap_shape_loop";
 constexpr std::string_view kBufferHeapStride = "buffer_heap_stride";
 constexpr std::string_view kHeapIndexBound = "heap_index_bound";
+constexpr std::string_view kHeapTableOffset = "heap_table_offset";
 constexpr std::string_view kSamplerLodData = "sampler_lod_data";
 constexpr std::string_view kPackedInputPartner = "packed_input_partner";
 constexpr std::string_view kSelectReadLaneMask = "select_readlane_mask";
@@ -185,7 +186,8 @@ std::uint32_t float_bits(float value) {
 }
 
 bool gather_on_warp(const char* label, const std::vector<std::uint8_t>& dxil,
-                    const std::vector<std::array<std::uint32_t, 4>>& sampler_words, float u, float v, float lod,
+                    const std::vector<std::array<std::uint32_t, 4>>& sampler_words,
+                    const std::vector<UserData>& user_data, float u, float v, float lod,
                     std::array<std::uint32_t, 4>* out) {
     using Microsoft::WRL::ComPtr;
     ComPtr<IDXGIFactory4> factory;
@@ -341,6 +343,12 @@ bool gather_on_warp(const char* label, const std::vector<std::uint8_t>& dxil,
     words[0] = float_bits(u);
     words[1] = float_bits(v);
     words[2] = float_bits(lod);
+    for (const UserData& field : user_data) {
+        if (field.index >= 64) return false;
+        if (field.source == UserData::Source::ViewHeapCount ||
+            field.source == UserData::Source::SamplerHeapCount)
+            words[field.index] = 2;
+    }
     constants->Unmap(0, nullptr);
 
     ComPtr<ID3D12CommandQueue> queue;
@@ -421,9 +429,9 @@ TEST(shader_fixtures_translate_and_validate) {
             fixture.name == kPackedInputPartner || fixture.name == kSelectReadLaneMask ||
             fixture.name == kImageShapeOnly || fixture.name == kImageHeapShape ||
             fixture.name == kImageHeapShapeLoop || fixture.name == kHeapIndexBound ||
-            fixture.name == kBufferHeapStride || fixture.name == kSamplerLodData ||
-            fixture.name == kSpilledComputeRoot || fixture.name == kImageGather4Lod ||
-            fixture.name == kImageGather4LodBorder)
+            fixture.name == kHeapTableOffset || fixture.name == kBufferHeapStride ||
+            fixture.name == kSamplerLodData || fixture.name == kSpilledComputeRoot ||
+            fixture.name == kImageGather4Lod || fixture.name == kImageGather4LodBorder)
             continue;
         bool translated = true;
         Lowered lowered;
@@ -435,7 +443,13 @@ TEST(shader_fixtures_translate_and_validate) {
         }
         CHECK(translated);
         if (!translated) continue;
-        CHECK(lowered.user_data.size() == kUserSgprs);
+        std::size_t heap_limits = 0;
+        for (const UserData& entry : lowered.user_data) {
+            if (entry.source == UserData::Source::ViewHeapCount ||
+                entry.source == UserData::Source::SamplerHeapCount)
+                ++heap_limits;
+        }
+        CHECK(lowered.user_data.size() == kUserSgprs + heap_limits);
         check_dxil(lowered.dxil, fixture.name);
     }
 }
@@ -888,6 +902,35 @@ TEST(shader_fixtures_bound_a_descriptor_heap_index) {
     }
 }
 
+TEST(shader_fixtures_bound_a_constant_table_offset) {
+    const Fixture* fixture = find_fixture(kHeapTableOffset);
+    CHECK(fixture != nullptr);
+    if (fixture == nullptr) return;
+    constexpr std::uint8_t kHeapUserData = 4;
+    constexpr std::uint8_t kHeapSlot = 2;
+    constexpr std::uint8_t kOutputUserData = 6;
+    constexpr std::uint8_t kOutputSlot = 1;
+    try {
+        const auto lowered = lower_compute(fixture->words, kFixtureVgprs,
+            {root_param(RootType::Kind::Constants, kConstantsUserData, kConstantsSlot),
+             root_param(RootType::Kind::ResourceHeap, kHeapUserData, kHeapSlot),
+             root_param(RootType::Kind::Table, kOutputUserData, kOutputSlot)},
+            {used_uav(kOutputUserData, kOutputSlot)}, (kOutputUserData + 1u) << kUserSgprShift, {1, 1, 1});
+        const auto field = std::find_if(lowered.user_data.begin(), lowered.user_data.end(), [](const UserData& entry) {
+            return entry.source == UserData::Source::ViewHeapCount;
+        });
+        CHECK(field != lowered.user_data.end());
+        if (field != lowered.user_data.end()) {
+            CHECK(field->root.kind == RootType::Kind::ResourceHeap);
+            CHECK(field->index >= kOutputUserData + 1);
+        }
+        check_dxil(lowered.dxil, fixture->name);
+    } catch (const std::exception& error) {
+        std::printf("fixture %s did not translate: %s\n", fixture->name, error.what());
+        CHECK(false);
+    }
+}
+
 TEST(shader_fixtures_translate_a_buffer_count_without_using_the_view) {
     const Fixture* fixture = find_fixture(kScalarBufferCountOnly);
     CHECK(fixture != nullptr);
@@ -945,7 +988,7 @@ TEST(shader_fixtures_translate_scalar_buffer_address_at_a_join) {
                                           [source](const UserData& entry) { return entry.source == source; });
         CHECK(address != lowered.user_data.end());
         if (address != lowered.user_data.end()) {
-            CHECK(address->index == kUserSgprs);
+            CHECK(address->index == kUserSgprs + 1);
             CHECK(address->slot == kTableSlot);
             CHECK(address->dword == 0);
         }
@@ -1103,7 +1146,7 @@ TEST(shader_fixtures_translate_scalar_reads_of_image_addresses) {
     });
     CHECK(address != lowered.user_data.end());
     if (address != lowered.user_data.end()) {
-        CHECK(address->index == kUserSgprs);
+        CHECK(address->index == kUserSgprs + 1);
         CHECK(address->slot == kTableSlot);
         CHECK(address->dword == 0);
     }
@@ -1178,8 +1221,8 @@ TEST(shader_fixtures_gather_four_texels_at_a_level) {
 
     std::array<std::uint32_t, 4> center{};
     std::array<std::uint32_t, 4> edge{};
-    const bool center_ran = gather_on_warp("heap", heap.dxil, heap.samplers, 0.5f, 0.5f, 1.0f, &center);
-    const bool edge_ran = gather_on_warp("border", edged.dxil, edged.samplers, 0.0f, 0.0f, 1.0f, &edge);
+    const bool center_ran = gather_on_warp("heap", heap.dxil, heap.samplers, heap.user_data, 0.5f, 0.5f, 1.0f, &center);
+    const bool edge_ran = gather_on_warp("border", edged.dxil, edged.samplers, edged.user_data, 0.0f, 0.0f, 1.0f, &edge);
     if (!center_ran || !edge_ran) {
         std::printf("  skipped: no WARP device\n");
         return;
