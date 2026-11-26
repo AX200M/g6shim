@@ -57,13 +57,6 @@ void give_back(std::vector<std::uint8_t> bytes) {
     }
 }
 
-void append(std::vector<std::uint8_t>& out, const std::uint8_t* data, std::size_t bytes) {
-    if (bytes == 0) return;
-    const std::size_t at = out.size();
-    out.resize(at + bytes);
-    std::memcpy(out.data() + at, data, bytes);
-}
-
 struct Entry {
     std::uint64_t end = 0;
     std::shared_ptr<Shadow> shadow;
@@ -169,37 +162,64 @@ std::size_t Shadow::writing(std::size_t address, std::size_t bytes) {
     }
     const auto [from, to] = inside(address, bytes);
     std::lock_guard<std::mutex> lock(before_mutex_);
-    std::size_t start = from;
-    std::size_t end = to;
-    if (before_) {
-        const std::size_t kept_from = before_->first;
-        const std::size_t kept_to = kept_from + before_->second.size();
-        if (kept_from <= from && to <= kept_to) return 0;
-        const std::size_t kept = kept_to - kept_from;
-        const std::size_t limit = static_cast<std::size_t>(bytes_);
-        start = from < kept_from ? std::min(from, kept_from - std::min(kept_from, kept)) : kept_from;
-        end = to > kept_to ? std::max(to, std::min(limit, kept_to + std::min(limit - kept_to, kept))) : kept_to;
+    std::vector<std::pair<std::size_t, std::size_t>> gaps;
+    std::size_t at = from;
+    auto next = before_.upper_bound(from);
+    if (next != before_.begin()) {
+        const auto previous = std::prev(next);
+        at = std::max(at, previous->first + previous->second.size());
     }
-    std::vector<std::uint8_t> grown = pooled(end - start);
-    if (before_) {
-        std::vector<std::uint8_t> bytes_before = std::move(before_->second);
-        append(grown, data_ + start, before_->first - start);
-        append(grown, bytes_before.data(), bytes_before.size());
-        append(grown, data_ + before_->first + bytes_before.size(),
-               end - (before_->first + bytes_before.size()));
-        give_back(std::move(bytes_before));
-    } else {
-        append(grown, data_ + start, end - start);
+    while (at < to) {
+        const std::size_t stop = next == before_.end() ? to : std::min(to, next->first);
+        if (at < stop) gaps.emplace_back(at, stop);
+        if (next == before_.end()) break;
+        at = std::max(at, next->first + next->second.size());
+        ++next;
     }
-    before_ = std::make_pair(start, std::move(grown));
-    return end - start;
+    std::size_t captured = 0;
+    for (const auto& [gap_from, gap_to] : gaps) {
+        std::vector<std::uint8_t> held = pooled(gap_to - gap_from);
+        held.resize(gap_to - gap_from);
+        const auto* title = reinterpret_cast<const std::uint8_t*>(static_cast<std::size_t>(start_) + gap_from);
+        if (!card_ || !host::read_into(title, std::span<std::uint8_t>(held.data(), held.size())))
+            std::memcpy(held.data(), data_ + gap_from, held.size());
+        captured += held.size();
+        before_.emplace(gap_from, std::move(held));
+    }
+    return captured;
+}
+
+std::optional<std::vector<std::uint8_t>> Shadow::before_of(std::size_t from, std::size_t to) const {
+    if (from >= to) return std::nullopt;
+    std::vector<std::uint8_t> out;
+    out.reserve(to - from);
+    std::size_t at = from;
+    auto next = before_.upper_bound(from);
+    if (next != before_.begin()) --next;
+    for (; next != before_.end() && at < to; ++next) {
+        const std::size_t part_from = next->first;
+        const std::size_t part_to = part_from + next->second.size();
+        if (part_to <= at) continue;
+        if (part_from > at) return std::nullopt;
+        const std::size_t take = std::min(to, part_to) - at;
+        out.insert(out.end(), next->second.begin() + static_cast<std::ptrdiff_t>(at - part_from),
+                   next->second.begin() + static_cast<std::ptrdiff_t>(at - part_from + take));
+        at += take;
+    }
+    if (at < to) return std::nullopt;
+    return out;
+}
+
+void Shadow::drop_before() {
+    for (auto& held : before_) give_back(std::move(held.second));
+    before_.clear();
 }
 
 std::size_t Shadow::merge_card(std::size_t address, std::size_t bytes) {
-    if (!card_ || !before_) return 0;
+    if (!card_) return 0;
     const auto [from, to] = inside(address, bytes);
-    if (from >= to) return 0;
-    if (before_->first > from || to > before_->first + before_->second.size()) return 0;
+    const auto before = before_of(from, to);
+    if (!before) return 0;
     const std::size_t start = static_cast<std::size_t>(start_);
     std::size_t written = 0;
     constexpr std::size_t kPiece = static_cast<std::size_t>(card::kPieceBytes);
@@ -225,7 +245,7 @@ std::size_t Shadow::merge_card(std::size_t address, std::size_t bytes) {
             std::uint32_t old_dw = 0;
             std::uint32_t title_dw = 0;
             std::memcpy(&gpu_dw, gpu + (lo - piece_from) + i, 4);
-            std::memcpy(&old_dw, before_->second.data() + (lo - before_->first) + i, 4);
+            std::memcpy(&old_dw, before->data() + (lo - from) + i, 4);
             std::memcpy(&title_dw, title.data() + i, 4);
             if (gpu_dw != old_dw) {
                 if (title_dw == old_dw) {
@@ -240,7 +260,7 @@ std::size_t Shadow::merge_card(std::size_t address, std::size_t bytes) {
         }
         for (; i < n; ++i) {
             const std::uint8_t gpu_b = gpu[(lo - piece_from) + i];
-            const std::uint8_t old_b = before_->second[(lo - before_->first) + i];
+            const std::uint8_t old_b = (*before)[(lo - from) + i];
             if (gpu_b != old_b) {
                 if (title[i] == old_b) {
                     title[i] = gpu_b;
@@ -269,8 +289,8 @@ std::size_t Shadow::copy_back(std::size_t address, std::size_t bytes) {
         const std::size_t start = static_cast<std::size_t>(start_);
         if (card_) {
             written = merge_card(address, bytes);
-        } else if (before_ && before_->first <= from && to <= before_->first + before_->second.size() && from < to) {
-            const std::vector<std::uint8_t>& before = before_->second;
+        } else if (const auto held = before_of(from, to)) {
+            const std::vector<std::uint8_t>& before = *held;
             constexpr std::size_t kPiece = 64 << 10;
             std::vector<std::uint8_t> title(kPiece, 0);
             std::vector<std::size_t> synced;
@@ -278,7 +298,7 @@ std::size_t Shadow::copy_back(std::size_t address, std::size_t bytes) {
             while (at < to) {
                 const std::size_t n = std::min(kPiece - (start + at) % kPiece, to - at);
                 std::uint8_t* host = data_ + at;
-                const std::uint8_t* old = before.data() + (at - before_->first);
+                const std::uint8_t* old = before.data() + (at - from);
                 if (n == 0 || host == nullptr || old == nullptr) break;
                 if (host::read_into(reinterpret_cast<const std::uint8_t*>(start + at),
                                     std::span<std::uint8_t>(title.data(), n))) {
@@ -321,10 +341,7 @@ std::size_t Shadow::copy_back(std::size_t address, std::size_t bytes) {
         pending_.erase(std::remove(pending_.begin(), pending_.end(), range), pending_.end());
         if (pending_.empty()) {
             std::lock_guard<std::mutex> snapshot_lock(before_mutex_);
-            if (before_) {
-                give_back(std::move(before_->second));
-                before_.reset();
-            }
+            drop_before();
         }
     }
     return written;
@@ -336,10 +353,7 @@ void Shadow::discard_write(std::size_t address, std::size_t bytes) {
     pending_.erase(std::remove(pending_.begin(), pending_.end(), range), pending_.end());
     if (pending_.empty()) {
         std::lock_guard<std::mutex> snapshot_lock(before_mutex_);
-        if (before_) {
-            give_back(std::move(before_->second));
-            before_.reset();
-        }
+        drop_before();
     }
 }
 

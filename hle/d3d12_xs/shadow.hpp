@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -61,6 +62,8 @@ private:
     std::pair<std::size_t, std::size_t> inside(std::size_t address, std::size_t bytes) const;
     std::size_t update_free(std::size_t from, std::size_t to);
     std::size_t merge_card(std::size_t address, std::size_t bytes);
+    std::optional<std::vector<std::uint8_t>> before_of(std::size_t from, std::size_t to) const;
+    void drop_before();
     std::size_t copy_stale(std::size_t from, std::size_t to, std::uint64_t now,
                            const std::vector<std::pair<std::size_t, std::uint64_t>>& written);
     std::size_t copy_range(std::size_t from, std::size_t to);
@@ -75,7 +78,7 @@ private:
     std::mutex pending_mutex_;
     std::vector<std::pair<std::size_t, std::size_t>> pending_;
     std::mutex before_mutex_;
-    std::optional<std::pair<std::size_t, std::vector<std::uint8_t>>> before_;
+    std::map<std::size_t, std::vector<std::uint8_t>> before_;
     std::atomic<std::uint64_t> last_used_{0};
     std::shared_ptr<g6shim::d3d12_xs::card::Side> card_;
 };
