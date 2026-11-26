@@ -509,25 +509,7 @@ bool State::prepare_for(host::HostList& list, bool indexed, bool mesh) {
 bool State::bind(host::HostList& list, const pipeline_host::HostPipeline& pipeline, bool compute) {
     ID3D12GraphicsCommandList* commands = list.list();
     const bool heaps_changed = host_heaps_ != heaps_;
-    if (heaps_changed) host_roots_ = {nullptr, nullptr};
-    const std::size_t stage_index = compute ? 1 : 0;
-    ID3D12RootSignature* root = pipeline.root.Get();
-    const bool signature_changed = host_roots_[stage_index] != root;
-    if (signature_changed) {
-        if (compute)
-            commands->SetComputeRootSignature(root);
-        else
-            commands->SetGraphicsRootSignature(root);
-        host_roots_[stage_index] = root;
-    }
-    if (host_pipeline_ != pipeline.pso.Get()) {
-        commands->SetPipelineState(pipeline.pso.Get());
-        host_pipeline_ = pipeline.pso.Get();
-        list.used_pipeline(pipeline.name);
-        list.keep(pipeline.pso.Get());
-        list.keep(root);
-    }
-    if (heaps_changed || signature_changed) {
+    if (heaps_changed) {
         std::vector<ID3D12DescriptorHeap*> heaps;
         bool missing = false;
         for (Object* heap : heaps_) {
@@ -543,6 +525,23 @@ bool State::bind(host::HostList& list, const pipeline_host::HostPipeline& pipeli
         if (missing) return false;
         commands->SetDescriptorHeaps(static_cast<UINT>(heaps.size()), heaps.empty() ? nullptr : heaps.data());
         host_heaps_ = heaps_;
+        host_roots_ = {nullptr, nullptr};
+    }
+    const std::size_t stage_index = compute ? 1 : 0;
+    ID3D12RootSignature* root = pipeline.root.Get();
+    if (host_roots_[stage_index] != root) {
+        if (compute)
+            commands->SetComputeRootSignature(root);
+        else
+            commands->SetGraphicsRootSignature(root);
+        host_roots_[stage_index] = root;
+    }
+    if (host_pipeline_ != pipeline.pso.Get()) {
+        commands->SetPipelineState(pipeline.pso.Get());
+        host_pipeline_ = pipeline.pso.Get();
+        list.used_pipeline(pipeline.name);
+        list.keep(pipeline.pso.Get());
+        list.keep(root);
     }
     for (const pipeline_host::Stage& stage : pipeline.stages) {
         const Translated* translated = stage.translated();

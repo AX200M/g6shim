@@ -1370,11 +1370,15 @@ TEST(shader_fixtures_refuse_a_heap_pointer_used_as_an_address) {
     if (fixture == nullptr) return;
     constexpr std::uint8_t kHeapUserData = 4;
     constexpr std::uint8_t kHeapSlot = 1;
+    constexpr std::uint8_t kOutputUserData = 6;
+    constexpr std::uint8_t kOutputSlot = 2;
     bool refused = false;
     try {
         lower_compute(fixture->words, kFixtureVgprs,
-                      {root_param(RootType::Kind::ResourceHeap, kHeapUserData, kHeapSlot)}, {},
-                      (kHeapUserData + 1u) << kUserSgprShift, {1, 1, 1});
+                      {root_param(RootType::Kind::ResourceHeap, kHeapUserData, kHeapSlot),
+                       root_param(RootType::Kind::Table, kOutputUserData, kOutputSlot)},
+                      {used_uav(kOutputUserData, kOutputSlot)}, (kOutputUserData + 1u) << kUserSgprShift,
+                      {1, 1, 1});
     } catch (const std::exception& error) {
         refused = std::string_view(error.what()).find("a descriptor heap pointer used as an address") !=
                   std::string_view::npos;
