@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "descriptor_host.hpp"
 
+#include "frame.hpp"
 #include "sampler.hpp"
 #include "shadow.hpp"
 #include "texture.hpp"
-
 #include <g6shim/log.hpp>
 #include <g6shim/settings.hpp>
 #include <g6shim/shader/emit/emit.hpp>
@@ -30,6 +30,11 @@ constexpr std::uint32_t kBlockSlots = 1 << 16;
 constexpr std::uint32_t kBufferDimension = 1;
 constexpr std::uint32_t kRawElementBytes = 4;
 constexpr std::uint32_t kElementAlignment = 256;
+constexpr std::size_t kRecordPage = 64 << 10;
+constexpr std::size_t kSyncPages = 8;
+constexpr std::uint32_t kCopiedFrames = 8;
+constexpr std::uint32_t kTabledRead = 1u << 31;
+constexpr DWORD kResetWrites = 1;
 constexpr std::uint32_t kImageBaseAddressShift = 8;
 constexpr std::uint32_t kBufferResourceLevel = 1u << 24;
 constexpr std::uint32_t kBufferIndexBounds = 1u << 28;
@@ -153,6 +158,11 @@ struct HeapEntry {
     SlotBits seen;
     std::atomic<std::uint64_t> seen_eviction{0};
     std::mutex mutex;
+    std::mutex copied_mutex;
+    std::vector<std::uint8_t> copied;
+    std::vector<std::atomic<std::uint32_t>> tabled;
+    bool watch_probed = false;
+    bool watch_usable = false;
 };
 
 std::shared_mutex g_heaps_mutex;
@@ -229,6 +239,13 @@ bool empty_buffer_view(std::uint32_t elements) {
     std::call_once(once, [] { G6SHIM_INFO("d3d12_xs: a buffer view with no elements is made a null view"); });
     return true;
 }
+
+bool off_elements(std::uint64_t offset, std::uint32_t stride, bool raw, std::uint64_t element) {
+    if (raw) return offset % 16 != 0;
+    if (stride > 0) return offset % 16 != 0 && offset % stride != 0;
+    return element > 0 && offset % element != 0;
+}
+
 std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> exact_copy(std::uint64_t address, std::uint64_t bytes,
                                                                  bool unordered) {
     if (bytes == 0 || bytes > (std::uint64_t{1} << 28)) return std::nullopt;
@@ -250,7 +267,8 @@ std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> buffer_srv(std::uint64_t a
     (*shadow)->update(static_cast<std::size_t>(address), static_cast<std::size_t>(bytes));
     const std::uint64_t element = element_size(desc);
     const std::uint64_t offset = (*shadow)->offset(address);
-    if (element == 0 || offset % element != 0) {
+    const bool raw = (static_cast<std::uint32_t>(desc.Buffer.Flags) & D3D12_BUFFER_SRV_FLAG_RAW) != 0;
+    if (element == 0 || off_elements(offset, desc.Buffer.StructureByteStride, raw, element)) {
         auto copy = exact_copy(address, bytes, false);
         if (!copy) return std::nullopt;
         desc.Buffer.FirstElement = 0;
@@ -279,14 +297,14 @@ std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> buffer_uav(std::uint64_t a
         return std::nullopt;
     }
     const auto format = resource::element(static_cast<std::uint32_t>(desc.Format));
+    const bool raw = (static_cast<std::uint32_t>(desc.Buffer.Flags) & D3D12_BUFFER_UAV_FLAG_RAW) != 0;
     const std::uint64_t element =
         desc.Buffer.StructureByteStride > 0
             ? desc.Buffer.StructureByteStride
-            : (static_cast<std::uint32_t>(desc.Buffer.Flags) & D3D12_BUFFER_UAV_FLAG_RAW) != 0
-                  ? kRawElementBytes
+            : raw ? kRawElementBytes
                   : format ? format->first : 0;
     const std::uint64_t offset = (*shadow)->offset(address);
-    if (element == 0 || offset % element != 0) {
+    if (element == 0 || off_elements(offset, desc.Buffer.StructureByteStride, raw, element)) {
         auto copy = exact_copy(address, bytes, true);
         if (!copy) return std::nullopt;
         desc.Buffer.FirstElement = 0;
@@ -296,7 +314,6 @@ std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> buffer_uav(std::uint64_t a
         gpu->device()->CreateUnorderedAccessView(copy->Get(), nullptr, &desc, at);
         return copy;
     }
-    desc.Buffer.FirstElement += static_cast<UINT>(offset / element);
     desc.Buffer.CounterOffsetInBytes = 0;
     host::Host* gpu = host::host();
     if (gpu == nullptr) return std::nullopt;
@@ -770,6 +787,8 @@ HostHeap::HostHeap(Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap, std::uint6
       sampler_(sampler),
       stripes_(std::make_unique<std::mutex[]>(kStripes)),
       made_(count, 0),
+      quick_(count),
+      strides_(count, 0),
       slot_kind_(count, sampler ? 2 : 1),
       kept_(static_cast<std::size_t>(count) + dynamic),
       window_generation_(static_cast<std::size_t>(count) + dynamic),
@@ -789,6 +808,17 @@ std::uint8_t HostHeap::kind_at(std::uint32_t index) const {
 void HostHeap::note_kind(std::uint32_t index, bool buffer) {
     if (index < slot_kind_.size()) slot_kind_[index] = buffer ? 1 : 2;
 }
+
+std::uint32_t HostHeap::stride_word(std::uint32_t index) const {
+    return index < strides_.size() ? strides_[index] : 0;
+}
+
+std::uint64_t HostHeap::rebuilds() const { return rebuilds_.load(std::memory_order_relaxed); }
+
+bool HostHeap::shows_none(std::uint32_t index) const {
+    return index >= quick_.size() || quick_[index].load(std::memory_order_acquire) == 0;
+}
+
 
 std::unique_ptr<HostHeap> HostHeap::create(bool sampler, std::uint32_t count) {
     host::Host* gpu = host::host();
@@ -993,6 +1023,32 @@ void HostHeap::constant_at(std::uint32_t index, std::uint64_t gpu, std::uint32_t
     device->device()->CreateConstantBufferView(&desc, cpu(index));
 }
 
+std::uint32_t view_stride(const descriptor::View& view) {
+    std::optional<std::array<std::uint32_t, 10>> words;
+    bool unordered = false;
+    if (const auto* shader = std::get_if<descriptor::ShaderView>(&view)) {
+        words = shader->desc;
+    } else if (const auto* access = std::get_if<descriptor::UnorderedView>(&view)) {
+        words = access->desc;
+        unordered = true;
+    } else if (const auto* placed = std::get_if<descriptor::PlacedView>(&view)) {
+        if (placed->resource[0] != kBufferDimension) return 0;
+        words.emplace();
+        std::copy_n(placed->desc.begin(), 10, words->begin());
+        unordered = placed->unordered;
+    }
+    if (!words) return 0;
+    if (unordered) {
+        const D3D12_UNORDERED_ACCESS_VIEW_DESC desc = uav_desc(*words);
+        if (desc.ViewDimension != D3D12_UAV_DIMENSION_BUFFER) return 0;
+        return desc.Buffer.StructureByteStride;
+    }
+    const D3D12_SHADER_RESOURCE_VIEW_DESC desc = srv_desc(*words);
+    if (desc.ViewDimension != D3D12_SRV_DIMENSION_BUFFER) return 0;
+    return desc.Buffer.StructureByteStride;
+}
+
+
 std::optional<descriptor::View> HostHeap::mirror(std::uint32_t index, std::uint64_t handle, bool for_draw) {
     if (index >= count_) {
         static std::atomic<bool> reported{false};
@@ -1001,15 +1057,27 @@ std::optional<descriptor::View> HostHeap::mirror(std::uint32_t index, std::uint6
         return std::nullopt;
     }
     std::array<std::uint32_t, 3> record{};
-    std::memcpy(record.data(), reinterpret_cast<const void*>(static_cast<std::uintptr_t>(handle)),
-                sizeof record);
+    std::memcpy(record.data(), reinterpret_cast<const void*>(static_cast<std::uintptr_t>(handle)), sizeof record);
     const std::uint64_t key = static_cast<std::uint64_t>(record[2]) << 32 | record[1];
+    if (key != 0 && index < quick_.size() && quick_[index].load(std::memory_order_acquire) == key) {
+        const std::uint64_t stamp = window_stamp(index);
+        const bool current = stamp == kNoWindow || stamp == shadow::eviction_generation() + 1;
+        if (current) {
+            if (auto cached = descriptor::view(handle)) return cached;
+        }
+    }
     std::lock_guard<std::mutex> lock(stripe(index));
     std::optional<descriptor::View> view = descriptor::view(handle);
+    const auto publish = [this, index](std::uint64_t shown, std::uint32_t stride) {
+        made_[index] = shown;
+        if (index < strides_.size()) strides_[index] = stride;
+        if (index < quick_.size()) quick_[index].store(shown, std::memory_order_release);
+    };
     if (!view) {
         if (made_[index] != 0) {
-            made_[index] = 0;
+            publish(0, 0);
             make_null(index);
+            rebuilds_.fetch_add(1, std::memory_order_relaxed);
             note_materialized();
         } else {
             note_skipped();
@@ -1019,7 +1087,9 @@ std::optional<descriptor::View> HostHeap::mirror(std::uint32_t index, std::uint6
     if (made_[index] == key && window_evicted(index)) made_[index] = 0;
     if (made_[index] != key) {
         const bool later = !for_draw && view_is_buffer(*view);
-        made_[index] = later ? 0 : key;
+        const std::uint32_t stride = later ? 0 : view_stride(*view);
+        publish(later ? 0 : key, stride);
+        rebuilds_.fetch_add(1, std::memory_order_relaxed);
         if (later) {
             null_for(*view, cpu(index));
             note_kind(index, true);
@@ -1609,6 +1679,7 @@ void register_heap(Object* heap, std::uint64_t start, std::uint64_t end) {
     entry->sampler = descriptor_heap->desc.kind == descriptor::kSamplersKind;
     entry->dirty.reset(entry->count);
     entry->seen.reset(entry->count);
+    entry->tabled = std::vector<std::atomic<std::uint32_t>>(entry->count);
     if (!entry->sampler) {
         for (std::uint32_t index = 0; index < entry->count; ++index) {
             const std::uint64_t handle = start + static_cast<std::uint64_t>(index) * entry->step;
@@ -1845,6 +1916,169 @@ void log_kind_mismatches(HeapEntry& entry) {
         G6SHIM_WARN("d3d12_xs: indexed heap %p has %u slots whose host kind differs from the title",
                     static_cast<void*>(entry.heap), mismatches);
 }
+bool probe_watch(std::uint64_t start, std::uint64_t bytes) {
+    if (bytes == 0) return false;
+    void* page = nullptr;
+    ULONG_PTR count = 1;
+    DWORD granularity = 0;
+    if (::GetWriteWatch(0, reinterpret_cast<void*>(static_cast<std::uintptr_t>(start)), static_cast<SIZE_T>(bytes),
+                        &page, &count, &granularity) == 0)
+        return true;
+    return ::GetLastError() == ERROR_INSUFFICIENT_BUFFER;
+}
+
+std::vector<std::pair<std::size_t, std::size_t>> take_watch(std::uint64_t start, std::uint64_t end) {
+    const auto bytes = static_cast<SIZE_T>(end - start);
+    std::size_t capacity = static_cast<std::size_t>(bytes / 4096) + 1;
+    std::vector<void*> pages(capacity);
+    ULONG_PTR count = capacity;
+    DWORD granularity = 0;
+    auto ask = [&] {
+        count = pages.size();
+        return ::GetWriteWatch(kResetWrites, reinterpret_cast<void*>(static_cast<std::uintptr_t>(start)), bytes,
+                               pages.data(), &count, &granularity) == 0;
+    };
+    if (!ask()) {
+        if (::GetLastError() != ERROR_INSUFFICIENT_BUFFER || count == 0) return {};
+        pages.resize(count);
+        if (!ask()) return {};
+    }
+    if (granularity == 0) granularity = 4096;
+    std::vector<std::size_t> written(count);
+    for (ULONG_PTR i = 0; i < count; ++i) written[i] = reinterpret_cast<std::size_t>(pages[i]);
+    std::sort(written.begin(), written.end());
+    std::vector<std::pair<std::size_t, std::size_t>> ranges;
+    const auto heap_start = static_cast<std::size_t>(start);
+    const auto heap_end = static_cast<std::size_t>(end);
+    for (const std::size_t page : written) {
+        const std::size_t from = std::max(page, heap_start);
+        const std::size_t to = std::min(page + static_cast<std::size_t>(granularity), heap_end);
+        if (from >= to) continue;
+        if (!ranges.empty() && ranges.back().second == from)
+            ranges.back().second = to;
+        else
+            ranges.emplace_back(from, to);
+    }
+    return ranges;
+}
+
+void changed_records(std::uint8_t* last, const std::uint8_t* now, std::size_t bytes, std::size_t step,
+                     std::uint32_t first, std::vector<std::uint32_t>& out) {
+    constexpr std::size_t kAtATime = 16;
+    const std::size_t block = kAtATime * step;
+    for (std::size_t offset = 0; offset + step <= bytes;) {
+        const std::size_t whole = std::min(block, bytes - offset);
+        const std::size_t aligned = whole - whole % step;
+        if (std::memcmp(last + offset, now + offset, aligned) != 0) {
+            for (std::size_t n = 0; n + step <= aligned; n += step) {
+                if (std::memcmp(last + offset + n, now + offset + n, step) != 0) {
+                    std::memcpy(last + offset + n, now + offset + n, step);
+                    out.push_back(first + static_cast<std::uint32_t>((offset + n) / step));
+                }
+            }
+        }
+        offset += aligned;
+    }
+}
+
+bool tabled_recently(const HeapEntry& entry, std::uint32_t index) {
+    if (index >= entry.tabled.size()) return false;
+    const std::uint32_t stamp = entry.tabled[index].load(std::memory_order_relaxed) & ~kTabledRead;
+    const std::uint32_t now = (static_cast<std::uint32_t>(frame::current_frame()) + 1) & ~kTabledRead;
+    return stamp != 0 && now - stamp <= kCopiedFrames;
+}
+
+void compare_part(HeapEntry& entry, std::size_t from, std::size_t to, std::vector<std::uint32_t>& out) {
+    const auto start = static_cast<std::size_t>(entry.start);
+    const std::uint64_t step = entry.step;
+    if (from < start || to <= from || step == 0) return;
+    const std::uint64_t byte_from = static_cast<std::uint64_t>(from - start);
+    const std::uint64_t byte_to = static_cast<std::uint64_t>(to - start);
+    const std::uint64_t first = (byte_from + step - 1) / step;
+    const std::uint64_t last = std::min((byte_to + step - 1) / step, static_cast<std::uint64_t>(entry.count));
+    if (first >= last) return;
+    const std::size_t record_from = start + static_cast<std::size_t>(first * step);
+    if (record_from < from || record_from >= to) return;
+    const std::size_t available = to - record_from;
+    const std::size_t count_bytes = std::min(static_cast<std::size_t>((last - first) * step), available - available % step);
+    if (count_bytes < step) return;
+    std::vector<std::uint8_t> page(count_bytes);
+    if (!host::read_into(reinterpret_cast<const std::uint8_t*>(record_from), page)) return;
+    const std::size_t copied_at = static_cast<std::size_t>(first) * static_cast<std::size_t>(step);
+    changed_records(entry.copied.data() + copied_at, page.data(), count_bytes, static_cast<std::size_t>(step),
+                    static_cast<std::uint32_t>(first), out);
+}
+
+void sync_records(const std::shared_ptr<HeapEntry>& entry, std::span<host::HostList* const> lists) {
+    if (!entry || entry->step == 0 || entry->count == 0) return;
+    if (!entry->watch_probed) {
+        entry->watch_probed = true;
+        entry->watch_usable = probe_watch(entry->start, entry->end - entry->start);
+    }
+    std::vector<std::pair<std::size_t, std::size_t>> ranges;
+    if (entry->watch_usable)
+        ranges = take_watch(entry->start, entry->end);
+    else
+        ranges.emplace_back(static_cast<std::size_t>(entry->start), static_cast<std::size_t>(entry->end));
+    if (ranges.empty()) return;
+    std::vector<std::pair<std::size_t, std::size_t>> parts;
+    for (const auto& [from, to] : ranges) {
+        std::size_t page = from & ~(kRecordPage - 1);
+        while (page < to) {
+            parts.emplace_back(std::max(page, from), std::min(page + kRecordPage, to));
+            page += kRecordPage;
+        }
+    }
+    if (parts.empty()) return;
+    if (entry->host == nullptr && for_heap(entry->heap) == nullptr) return;
+    if (entry->host == nullptr) return;
+    {
+        std::lock_guard<std::mutex> copied(entry->copied_mutex);
+        entry->copied.resize(static_cast<std::size_t>(entry->count) * entry->step, 0);
+    }
+    std::vector<std::vector<std::uint32_t>> found(parts.size());
+    const auto look = [&](std::size_t n) { compare_part(*entry, parts[n].first, parts[n].second, found[n]); };
+    if (parts.size() <= kSyncPages) {
+        for (std::size_t n = 0; n < parts.size(); ++n) look(n);
+    } else {
+        const std::size_t groups = (parts.size() + kSyncPages - 1) / kSyncPages;
+        unsigned workers = std::thread::hardware_concurrency();
+        if (workers == 0) workers = 2;
+        workers = std::min(workers, 8u);
+        const std::size_t chunk = (groups + workers - 1) / workers;
+        std::vector<std::thread> threads;
+        threads.reserve(workers);
+        for (unsigned worker = 0; worker < workers; ++worker) {
+            const std::size_t from = static_cast<std::size_t>(worker) * chunk;
+            if (from >= groups) break;
+            const std::size_t to = std::min(groups, from + chunk);
+            threads.emplace_back([&, from, to] {
+                for (std::size_t group = from; group < to; ++group)
+                    for (std::size_t n = group * kSyncPages; n < std::min(parts.size(), (group + 1) * kSyncPages); ++n)
+                        look(n);
+            });
+        }
+        for (std::thread& thread : threads) thread.join();
+    }
+    std::vector<std::uint32_t> make;
+    for (const auto& part : found) {
+        for (const std::uint32_t index : part) {
+            if (tabled_recently(*entry, index)) continue;
+            const std::uint64_t handle = entry->start + static_cast<std::uint64_t>(index) * entry->step;
+            if (!descriptor::view(handle) && entry->host->shows_none(index)) continue;
+            entry->seen.mark(index);
+            make.push_back(index);
+        }
+    }
+    if (make.empty()) return;
+    materialize_indices(*entry->host, entry->start, entry->step, make);
+    std::vector<BufferHeapAlias> refresh;
+    apply_heap_data(*entry, make, refresh);
+    for (host::HostList* const list : lists) {
+        if (list == nullptr) continue;
+        for (const BufferHeapAlias& alias : refresh) alias.backing->refresh(*list, alias.address, alias.bytes);
+    }
+}
 
 void sweep_entry(const std::shared_ptr<HeapEntry>& entry, std::span<host::HostList* const> lists) {
     if (!entry) return;
@@ -1878,7 +2112,6 @@ bool lazy_descriptors() {
 void refresh_descriptor_settings() { g_lazy.store(-1, std::memory_order_relaxed); }
 
 void sweep_before_submission(std::span<host::HostList* const> lists) {
-    if (!lazy_descriptors()) return;
     std::vector<Object*> wanted;
     for (host::HostList* const list : lists) {
         if (list == nullptr) continue;
@@ -1889,14 +2122,25 @@ void sweep_before_submission(std::span<host::HostList* const> lists) {
     wanted.erase(std::unique(wanted.begin(), wanted.end()), wanted.end());
     for (Object* heap : wanted) {
         const std::shared_ptr<HeapEntry> entry = entry_for_heap(heap);
-        if (entry) sweep_entry(entry, lists);
+        if (!entry) continue;
+        sync_records(entry, lists);
+        if (lazy_descriptors()) sweep_entry(entry, lists);
     }
 }
 
 void refresh_heap(Object* heap) {
-    if (!lazy_descriptors() || heap == nullptr) return;
+    if (heap == nullptr) return;
     const std::shared_ptr<HeapEntry> entry = entry_for_heap(heap);
-    if (entry) sweep_entry(entry, {});
+    if (!entry) return;
+    sync_records(entry, {});
+    if (lazy_descriptors()) sweep_entry(entry, {});
+}
+
+void note_draw_table(Object* heap, std::uint32_t index) {
+    const std::shared_ptr<HeapEntry> entry = entry_for_heap(heap);
+    if (!entry || index >= entry->tabled.size()) return;
+    const std::uint32_t now = (static_cast<std::uint32_t>(frame::current_frame()) + 1) & ~kTabledRead;
+    entry->tabled[index].store(now | kTabledRead, std::memory_order_relaxed);
 }
 
 std::optional<descriptor::View> materialize_for_draw(Object* heap, std::uint32_t index, std::uint64_t handle) {

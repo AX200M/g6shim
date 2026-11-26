@@ -704,6 +704,7 @@ void State::table_entry(host::HostList& list, const g6shim::shader::UsedResource
     const auto index = heap->index(handle);
     if (host_heap == nullptr || !index) return;
     const auto view = descriptor_host::materialize_for_draw(const_cast<descriptor::Heap*>(heap), *index, handle);
+    descriptor_host::note_draw_table(const_cast<descriptor::Heap*>(heap), *index);
     if (view) {
         readable(list, used, *view);
         list.keep(host_heap->kept(*index).Get());
@@ -781,6 +782,8 @@ std::vector<std::pair<std::uint8_t, std::uint32_t>> State::tables(
                 }
             }
             const std::uint64_t handle = root.value + static_cast<std::uint64_t>(index) * kDescriptorSlotBytes;
+            if (const auto title_index = heap->index(handle))
+                descriptor_host::note_draw_table(const_cast<descriptor::Heap*>(heap), *title_index);
             const auto view = descriptor::view(handle);
             if (view) {
                 if (const auto* constant = std::get_if<descriptor::ConstantView>(&*view)) {

@@ -50,6 +50,9 @@ public:
     std::uint64_t window_stamp(std::uint32_t index) const;
     std::uint8_t kind_at(std::uint32_t index) const;
     void note_kind(std::uint32_t index, bool buffer);
+    std::uint32_t stride_word(std::uint32_t index) const;
+    std::uint64_t rebuilds() const;
+    bool shows_none(std::uint32_t index) const;
     Microsoft::WRL::ComPtr<ID3D12Resource> kept(std::uint32_t index);
 
 private:
@@ -75,7 +78,10 @@ private:
     bool sampler_ = false;
     std::unique_ptr<std::mutex[]> stripes_;
     std::vector<std::uint64_t> made_;
+    std::vector<std::atomic<std::uint64_t>> quick_;
+    std::vector<std::uint32_t> strides_;
     std::vector<std::uint8_t> slot_kind_;
+    std::atomic<std::uint64_t> rebuilds_{0};
     std::mutex kept_mutex_;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> kept_;
     std::vector<std::atomic<std::uint64_t>> window_generation_;
@@ -88,6 +94,7 @@ void register_heap(Object* heap, std::uint64_t start, std::uint64_t end);
 void drop_heap(Object* heap);
 void mirror(std::uint64_t handle);
 void release_dynamic(Object* heap, std::uint32_t first, std::uint32_t count);
+void note_draw_table(Object* heap, std::uint32_t index);
 HostHeap* for_heap(Object* heap);
 
 struct DescriptorStats {
