@@ -2064,22 +2064,36 @@ ID3D12CommandList* HostList::prelude() {
 
 void HostList::run_deferred(Batch& batch) {
     std::lock_guard<std::mutex> lock(deferred_mutex_);
+    constexpr double kSlowSeconds = 1.0;
+    const auto began = std::chrono::steady_clock::now();
+    std::uint64_t refreshes = 0;
+    std::uint64_t gpu_writes = 0;
+    std::uint64_t snapshot_bytes = 0;
     for (const Step& step : deferred_.copies) {
         if (const auto* copy = std::get_if<CopyStep>(&step)) {
             if (copy->title_memory) batch.title_written();
             copy_mapped(copy->destination, copy->source, copy->bytes, copy->title_memory);
         } else if (const auto* refresh = std::get_if<RefreshStep>(&step)) {
+            ++refreshes;
             batch.add(refresh->shadow, refresh->address, refresh->bytes);
         } else if (const auto* work = std::get_if<WorkStep>(&step)) {
             if (work->title_memory) batch.title_written();
             work->work();
         } else if (const auto* write = std::get_if<GpuWriteStep>(&step)) {
             batch.flush();
-            write->shadow->writing(write->address, write->bytes);
+            ++gpu_writes;
+            snapshot_bytes += write->shadow->writing(write->address, write->bytes);
         } else if (const auto* staged = std::get_if<TextureStep>(&step)) {
             if (batch.texture_due(staged->staging.get())) staged->staging->refresh();
         }
     }
+    const std::chrono::duration<double> took = std::chrono::steady_clock::now() - began;
+    if (took.count() >= kSlowSeconds)
+        G6SHIM_WARN("d3d12_xs: a list's deferred work took %.1f s (%zu steps, %llu refreshes, %llu GPU writes, "
+                    "%llu MiB of write snapshots)",
+                    took.count(), deferred_.copies.size(), static_cast<unsigned long long>(refreshes),
+                    static_cast<unsigned long long>(gpu_writes),
+                    static_cast<unsigned long long>(snapshot_bytes >> 20));
 }
 
 }  // namespace g6shim::d3d12_xs::host

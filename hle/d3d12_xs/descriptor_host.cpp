@@ -20,7 +20,10 @@
 #include <limits>
 #include <map>
 #include <shared_mutex>
+#include <span>
 #include <thread>
+#include <unordered_map>
+#include <vector>
 
 namespace g6shim::d3d12_xs::descriptor_host {
 
@@ -100,6 +103,29 @@ struct BufferHeapAlias {
     std::uint64_t address = 0;
     std::uint64_t bytes = 0;
 };
+
+void refresh_aliases(host::HostList& list, std::span<const BufferHeapAlias> aliases) {
+    struct Range {
+        std::shared_ptr<shadow::Shadow> backing;
+        std::uint64_t from;
+        std::uint64_t to;
+    };
+    std::vector<Range> ranges;
+    std::unordered_map<const shadow::Shadow*, std::size_t> known;
+    for (const BufferHeapAlias& alias : aliases) {
+        if (!alias.backing) continue;
+        const std::uint64_t end = alias.address + alias.bytes;
+        const auto [found, fresh] = known.try_emplace(alias.backing.get(), ranges.size());
+        if (fresh) {
+            ranges.push_back(Range{alias.backing, alias.address, end});
+            continue;
+        }
+        Range& range = ranges[found->second];
+        range.from = std::min(range.from, alias.address);
+        range.to = std::max(range.to, end);
+    }
+    for (const Range& range : ranges) range.backing->refresh(list, range.from, range.to - range.from);
+}
 
 struct BufferHeap {
     HeapData data;
@@ -1829,7 +1855,7 @@ std::optional<HeapDataBinding> buffer_heap_data(Object* heap, host::HostList& li
         }
         binding = entry->buffer_data->data.binding;
     }
-    for (const BufferHeapAlias& alias : stale) alias.backing->refresh(list, alias.address, alias.bytes);
+    refresh_aliases(list, stale);
     return binding;
 }
 
@@ -2103,7 +2129,7 @@ void sync_records(const std::shared_ptr<HeapEntry>& entry, std::span<host::HostL
     apply_heap_data(*entry, make, refresh);
     for (host::HostList* const list : lists) {
         if (list == nullptr) continue;
-        for (const BufferHeapAlias& alias : refresh) alias.backing->refresh(*list, alias.address, alias.bytes);
+        refresh_aliases(*list, refresh);
     }
 }
 
@@ -2120,7 +2146,7 @@ void sweep_entry(const std::shared_ptr<HeapEntry>& entry, std::span<host::HostLi
     apply_heap_data(*entry, slots, refresh);
     for (host::HostList* const list : lists) {
         if (list == nullptr) continue;
-        for (const BufferHeapAlias& alias : refresh) alias.backing->refresh(*list, alias.address, alias.bytes);
+        refresh_aliases(*list, refresh);
     }
     log_kind_mismatches(*entry);
 }
