@@ -2,7 +2,7 @@
 
 ## add Functional
 
-- A descriptor heap index past the host heap, including a constant byte offset from a table or heap pointer, is read as the null descriptor at slot 0.
+- A descriptor heap index past the host heap selects a null descriptor of the same access kind, not the title's descriptor.
   Closes when: the host heap holds every title descriptor a shader can name.
   Title IDs: 7952987A
 - A root view whose title address has no host copy is a zero-filled stand-in, so a read returns zeros instead of the title's bytes.
