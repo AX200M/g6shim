@@ -6,8 +6,6 @@
 #include <array>
 #include <bit>
 #include <cstddef>
-#include <cstdio>
-#include <cstdlib>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -576,7 +574,7 @@ void Lower::find_sections() {
 }
 
 void Lower::section_inst(std::size_t b, std::size_t i, std::size_t start) {
-    constexpr Why unknown = "a whole-wave section step the simulation does not follow";
+    constexpr Why unknown = kUnfollowedSection;
     const IrInst& inst = x_->p->blocks[b].insts[i];
     for (const auto& write : inst.writes) {
         const Value w = write.second;
@@ -1049,7 +1047,8 @@ Val Lower::user(std::size_t param, std::uint32_t dword) {
     const RootParam& rp = x_->native->layout[param];
     if (rp.root.kind == RootType::Kind::ResourceHeap || rp.root.kind == RootType::Kind::SamplerHeap)
         return Val::missing("a descriptor heap pointer used as an address");
-    if (rp.root.kind != RootType::Kind::Constants && rp.root.kind != RootType::Kind::Table)
+    if (rp.root.kind != RootType::Kind::Constants && rp.root.kind != RootType::Kind::Table &&
+        rp.root.kind != RootType::Kind::Descriptor)
         return Val::missing("a root descriptor");
     const std::uint32_t index = static_cast<std::uint32_t>(rp.user_data) + dword;
     user_reads_[index] = UserData{index, rp.slot, rp.root, dword};

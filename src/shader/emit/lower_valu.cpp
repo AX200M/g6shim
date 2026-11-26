@@ -672,7 +672,13 @@ void Lower::valu_op(const IrInst& inst, std::optional<V> guard_value) {
         const auto* target = std::get_if<VectorOperand>(&*fields->dst);
         if (target == nullptr) fail("a lane write");
         V old = s_.m.i32(0);
-        if (const std::optional<Value> read = inst.read(Reg::v(target->reg))) old = i32_of(*read);
+        if (const std::optional<Value> read = inst.read(Reg::v(target->reg))) {
+            try {
+                old = i32_of(*read);
+            } catch (const WhyError& error) {
+                if (std::string_view(error.why) != kUnfollowedSection) throw;
+            }
+        }
         cross_lane(false);
         const V me = lane_index();
         const V is = s_.m.cmp(c, pred::kEq, me, lane);

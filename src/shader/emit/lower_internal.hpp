@@ -76,6 +76,7 @@ struct Stop {
 enum class MaskData : std::uint8_t { Console, Host, None };
 
 inline constexpr Why kLaneMask = "a lane mask read as data";
+inline constexpr Why kUnfollowedSection = "a whole-wave section step the simulation does not follow";
 inline constexpr Why kLaneMaskElsewhere = "a lane mask holding lanes elsewhere read as data";
 inline constexpr Why kQuadMask = "a whole-quad lane mask read as data";
 inline constexpr Why kOpaqueMask = "an opaque lane mask read as data";

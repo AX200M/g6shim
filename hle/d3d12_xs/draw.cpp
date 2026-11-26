@@ -376,6 +376,10 @@ std::uint32_t State::user_value(bool compute, std::uint8_t slot, RootKind root,
     if (entry != nullptr && entry->kind == Root::Kind::kConstants &&
         root.kind == RootKind::Kind::Constants)
         return dword < entry->constants.size() ? entry->constants[dword] : 0;
+    if (entry != nullptr && entry->kind == Root::Kind::kView && root.kind == RootKind::Kind::Descriptor) {
+        constexpr std::uint32_t kAddressWords = 2;
+        return dword < kAddressWords ? static_cast<std::uint32_t>(entry->value >> (32 * dword)) : 0;
+    }
     static std::once_flag once;
     std::call_once(once, [] {
         G6SHIM_WARN("d3d12_xs: a shader reads a root argument the title did not set");
