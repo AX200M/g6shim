@@ -24,6 +24,7 @@ class Side;
 namespace g6shim::d3d12_xs::shadow {
 
 inline constexpr std::uint64_t kIdleSubmissions = 512;
+inline constexpr std::uint64_t kLooseBudgetBytes = 4ull << 30;
 
 struct LooseStats {
     std::size_t windows = 0;
@@ -97,7 +98,16 @@ void collect_host_ranges(std::vector<HostRange>& out);
 void submission_completed();
 std::uint64_t eviction_generation();
 bool live_loose(ID3D12Resource* buffer);
+struct BufferStats {
+    std::size_t buffers = 0;
+    std::uint64_t bytes = 0;
+    std::size_t large = 0;
+    std::uint64_t large_bytes = 0;
+};
+
 LooseStats loose_stats();
+BufferStats buffer_stats();
+void set_loose_budget_for_test(std::uint64_t bytes);
 std::uint64_t card_minimum_bytes();
 
 }  // namespace g6shim::d3d12_xs::shadow

@@ -260,6 +260,10 @@ TEST(d3d12_xs_host_old_descriptor_reaches_the_current_window_after_eviction) {
         CHECK(shadow::live_loose(first));
         const std::uint64_t evicted = shadow::loose_stats().evicted;
         for (std::uint64_t i = 0; i <= shadow::kIdleSubmissions; ++i) shadow::submission_completed();
+        CHECK(shadow::live_loose(first));
+        shadow::set_loose_budget_for_test(0);
+        shadow::submission_completed();
+        shadow::set_loose_budget_for_test(shadow::kLooseBudgetBytes);
         CHECK(!shadow::live_loose(first));
         CHECK(shadow::loose_stats().evicted > evicted);
         std::memset(memory, 2, kTitleBytes);

@@ -220,7 +220,9 @@ static void d3d12_xs_retirement_loose_window_eviction_does_not_free_an_in_flight
     gpu->execute({reader.get()});
     CHECK(host::submission_in_flight());
     const std::uint64_t evicted = shadow::loose_stats().evicted;
+    shadow::set_loose_budget_for_test(0);
     for (std::uint64_t i = 0; i <= shadow::kIdleSubmissions; ++i) shadow::submission_completed();
+    shadow::set_loose_budget_for_test(shadow::kLooseBudgetBytes);
     CHECK(shadow::loose_stats().evicted > evicted);
     CHECK(!shadow::live_loose(buffer));
     CHECK(host::references(buffer) >= 1);

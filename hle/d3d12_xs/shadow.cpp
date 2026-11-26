@@ -73,6 +73,7 @@ std::unordered_set<ID3D12Resource*> g_loose_buffers;
 std::atomic<std::uint64_t> g_submission{0};
 std::atomic<std::uint64_t> g_generation{0};
 std::atomic<std::uint64_t> g_evicted{0};
+std::atomic<std::uint64_t> g_loose_budget{kLooseBudgetBytes};
 
 std::optional<std::shared_ptr<Shadow>> loose(std::uint64_t address, std::uint64_t end) {
     const std::uint64_t start = address & ~(kWindowBytes - 1);
@@ -576,7 +577,11 @@ void submission_completed() {
     {
         std::lock_guard<std::mutex> lock(g_loose_mutex);
         const bool flying = host::submission_in_flight();
-        for (auto it = g_loose.begin(); it != g_loose.end();) {
+        std::uint64_t held = 0;
+        for (const auto& [key, window] : g_loose)
+            if (window) held += window->bytes();
+        const bool over_budget = held > g_loose_budget.load(std::memory_order_relaxed);
+        for (auto it = g_loose.begin(); over_budget && it != g_loose.end();) {
             const std::shared_ptr<Shadow>& window = it->second;
             if (!window || window.use_count() != 1 || now - window->last_used() <= kIdleSubmissions ||
                 (flying && host::references(window->buffer()) > 1)) {
@@ -599,6 +604,23 @@ std::uint64_t eviction_generation() { return g_generation.load(std::memory_order
 bool live_loose(ID3D12Resource* buffer) {
     std::lock_guard<std::mutex> lock(g_loose_mutex);
     return g_loose_buffers.contains(buffer);
+}
+
+void set_loose_budget_for_test(std::uint64_t bytes) { g_loose_budget.store(bytes, std::memory_order_relaxed); }
+
+BufferStats buffer_stats() {
+    std::lock_guard<std::mutex> lock(g_buffers_mutex);
+    BufferStats stats;
+    for (const auto& [key, entry] : g_buffers) {
+        if (!entry.shadow) continue;
+        const std::uint64_t bytes = entry.end - key.first;
+        ++stats.buffers;
+        stats.bytes += bytes;
+        if (!entry.shadow->on_card()) continue;
+        ++stats.large;
+        stats.large_bytes += bytes;
+    }
+    return stats;
 }
 
 LooseStats loose_stats() {
