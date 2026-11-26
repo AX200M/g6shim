@@ -12,7 +12,7 @@
 #include <dxgi1_4.h>
 
 #include <algorithm>
-#include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <condition_variable>
@@ -70,11 +70,13 @@ struct Recorder {
                                                  IID_PPV_ARGS(&list))))
                 return nullptr;
             list->Close();
+            removal::name_list(list.Get(), "card recorder");
             if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)))) return nullptr;
             event = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
             if (event == nullptr) return nullptr;
         }
         if (FAILED(allocator->Reset()) || FAILED(list->Reset(allocator.Get(), nullptr))) return nullptr;
+        removal::forget_markers("card recorder");
         open = true;
         return list.Get();
     }
@@ -392,7 +394,11 @@ void Side::hash_runs(ID3D12GraphicsCommandList* list, const std::vector<std::uin
         span.mode = mode;
         span.piece_bytes = static_cast<std::uint32_t>(kPieceBytes);
         list->SetComputeRoot32BitConstants(kRootSpan, kSpanDwords, &span, 0);
-        removal::mark(list, "card copy");
+        char marker[96] = {};
+        std::snprintf(marker, sizeof marker, "card hash %llx+%llx",
+                      static_cast<unsigned long long>(buffer_->GetGPUVirtualAddress()),
+                      static_cast<unsigned long long>(bytes_));
+        removal::mark(list, marker);
         list->Dispatch(pieces[i - 1] - pieces[run] + 1, 1, 1);
         run = i;
     }
@@ -406,6 +412,7 @@ bool Side::prepare(ID3D12GraphicsCommandList* list) {
     for (const auto& [from, to] : uploads_) {
         if (from >= to || from >= rounded_) continue;
         const std::uint64_t length = std::min(to, rounded_) - from;
+        removal::mark(list, "card upload");
         list->CopyBufferRegion(buffer_.Get(), from, staging_.Get(), from, length);
     }
     uploads_.clear();
@@ -430,6 +437,7 @@ bool Side::compare(ID3D12GraphicsCommandList* list) {
     transition(list, D3D12_RESOURCE_STATE_COMMON);
     barrier(list, flags_.Get(), flag_state_, D3D12_RESOURCE_STATE_COPY_SOURCE);
     flag_state_ = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    removal::mark(list, "card flags");
     list->CopyBufferRegion(flag_readback_.Get(), 0, flags_.Get(), 0, static_cast<std::uint64_t>(pieces()) * 4);
     barrier(list, flags_.Get(), flag_state_, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     flag_state_ = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -461,6 +469,7 @@ bool Side::sync(ID3D12GraphicsCommandList* list) {
         transition(list, D3D12_RESOURCE_STATE_COPY_DEST);
         for (const auto& [from, to] : uploads_) {
             if (from >= to || from >= rounded_) continue;
+            removal::mark(list, "card upload");
             list->CopyBufferRegion(buffer_.Get(), from, staging_.Get(), from, std::min(to, rounded_) - from);
         }
         uploads_.clear();
@@ -549,6 +558,12 @@ void Batch::fetch(ID3D12Device* device, ID3D12CommandQueue* queue) {
             const std::uint32_t piece = side->flagged_[i];
             const std::uint64_t length = side->piece_bytes(piece);
             if (length == 0) continue;
+            char marker[96] = {};
+            std::snprintf(marker, sizeof marker, "card fetch %llx+%llx",
+                          static_cast<unsigned long long>(side->buffer_->GetGPUVirtualAddress() +
+                                                          static_cast<std::uint64_t>(piece) * kPieceBytes),
+                          static_cast<unsigned long long>(length));
+            removal::mark(list, marker);
             list->CopyBufferRegion(side->piece_readback_.Get(), i * kPieceBytes, side->buffer_.Get(),
                                    static_cast<std::uint64_t>(piece) * kPieceBytes, length);
         }

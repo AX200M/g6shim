@@ -8,6 +8,7 @@
 #include "pipeline_bridge.hpp"
 #include "resource.hpp"
 #include "signature.hpp"
+#include "removal.hpp"
 #include "texture.hpp"
 
 #include <g6shim/log.hpp>
@@ -299,6 +300,7 @@ bool prepare_arena(Object* object) {
         g_arena.state = kArenaCopyDest;
     }
     if (g_arena.state == kArenaCopyDest) {
+        removal::mark(commands, "acceleration copy");
         commands->CopyBufferRegion(g_arena.resource.Get(), 0, g_arena.upload.Get(), 0, kAccelerationBytes);
         transition_resource(commands, g_arena.resource.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -517,6 +519,7 @@ void publish_acceleration(Object* object) {
     if (host != nullptr && host->list() != nullptr && g_arena.state == kArenaUnordered && g_arena.resource) {
         transition_resource(host->list(), g_arena.resource.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                             D3D12_RESOURCE_STATE_COPY_SOURCE);
+        removal::mark(host->list(), "acceleration readback");
         host->list()->CopyBufferRegion(g_arena.readback.Get(), 0, g_arena.resource.Get(), 0, kAccelerationBytes);
         g_arena.state = kArenaCopySource;
     }
@@ -613,6 +616,7 @@ void copy_resource(Object* object, Object* destination, Object* source) {
         host::ensure_state(*host, destination, kCopyDest);
         host::ensure_state(*host, source, kCopySource);
         texture::host_written(destination);
+        removal::mark(host->list(), "resource copy");
         host->list()->CopyResource(to, from);
         return;
     }
@@ -676,6 +680,7 @@ void copy_texture_region(Object* object, const CopyLocation* destination, std::u
     else
         origin.SubresourceIndex = static_cast<UINT>(from.footprint.offset);
     const auto* box = source_box != nullptr ? reinterpret_cast<const D3D12_BOX*>(source_box) : nullptr;
+    removal::mark(host->list(), "texture copy");
     host->list()->CopyTextureRegion(&location, x, y, z, &origin, box);
 }
 

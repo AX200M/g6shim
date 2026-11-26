@@ -1339,6 +1339,18 @@ std::optional<descriptor::View> placed_texture(const descriptor::View& view) {
     return descriptor::View{descriptor::ShaderView{reinterpret_cast<std::size_t>(out), words}};
 }
 
+void note_shader_heap(std::uint64_t start, std::uint64_t bytes, std::uint64_t step, bool sampler) {
+    if (start == 0 || bytes == 0) return;
+    register_range(start, bytes, step == 0 ? 1 : step, sampler);
+}
+
+void collect_shader_heaps(std::vector<ShaderHeapRange>& out) {
+    std::lock_guard<std::mutex> lock(g_ranges_mutex);
+    out.reserve(out.size() + g_ranges.size());
+    for (const GpuRange& range : g_ranges)
+        out.push_back(ShaderHeapRange{range.start, range.bytes, range.sampler});
+}
+
 std::string near_heaps(std::uint64_t va) {
     std::string text;
     char line[192] = {};

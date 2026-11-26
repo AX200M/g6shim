@@ -975,6 +975,13 @@ TEST(d3d12_xs_unfinished_breadcrumb_window_keeps_context) {
     if (inside.containing) CHECK(inside.containing->label == "shadow");
     CHECK(inside.below == std::nullopt);
     CHECK(inside.above.has_value());
+    CHECK(removal::list_needs_breadcrumb_log(0, 0));
+    CHECK(removal::list_needs_breadcrumb_log(0, 4));
+    CHECK(!removal::list_needs_breadcrumb_log(4, 4));
+    const std::vector<removal::GpuSpan> low = {{0x2000000, 0x1000000, "view heap"}};
+    const auto fault = removal::nearest_spans(0x2799000, low);
+    CHECK(fault.containing.has_value());
+    if (fault.containing) CHECK(fault.containing->label == "view heap");
 }
 
 TEST(d3d12_xs_removal_diagnostics_do_not_block_device_creation) {

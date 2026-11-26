@@ -3,8 +3,10 @@
 #include "removal.hpp"
 
 #include "card.hpp"
+#include "descriptor_host.hpp"
 #include "shadow.hpp"
 #include "texture.hpp"
+
 #include <g6shim/log.hpp>
 #include <g6shim/settings.hpp>
 
@@ -89,6 +91,7 @@ void log_span(const char* which, const std::optional<GpuSpan>& span) {
 }
 
 void log_nearest(std::uint64_t address) {
+    G6SHIM_ERROR("d3d12_xs: nearest search for 0x%llX", static_cast<unsigned long long>(address));
     std::vector<GpuSpan> spans;
     std::vector<shadow::HostRange> title;
     shadow::collect_host_ranges(title);
@@ -99,6 +102,11 @@ void log_nearest(std::uint64_t address) {
         spans.push_back(GpuSpan{range.gpu, range.bytes, "card buffer"});
     for (const texture::GpuRange& range : texture::live_ranges())
         spans.push_back(GpuSpan{range.gpu, range.bytes, range.name});
+    std::vector<descriptor_host::ShaderHeapRange> heaps;
+    descriptor_host::collect_shader_heaps(heaps);
+    for (const descriptor_host::ShaderHeapRange& heap : heaps)
+        spans.push_back(GpuSpan{heap.gpu, heap.bytes, heap.sampler ? "sampler heap" : "view heap"});
+    if (spans.empty()) G6SHIM_ERROR("d3d12_xs: nearest: none tracked");
     const NearestSpans nearest = nearest_spans(address, spans);
     if (nearest.containing)
         G6SHIM_ERROR("d3d12_xs: page fault inside %s %llx+%llx", nearest.containing->label.c_str(),
@@ -106,6 +114,11 @@ void log_nearest(std::uint64_t address) {
                      static_cast<unsigned long long>(nearest.containing->bytes));
     log_span("below", nearest.below);
     log_span("above", nearest.above);
+    const std::string heap_text = descriptor_host::near_heaps(address);
+    if (heap_text.empty())
+        G6SHIM_ERROR("d3d12_xs: descriptor heaps: none tracked");
+    else
+        G6SHIM_ERROR("d3d12_xs: descriptor heaps%s", heap_text.c_str());
 }
 
 void log_markers(const UnfinishedList& list) {
@@ -149,32 +162,51 @@ void log_page_fault(ID3D12DeviceRemovedExtendedData* dred) {
     Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedData1> newer;
     if (SUCCEEDED(dred->QueryInterface(IID_PPV_ARGS(&newer)))) {
         D3D12_DRED_PAGE_FAULT_OUTPUT1 fault{};
-        if (FAILED(newer->GetPageFaultAllocationOutput1(&fault))) return;
+        if (FAILED(newer->GetPageFaultAllocationOutput1(&fault))) {
+            G6SHIM_ERROR("d3d12_xs: page fault allocations unavailable");
+            return;
+        }
         G6SHIM_ERROR("d3d12_xs: page fault at 0x%llX", static_cast<unsigned long long>(fault.PageFaultVA));
+        log_nearest(fault.PageFaultVA);
         log_allocations("existing", fault.pHeadExistingAllocationNode);
         log_allocations("freed", fault.pHeadRecentFreedAllocationNode);
-        log_nearest(fault.PageFaultVA);
         return;
     }
     D3D12_DRED_PAGE_FAULT_OUTPUT fault{};
-    if (FAILED(dred->GetPageFaultAllocationOutput(&fault))) return;
+    if (FAILED(dred->GetPageFaultAllocationOutput(&fault))) {
+        G6SHIM_ERROR("d3d12_xs: page fault allocations unavailable");
+        return;
+    }
     G6SHIM_ERROR("d3d12_xs: page fault at 0x%llX", static_cast<unsigned long long>(fault.PageFaultVA));
+    log_nearest(fault.PageFaultVA);
     log_allocations("existing", fault.pHeadExistingAllocationNode);
     log_allocations("freed", fault.pHeadRecentFreedAllocationNode);
-    log_nearest(fault.PageFaultVA);
 }
 
 void log_breadcrumbs(ID3D12DeviceRemovedExtendedData* dred) {
     Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedData1> newer;
     if (SUCCEEDED(dred->QueryInterface(IID_PPV_ARGS(&newer)))) {
         D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 crumbs{};
-        if (FAILED(newer->GetAutoBreadcrumbsOutput1(&crumbs))) return;
+        if (FAILED(newer->GetAutoBreadcrumbsOutput1(&crumbs))) {
+            G6SHIM_ERROR("d3d12_xs: auto-breadcrumbs unavailable");
+            return;
+        }
+        if (crumbs.pHeadAutoBreadcrumbNode == nullptr) {
+            G6SHIM_ERROR("d3d12_xs: no breadcrumb nodes");
+            return;
+        }
         std::uint32_t logged = 0;
         for (const D3D12_AUTO_BREADCRUMB_NODE1* node = crumbs.pHeadAutoBreadcrumbNode;
              node != nullptr && logged < kMaxLoggedLists; node = node->pNext) {
             const std::uint32_t done = node->pLastBreadcrumbValue != nullptr ? *node->pLastBreadcrumbValue : 0;
-            if (done >= node->BreadcrumbCount) continue;
+            if (!list_needs_breadcrumb_log(done, node->BreadcrumbCount)) continue;
             ++logged;
+            if (node->BreadcrumbCount == 0) {
+                G6SHIM_ERROR("d3d12_xs: list %s has no breadcrumbs",
+                             list_name(node->pCommandListDebugNameA, node->pCommandListDebugNameW, node->pCommandList)
+                                 .c_str());
+                continue;
+            }
             log_node(node->pCommandListDebugNameA, node->pCommandListDebugNameW, node->pCommandList, done,
                      node->BreadcrumbCount, node->pCommandHistory, node->pBreadcrumbContexts,
                      node->BreadcrumbContextsCount);
@@ -182,13 +214,26 @@ void log_breadcrumbs(ID3D12DeviceRemovedExtendedData* dred) {
         return;
     }
     D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT crumbs{};
-    if (FAILED(dred->GetAutoBreadcrumbsOutput(&crumbs))) return;
+    if (FAILED(dred->GetAutoBreadcrumbsOutput(&crumbs))) {
+        G6SHIM_ERROR("d3d12_xs: auto-breadcrumbs unavailable");
+        return;
+    }
+    if (crumbs.pHeadAutoBreadcrumbNode == nullptr) {
+        G6SHIM_ERROR("d3d12_xs: no breadcrumb nodes");
+        return;
+    }
     std::uint32_t logged = 0;
     for (const D3D12_AUTO_BREADCRUMB_NODE* node = crumbs.pHeadAutoBreadcrumbNode;
          node != nullptr && logged < kMaxLoggedLists; node = node->pNext) {
         const std::uint32_t done = node->pLastBreadcrumbValue != nullptr ? *node->pLastBreadcrumbValue : 0;
-        if (done >= node->BreadcrumbCount) continue;
+        if (!list_needs_breadcrumb_log(done, node->BreadcrumbCount)) continue;
         ++logged;
+        if (node->BreadcrumbCount == 0) {
+            G6SHIM_ERROR("d3d12_xs: list %s has no breadcrumbs",
+                         list_name(node->pCommandListDebugNameA, node->pCommandListDebugNameW, node->pCommandList)
+                             .c_str());
+            continue;
+        }
         log_node(node->pCommandListDebugNameA, node->pCommandListDebugNameW, node->pCommandList, done,
                  node->BreadcrumbCount, node->pCommandHistory, nullptr, 0);
     }
@@ -250,6 +295,7 @@ namespace {
 std::mutex marker_mutex;
 std::unordered_map<std::string, std::vector<std::string>> live_markers;
 std::deque<std::pair<std::string, std::vector<std::string>>> retired_markers;
+std::unordered_map<void*, std::string> list_names;
 
 }  // namespace
 
@@ -303,6 +349,23 @@ NearestSpans nearest_spans(std::uint64_t address, std::span<const GpuSpan> spans
         }
     }
     return found;
+}
+
+bool list_needs_breadcrumb_log(std::uint32_t done, std::uint32_t total) { return total == 0 || done < total; }
+
+void name_list(void* list_pointer, std::string_view label) {
+    if (list_pointer == nullptr || label.empty()) return;
+    auto* unknown = static_cast<IUnknown*>(list_pointer);
+    Microsoft::WRL::ComPtr<ID3D12Object> named;
+    if (FAILED(unknown->QueryInterface(IID_PPV_ARGS(&named)))) return;
+    const std::string text(label.substr(0, kMaxMarkerChars));
+    std::wstring wide(text.size(), L'\0');
+    if (!text.empty())
+        ::MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(),
+                              static_cast<int>(wide.size()));
+    named->SetName(wide.c_str());
+    std::lock_guard<std::mutex> lock(marker_mutex);
+    list_names[list_pointer] = text;
 }
 
 void note_list_marker(std::string_view list_name, std::string text) {
@@ -373,6 +436,13 @@ void mark(void* list_pointer, std::string_view label) {
         ::MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(),
                               static_cast<int>(wide.size()));
     list->SetMarker(0, wide.c_str(), static_cast<UINT>((wide.size() + 1) * sizeof(wchar_t)));
+    std::string named;
+    {
+        std::lock_guard<std::mutex> lock(marker_mutex);
+        const auto found = list_names.find(list_pointer);
+        if (found != list_names.end()) named = found->second;
+    }
+    if (!named.empty()) note_list_marker(named, text);
 }
 
 }  // namespace g6shim::d3d12_xs::removal

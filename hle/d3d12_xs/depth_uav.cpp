@@ -6,7 +6,9 @@
 #include "g_depth_copy_stencil_bit_ps.h"
 #include "g_depth_copy_stencil_ps.h"
 #include "g_depth_copy_vs.h"
+#include "descriptor_host.hpp"
 #include "removal.hpp"
+#include <cstdio>
 #include <g6shim/log.hpp>
 
 #include <algorithm>
@@ -206,6 +208,10 @@ void clear_plane(ID3D12Resource* texture, bool integer, float depth, std::uint32
     view.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
     const D3D12_CPU_DESCRIPTOR_HANDLE cpu = heap->GetCPUDescriptorHandleForHeapStart();
     const D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle = heap->GetGPUDescriptorHandleForHeapStart();
+    descriptor_host::note_shader_heap(gpu_handle.ptr, gpu->device()->GetDescriptorHandleIncrementSize(
+                                                           D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV),
+                                      gpu->device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV),
+                                      false);
     gpu->device()->CreateUnorderedAccessView(texture, nullptr, &view, cpu);
     const std::unique_ptr<host::HostList> commands = gpu->new_list();
     if (!commands) return;
@@ -275,6 +281,9 @@ bool ensure_copier(ID3D12Device* device) {
         return false;
     }
     g_copier.view_step = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    descriptor_host::note_shader_heap(g_copier.views->GetGPUDescriptorHandleForHeapStart().ptr,
+                                      static_cast<std::uint64_t>(views.NumDescriptors) * g_copier.view_step,
+                                      g_copier.view_step, false);
     g_copier.ready = true;
     return true;
 }
@@ -362,7 +371,10 @@ void draw_copy(ID3D12GraphicsCommandList* commands, ID3D12PipelineState* state, 
     commands->OMSetStencilRef(stencil_ref);
     commands->SetGraphicsRootDescriptorTable(0, g_copier.views->GetGPUDescriptorHandleForHeapStart());
     commands->SetGraphicsRoot32BitConstant(1, constant, 0);
-    removal::mark(commands, "depth copy");
+    char marker[96] = {};
+    std::snprintf(marker, sizeof marker, "depth copy %llx",
+                  static_cast<unsigned long long>(depth != nullptr ? depth->GetGPUVirtualAddress() : 0));
+    removal::mark(commands, marker);
     commands->DrawInstanced(3, 1, 0, 0);
 }
 

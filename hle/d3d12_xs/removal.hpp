@@ -16,7 +16,7 @@ inline constexpr std::uint32_t kOpsAfterLastCompleted = 3;
 inline constexpr std::uint32_t kMarkersBeforeLast = 3;
 inline constexpr std::uint32_t kMarkersAfterLast = 2;
 inline constexpr std::uint32_t kSetMarker = 0;
-inline constexpr std::uint32_t kMaxLoggedLists = 16;
+inline constexpr std::uint32_t kMaxLoggedLists = 64;
 inline constexpr std::uint32_t kMaxLoggedAllocations = 8;
 inline constexpr std::size_t kMaxMarkerChars = 160;
 inline constexpr std::size_t kRetiredMarkerLists = 48;
@@ -72,10 +72,12 @@ struct NearestSpans {
 };
 
 NearestSpans nearest_spans(std::uint64_t address, std::span<const GpuSpan> spans);
+bool list_needs_breadcrumb_log(std::uint32_t done, std::uint32_t total);
 
 void note_list_marker(std::string_view list_name, std::string text);
 std::vector<std::string> markers_for(std::string_view list_name);
 void forget_markers(std::string_view list_name);
+void name_list(void* list, std::string_view label);
 
 void enable();
 void report(void* device);

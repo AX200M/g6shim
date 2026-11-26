@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "texture.hpp"
 
+#include "removal.hpp"
 #include "watch.hpp"
 
 #include <g6shim/log.hpp>
@@ -330,6 +331,7 @@ void upload(host::HostList& list, Object* object, ID3D12Resource* texture) {
         from.pResource = (*staged)->buffer();
         from.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
         from.PlacedFootprint = footprints[i];
+        removal::mark(list.list(), "texture upload");
         list.list()->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
     }
     list.defer_texture(*staged);

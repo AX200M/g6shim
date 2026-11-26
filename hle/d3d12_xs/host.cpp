@@ -102,6 +102,7 @@ bool begin_capture(ID3D12Device* device, ID3D12GraphicsCommandList* list, ID3D12
     destination.PlacedFootprint = capture.footprint;
     D3D12_TEXTURE_COPY_LOCATION source{texture, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
     source.SubresourceIndex = 0;
+    removal::mark(list, "capture copy");
     list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
     capture.order = *order;
     return true;
@@ -754,7 +755,7 @@ std::string name_command_list(ID3D12GraphicsCommandList* list) {
     const auto number = next.fetch_add(1, std::memory_order_relaxed) + 1;
     char text[32] = {};
     std::snprintf(text, sizeof text, "host list %llu", static_cast<unsigned long long>(number));
-    name(list, text);
+    removal::name_list(list, text);
     return text;
 }
 
@@ -1000,6 +1001,8 @@ bool Host::ensure_timestamps() {
         return false;
     }
     queries.mapped = static_cast<std::uint64_t*>(mapped);
+    removal::name_list(queries.begin_list.Get(), "timestamp begin");
+    removal::name_list(queries.end_list.Get(), "timestamp end");
     queries.ready = true;
     return true;
 }
@@ -1010,11 +1013,15 @@ bool Host::bracket_timestamps(std::vector<ID3D12CommandList*>& lists) {
     if (FAILED(queries.begin_allocator->Reset()) ||
         FAILED(queries.begin_list->Reset(queries.begin_allocator.Get(), nullptr)))
         return false;
+    removal::forget_markers("timestamp begin");
+    removal::mark(queries.begin_list.Get(), "timestamp begin");
     queries.begin_list->EndQuery(queries.heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0);
     if (FAILED(queries.begin_list->Close())) return false;
     if (FAILED(queries.end_allocator->Reset()) ||
         FAILED(queries.end_list->Reset(queries.end_allocator.Get(), nullptr)))
         return false;
+    removal::forget_markers("timestamp end");
+    removal::mark(queries.end_list.Get(), "timestamp resolve");
     queries.end_list->EndQuery(queries.heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 1);
     queries.end_list->ResolveQueryData(queries.heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, queries.readback.Get(),
                                        0);
@@ -1256,6 +1263,7 @@ std::optional<bool> Host::present(ID3D12Resource* texture, std::uint32_t state, 
         transition(back.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST),
     };
     list->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+    removal::mark(list, "present copy");
     list->CopyResource(back.Get(), texture);
     const auto number = static_cast<unsigned>(frame);
     Capture capture;
@@ -1320,6 +1328,9 @@ bool Host::ensure_composer_locked(DXGI_FORMAT format) {
         }
         composer_->increment =
             device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        descriptor_host::note_shader_heap(composer_->views->GetGPUDescriptorHandleForHeapStart().ptr,
+                                          static_cast<std::uint64_t>(heap.NumDescriptors) * composer_->increment,
+                                          composer_->increment, false);
     }
     return pipeline_locked(format) != nullptr;
 }
@@ -1377,7 +1388,7 @@ bool Host::compose_planes(ID3D12GraphicsCommandList* list, std::span<const Prese
     list->RSSetScissorRects(1, &scissor);
     list->OMSetRenderTargets(1, &render_target, FALSE, nullptr);
     list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    removal::mark(list, "present");
+    removal::mark(list, "present compose");
     list->DrawInstanced(3, 1, 0, 0);
     return true;
 }
@@ -1438,6 +1449,7 @@ std::optional<bool> Host::present(std::span<const PresentedPlane> planes, std::u
             barriers.add(plane.texture, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
         barriers.add(back.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST);
         barriers.record(list);
+        removal::mark(list, "present copy");
         list->CopyResource(back.Get(), shown[0].texture);
         capturing = capture_requested(number) && begin_capture(device_.Get(), list, shown[0].texture, desc, capture);
         for (const PresentedPlane& plane : shown)
@@ -1550,7 +1562,6 @@ void HostList::close() {
 void HostList::note_marker(std::string text) {
     if (!removal::requested()) return;
     if (text.size() > removal::kMaxMarkerChars) text.resize(removal::kMaxMarkerChars);
-    removal::note_list_marker(list_name_, text);
     markers_.push_back(std::move(text));
 }
 

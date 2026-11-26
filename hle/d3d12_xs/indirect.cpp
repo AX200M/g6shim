@@ -129,7 +129,7 @@ bool bound(host::HostList& list, ID3D12Resource* buffer, std::uint64_t gpu, std:
     commands->SetComputeRoot32BitConstants(0, 4, constants.data(), 0);
     commands->SetComputeRootUnorderedAccessView(1, gpu);
     commands->SetComputeRootUnorderedAccessView(2, *budget);
-    removal::mark(commands, "indirect clamp");
+    removal::mark(commands, "indirect sanitize");
     commands->Dispatch((records + 63) / 64, 1, 1);
     const std::array<D3D12_RESOURCE_BARRIER, 2> barriers{
         uav_barrier(),

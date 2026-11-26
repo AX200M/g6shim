@@ -140,6 +140,15 @@ std::optional<std::uint32_t> table_image_sampling_fields(const descriptor::Heap&
                                                         std::uint32_t dword);
 std::optional<descriptor::View> placed_texture(const descriptor::View& view);
 std::string near_heaps(std::uint64_t va);
+
+struct ShaderHeapRange {
+    std::uint64_t gpu = 0;
+    std::uint64_t bytes = 0;
+    bool sampler = false;
+};
+
+void note_shader_heap(std::uint64_t start, std::uint64_t bytes, std::uint64_t step, bool sampler);
+void collect_shader_heaps(std::vector<ShaderHeapRange>& out);
 D3D12_UNORDERED_ACCESS_VIEW_DESC null_uav_desc(std::optional<std::uint32_t> dimension);
 
 }  // namespace g6shim::d3d12_xs::descriptor_host
