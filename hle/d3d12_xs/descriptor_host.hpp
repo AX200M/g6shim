@@ -94,6 +94,7 @@ struct DescriptorStats {
 bool lazy_descriptors();
 void refresh_descriptor_settings();
 void sweep_before_submission(std::span<host::HostList* const> lists);
+void refresh_heap(Object* heap);
 std::optional<descriptor::View> materialize_for_draw(Object* heap, std::uint32_t index, std::uint64_t handle);
 DescriptorStats take_descriptor_stats();
 

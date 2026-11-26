@@ -1584,12 +1584,24 @@ void refresh_descriptor_settings() { g_lazy.store(-1, std::memory_order_relaxed)
 
 void sweep_before_submission(std::span<host::HostList* const> lists) {
     if (!lazy_descriptors()) return;
-    std::vector<std::shared_ptr<HeapEntry>> heaps;
-    {
-        std::shared_lock<std::shared_mutex> lock(g_heaps_mutex);
-        heaps = g_heaps;
+    std::vector<Object*> wanted;
+    for (host::HostList* const list : lists) {
+        if (list == nullptr) continue;
+        const std::vector<Object*> bound = list->descriptor_heaps();
+        wanted.insert(wanted.end(), bound.begin(), bound.end());
     }
-    for (const auto& entry : heaps) sweep_entry(entry, lists);
+    std::sort(wanted.begin(), wanted.end());
+    wanted.erase(std::unique(wanted.begin(), wanted.end()), wanted.end());
+    for (Object* heap : wanted) {
+        const std::shared_ptr<HeapEntry> entry = entry_for_heap(heap);
+        if (entry) sweep_entry(entry, lists);
+    }
+}
+
+void refresh_heap(Object* heap) {
+    if (!lazy_descriptors() || heap == nullptr) return;
+    const std::shared_ptr<HeapEntry> entry = entry_for_heap(heap);
+    if (entry) sweep_entry(entry, {});
 }
 
 std::optional<descriptor::View> materialize_for_draw(Object* heap, std::uint32_t index, std::uint64_t handle) {

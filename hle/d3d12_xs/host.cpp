@@ -1429,6 +1429,10 @@ void HostList::reset() {
         pipelines_.clear();
     }
     {
+        std::lock_guard<std::mutex> lock(descriptor_heaps_mutex_);
+        descriptor_heaps_.clear();
+    }
+    {
         std::lock_guard<std::mutex> lock(scratch_mutex_);
         current_chunk_ = 0;
         used_ = 0;
@@ -1659,6 +1663,18 @@ bool HostList::first_refresh(const void* owner, std::uint64_t generation) {
 void HostList::used_pipeline(const std::string& name) {
     std::lock_guard<std::mutex> lock(pipelines_mutex_);
     pipelines_.insert(name);
+}
+
+void HostList::note_descriptor_heap(Object* heap) {
+    if (heap == nullptr) return;
+    std::lock_guard<std::mutex> lock(descriptor_heaps_mutex_);
+    if (std::find(descriptor_heaps_.begin(), descriptor_heaps_.end(), heap) == descriptor_heaps_.end())
+        descriptor_heaps_.push_back(heap);
+}
+
+std::vector<Object*> HostList::descriptor_heaps() const {
+    std::lock_guard<std::mutex> lock(descriptor_heaps_mutex_);
+    return descriptor_heaps_;
 }
 
 ID3D12CommandList* HostList::prelude() {

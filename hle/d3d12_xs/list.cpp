@@ -873,8 +873,11 @@ void stencil_ref(Object* object, std::uint32_t reference) {
 }
 
 void heaps(Object* object, std::uint32_t count, const Object* const* heaps) {
-    with_state(object, [count, heaps](host::HostList&, draw::State& value) {
+    with_state(object, [count, heaps](host::HostList& host, draw::State& value) {
         value.set_heaps(heaps, count);
+        if (heaps == nullptr) return;
+        for (std::uint32_t index = 0; index < count; ++index)
+            if (heaps[index] != nullptr) host.note_descriptor_heap(const_cast<Object*>(heaps[index]));
     });
 }
 

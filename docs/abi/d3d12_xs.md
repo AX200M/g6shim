@@ -377,7 +377,7 @@ If the signal, the completion event or the wait fails, or the device has been re
 |---|---|
 | host slots behind title slots | same index; views get 2^18 extra dynamic slots, or 2^16 when the host will not take the larger range |
 | host heap creation | made on the first draw that uses the title heap; with `lazy_descriptors` off, title writes before that wait in a pending list |
-| lazy writes | on by default. A title write sets one bit in a lock-free set, 64 slots to a word. A draw materializes the slots its tables use, comparing the title record with the last host view and skipping an unchanged slot. Heaps a shader indexes are swept, dirty slots only, before the submission; a large sweep runs in chunks. `G6SHIM_LAZY_DESCRIPTORS=0` mirrors on the write. Host view creation uses 512 locks, one stripe of slots each |
+| lazy writes | on by default. A title write sets one bit in a lock-free set, 64 slots to a word. A draw materializes the slots its tables use, comparing the title record with the last host view and skipping an unchanged slot. Heaps the submission bound are swept, dirty slots only, before that submission; a large sweep runs in chunks. `G6SHIM_LAZY_DESCRIPTORS=0` mirrors on the write. Host view creation uses 512 locks, one stripe of slots each |
 | portable view heap limit | 1000000 descriptors; larger title heaps are capped |
 | dynamic search | from the slot after the last allocation, runs never wrap |
 | null fill | one null slot, doubled by descriptor copies to a 65536-slot block |

@@ -314,6 +314,8 @@ public:
     bool first_use(std::size_t key);
     bool first_refresh(const void* owner, std::uint64_t generation);
     void used_pipeline(const std::string& name);
+    void note_descriptor_heap(Object* heap);
+    std::vector<Object*> descriptor_heaps() const;
 
 private:
     friend class Host;
@@ -353,6 +355,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> prelude_;
     std::mutex pipelines_mutex_;
     std::set<std::string> pipelines_;
+    mutable std::mutex descriptor_heaps_mutex_;
+    std::vector<Object*> descriptor_heaps_;
     std::once_flag budget_once_;
     bool budget_available_ = false;
     std::uint64_t budget_gpu_ = 0;
