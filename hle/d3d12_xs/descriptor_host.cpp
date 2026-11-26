@@ -116,6 +116,11 @@ struct SlotBits {
 
     std::uint32_t word_count() const { return static_cast<std::uint32_t>(words_); }
 
+    std::uint64_t peek(std::uint32_t word) const {
+        if (word >= words_) return 0;
+        return words[word].load(std::memory_order_acquire);
+    }
+
     std::size_t words_ = 0;
     std::vector<std::atomic<std::uint64_t>> words;
 };
@@ -145,6 +150,7 @@ struct HeapEntry {
     std::optional<BufferHeap> buffer_data;
     std::vector<std::uint32_t> pending;
     SlotBits dirty;
+    SlotBits seen;
     std::atomic<std::uint64_t> seen_eviction{0};
     std::mutex mutex;
 };
@@ -241,6 +247,7 @@ std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> buffer_srv(std::uint64_t a
     if (empty_buffer_view(desc.Buffer.NumElements)) return std::nullopt;
     const auto shadow = shadow::find(address, bytes);
     if (!shadow) return std::nullopt;
+    (*shadow)->update(static_cast<std::size_t>(address), static_cast<std::size_t>(bytes));
     const std::uint64_t element = element_size(desc);
     const std::uint64_t offset = (*shadow)->offset(address);
     if (element == 0 || offset % element != 0) {
@@ -265,6 +272,7 @@ std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> buffer_uav(std::uint64_t a
     if (empty_buffer_view(desc.Buffer.NumElements)) return std::nullopt;
     const auto shadow = shadow::find(address, bytes);
     if (!shadow) return std::nullopt;
+    (*shadow)->update(static_cast<std::size_t>(address), static_cast<std::size_t>(bytes));
     if ((static_cast<std::uint32_t>((*shadow)->buffer()->GetDesc().Flags) &
          D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0) {
         G6SHIM_WARN("d3d12_xs: unordered access to a buffer whose host copy shaders cannot write");
@@ -444,7 +452,7 @@ void write_null(g6shim::shader::emit::NullView kind, D3D12_CPU_DESCRIPTOR_HANDLE
 
 void null_like(const std::array<std::uint32_t, 10>& words, D3D12_CPU_DESCRIPTOR_HANDLE at) {
     if (words[1] < kTextureViews || words[1] > kTextureViewsEnd) {
-        null_view(at);
+        null_buffer_view(at);
         return;
     }
     host::Host* gpu = host::host();
@@ -551,7 +559,7 @@ void null_for(const descriptor::View& view, D3D12_CPU_DESCRIPTOR_HANDLE at) {
         raw = (static_cast<std::uint32_t>(desc.Buffer.Flags) & D3D12_BUFFER_UAV_FLAG_RAW) != 0;
         structured = desc.Buffer.StructureByteStride != 0;
     } else {
-        write_null(Kind::Texture2DSrv, at);
+        write_null(Kind::RawSrv, at);
         return;
     }
     if (buffer) write_null(buffer_kind(unordered, raw, structured), at);
@@ -762,6 +770,7 @@ HostHeap::HostHeap(Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap, std::uint6
       sampler_(sampler),
       stripes_(std::make_unique<std::mutex[]>(kStripes)),
       made_(count, 0),
+      slot_kind_(count, sampler ? 2 : 1),
       kept_(static_cast<std::size_t>(count) + dynamic),
       window_generation_(static_cast<std::size_t>(count) + dynamic),
       taken_(dynamic, false) {}
@@ -771,6 +780,14 @@ std::mutex& HostHeap::stripe(std::uint32_t index) { return stripes_[index % kStr
 std::uint64_t HostHeap::window_stamp(std::uint32_t index) const {
     if (index >= window_generation_.size()) return kNoWindow;
     return window_generation_[index].load(std::memory_order_relaxed);
+}
+
+std::uint8_t HostHeap::kind_at(std::uint32_t index) const {
+    return index < slot_kind_.size() ? slot_kind_[index] : 0;
+}
+
+void HostHeap::note_kind(std::uint32_t index, bool buffer) {
+    if (index < slot_kind_.size()) slot_kind_[index] = buffer ? 1 : 2;
 }
 
 std::unique_ptr<HostHeap> HostHeap::create(bool sampler, std::uint32_t count) {
@@ -859,7 +876,7 @@ bool HostHeap::fill_null(D3D12_DESCRIPTOR_HEAP_TYPE kind, std::uint32_t total) {
     if (sampler_)
         create_null_sampler(start);
     else
-        null_view(start);
+        null_buffer_view(start);
     std::uint32_t filled = 1;
     while (filled < kBlockSlots) {
         const std::uint32_t amount = std::min(filled, kBlockSlots - filled);
@@ -959,8 +976,10 @@ void HostHeap::make_at(std::uint32_t index, const descriptor::View& view) {
 void HostHeap::make_null(std::uint32_t index) {
     if (sampler_)
         null_sampler(index);
-    else
-        null_view(cpu(index));
+    else {
+        null_buffer_view(cpu(index));
+        note_kind(index, true);
+    }
     keep(index, Microsoft::WRL::ComPtr<ID3D12Resource>());
 }
 
@@ -1002,10 +1021,13 @@ std::optional<descriptor::View> HostHeap::mirror(std::uint32_t index, std::uint6
         const bool later = !for_draw && view_is_buffer(*view);
         made_[index] = later ? 0 : key;
         if (later) {
+            null_for(*view, cpu(index));
+            note_kind(index, true);
             keep(index, Microsoft::WRL::ComPtr<ID3D12Resource>());
         } else {
             std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> kept = make(*view, cpu(index));
             if (!kept && !sampler_) null_for(*view, cpu(index));
+            note_kind(index, view_is_buffer(*view));
             keep(index, kept ? *kept : Microsoft::WRL::ComPtr<ID3D12Resource>());
             note_materialized();
         }
@@ -1565,6 +1587,14 @@ std::string near_heaps(std::uint64_t va) {
     return text;
 }
 
+std::mutex g_early_mutex;
+std::vector<std::uint64_t> g_early;
+
+void note_early(std::uint64_t handle) {
+    std::lock_guard<std::mutex> lock(g_early_mutex);
+    if (g_early.size() < (1u << 20)) g_early.push_back(handle);
+}
+
 void register_heap(Object* heap, std::uint64_t start, std::uint64_t end) {
     if (heap == nullptr || end <= start) return;
     const auto* descriptor_heap = static_cast<const descriptor::Heap*>(heap);
@@ -1578,6 +1608,31 @@ void register_heap(Object* heap, std::uint64_t start, std::uint64_t end) {
     entry->step = *step;
     entry->sampler = descriptor_heap->desc.kind == descriptor::kSamplersKind;
     entry->dirty.reset(entry->count);
+    entry->seen.reset(entry->count);
+    if (!entry->sampler) {
+        for (std::uint32_t index = 0; index < entry->count; ++index) {
+            const std::uint64_t handle = start + static_cast<std::uint64_t>(index) * entry->step;
+            if (!descriptor::view(handle)) continue;
+            entry->dirty.mark(index);
+            entry->seen.mark(index);
+        }
+    }
+    {
+        std::lock_guard<std::mutex> early(g_early_mutex);
+        std::vector<std::uint64_t> left;
+        left.reserve(g_early.size());
+        for (const std::uint64_t handle : g_early) {
+            if (handle < start || handle >= end || entry->step == 0) {
+                left.push_back(handle);
+                continue;
+            }
+            const std::uint32_t index = static_cast<std::uint32_t>((handle - start) / entry->step);
+            if (index >= entry->count) continue;
+            entry->dirty.mark(index);
+            entry->seen.mark(index);
+        }
+        g_early.swap(left);
+    }
     std::unique_lock<std::shared_mutex> lock(g_heaps_mutex);
     g_heaps.push_back(std::move(entry));
 }
@@ -1593,9 +1648,13 @@ bool lazy_descriptors();
 
 void mirror(std::uint64_t handle) {
     std::shared_ptr<HeapEntry> entry = entry_for_handle(handle);
-    if (!entry || entry->step == 0) return;
+    if (!entry || entry->step == 0) {
+        note_early(handle);
+        return;
+    }
     const std::uint32_t index = static_cast<std::uint32_t>((handle - entry->start) / entry->step);
     if (index >= entry->count) return;
+    entry->seen.mark(index);
     if (lazy_descriptors()) {
         entry->dirty.mark(index);
         note_marked();
@@ -1606,7 +1665,7 @@ void mirror(std::uint64_t handle) {
         if (!entry->tried) entry->pending.push_back(index);
         return;
     }
-    const auto view = entry->host->mirror(index, handle, false);
+    const auto view = entry->host->mirror(index, handle, true);
     if (entry->image_data) write_image_slot(*entry->image_data, index, view);
     if (entry->buffer_data) write_buffer_slot(*entry->host, *entry->buffer_data, index, view);
 }
@@ -1631,7 +1690,7 @@ HostHeap* for_heap(Object* heap) {
     std::vector<std::uint32_t> pending = std::move(entry->pending);
     entry->pending.clear();
     for (const std::uint32_t index : pending)
-        entry->host->mirror(index, entry->start + static_cast<std::uint64_t>(index) * entry->step, false);
+        entry->host->mirror(index, entry->start + static_cast<std::uint64_t>(index) * entry->step, true);
     entry->ready.store(entry->host.get(), std::memory_order_release);
     return entry->host.get();
 }
@@ -1762,6 +1821,31 @@ void apply_heap_data(HeapEntry& entry, std::span<const std::uint32_t> slots,
     }
 }
 
+void log_kind_mismatches(HeapEntry& entry) {
+    if (!settings::enabled("G6SHIM_D3D_DRED") || entry.host == nullptr || entry.sampler) return;
+    std::uint32_t mismatches = 0;
+    const std::uint32_t words = entry.seen.word_count();
+    for (std::uint32_t word = 0; word < words; ++word) {
+        std::uint64_t bits = entry.seen.peek(word);
+        while (bits != 0) {
+            const auto bit = static_cast<unsigned>(std::countr_zero(bits));
+            const std::uint32_t index = word * 64 + bit;
+            bits &= bits - 1;
+            if (index >= entry.count) continue;
+            const auto view = descriptor::view(entry.start + static_cast<std::uint64_t>(index) * entry.step);
+            if (!view || std::holds_alternative<descriptor::SamplerView>(*view) ||
+                std::holds_alternative<descriptor::ConsoleSamplerView>(*view))
+                continue;
+            const std::uint8_t title = view_is_buffer(*view) ? 1 : 2;
+            const std::uint8_t host = entry.host->kind_at(index);
+            if (host != 0 && host != title) ++mismatches;
+        }
+    }
+    if (mismatches != 0)
+        G6SHIM_WARN("d3d12_xs: indexed heap %p has %u slots whose host kind differs from the title",
+                    static_cast<void*>(entry.heap), mismatches);
+}
+
 void sweep_entry(const std::shared_ptr<HeapEntry>& entry, std::span<host::HostList* const> lists) {
     if (!entry) return;
     if (entry->host) note_evicted(*entry);
@@ -1777,6 +1861,7 @@ void sweep_entry(const std::shared_ptr<HeapEntry>& entry, std::span<host::HostLi
         if (list == nullptr) continue;
         for (const BufferHeapAlias& alias : refresh) alias.backing->refresh(*list, alias.address, alias.bytes);
     }
+    log_kind_mismatches(*entry);
 }
 
 }  // namespace

@@ -19,7 +19,10 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <optional>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -581,4 +584,160 @@ TEST(d3d12_xs_a_replaced_view_is_kept_until_submissions_complete) {
     release(heap);
     release(first);
     release(second);
+}
+
+TEST(d3d12_xs_indexed_dispatch_reads_a_buffer_copied_before_the_first_bind) {
+    host::Host* gpu = host::host();
+    if (gpu == nullptr) return;
+    Object* heap = make_heap(8);
+    Object* buffer = make_buffer(256);
+    CHECK(heap != nullptr && buffer != nullptr);
+    if (heap == nullptr || buffer == nullptr) {
+        release(heap);
+        release(buffer);
+        return;
+    }
+    const auto* title = static_cast<descriptor::Heap*>(heap);
+    const auto step = descriptor::increment(descriptor::kViewsKind);
+    CHECK(step.has_value());
+    if (!step) {
+        release(heap);
+        release(buffer);
+        return;
+    }
+    std::uint32_t* words = title_words(buffer);
+    CHECK(words != nullptr);
+    if (words == nullptr) {
+        release(heap);
+        release(buffer);
+        return;
+    }
+    constexpr std::uint32_t kMagic = 0xA11C0001u;
+    words[0] = kMagic;
+    write_raw_srv(buffer, title->start, 4);
+    descriptor::copy_simple(nullptr, 1, title->start + 2 * *step, title->start, descriptor::kViewsKind);
+    const char* dxc = "C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64/dxc.exe";
+    wchar_t temp[MAX_PATH] = {};
+    if (::GetTempPathW(MAX_PATH, temp) == 0) {
+        release(heap);
+        release(buffer);
+        return;
+    }
+    const std::wstring directory(temp);
+    const std::wstring source_path = directory + L"g6shim-copied-slot.hlsl";
+    const std::wstring dxil_path = directory + L"g6shim-copied-slot.dxil";
+    {
+        std::ofstream source(source_path, std::ios::binary);
+        source << "RWByteAddressBuffer output : register(u0);\n"
+                  "[RootSignature(\"RootFlags(CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED), UAV(u0)\")]\n"
+                  "[numthreads(1,1,1)]\n"
+                  "void main() {\n"
+                  "    ByteAddressBuffer source = ResourceDescriptorHeap[2];\n"
+                  "    output.Store(0, source.Load(0));\n"
+                  "}\n";
+    }
+    std::wstring command = L"\"";
+    command += std::wstring(dxc, dxc + std::strlen(dxc));
+    command += L"\" -T cs_6_6 -E main -Qstrip_rootsignature -Fo \"" + dxil_path + L"\" \"" + source_path + L"\"";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof startup;
+    PROCESS_INFORMATION process{};
+    std::vector<wchar_t> mutable_command(command.begin(), command.end());
+    mutable_command.push_back(L'\0');
+    if (!CreateProcessW(nullptr, mutable_command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup,
+                        &process)) {
+        std::printf("  skipped: shader compiler\n");
+        release(heap);
+        release(buffer);
+        return;
+    }
+    WaitForSingleObject(process.hProcess, 30000);
+    DWORD status = 1;
+    GetExitCodeProcess(process.hProcess, &status);
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    if (status != 0) {
+        std::printf("  skipped: shader compiler\n");
+        release(heap);
+        release(buffer);
+        return;
+    }
+    std::ifstream dxil_file(dxil_path, std::ios::binary);
+    std::vector<char> dxil((std::istreambuf_iterator<char>(dxil_file)), {});
+    CHECK(!dxil.empty());
+    if (dxil.empty()) {
+        release(heap);
+        release(buffer);
+        return;
+    }
+    D3D12_ROOT_PARAMETER parameter{};
+    parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    parameter.Descriptor.ShaderRegister = 0;
+    D3D12_ROOT_SIGNATURE_DESC root_desc{};
+    root_desc.NumParameters = 1;
+    root_desc.pParameters = &parameter;
+    root_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+    Microsoft::WRL::ComPtr<ID3DBlob> blob;
+    CHECK(SUCCEEDED(D3D12SerializeRootSignature(&root_desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, nullptr)));
+    if (!blob) {
+        release(heap);
+        release(buffer);
+        return;
+    }
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> root;
+    CHECK(SUCCEEDED(gpu->device()->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(),
+                                                      IID_PPV_ARGS(&root))));
+    if (!root) {
+        release(heap);
+        release(buffer);
+        return;
+    }
+    D3D12_COMPUTE_PIPELINE_STATE_DESC pipeline_desc{};
+    pipeline_desc.pRootSignature = root.Get();
+    pipeline_desc.CS = {dxil.data(), dxil.size()};
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> pipeline;
+    CHECK(SUCCEEDED(gpu->device()->CreateComputePipelineState(&pipeline_desc, IID_PPV_ARGS(&pipeline))));
+    if (!pipeline) {
+        release(heap);
+        release(buffer);
+        return;
+    }
+    const auto output = gpu->shared_buffer(16);
+    CHECK(output.has_value());
+    if (!output) {
+        release(heap);
+        release(buffer);
+        return;
+    }
+    std::memset(output->second, 0, 16);
+    const auto list = gpu->new_list();
+    CHECK(list != nullptr);
+    if (!list) {
+        release(heap);
+        release(buffer);
+        return;
+    }
+    list->note_descriptor_heap(heap);
+    descriptor_host::HostHeap* host_heap = descriptor_host::for_heap(heap);
+    CHECK(host_heap != nullptr);
+    if (host_heap == nullptr) {
+        release(heap);
+        release(buffer);
+        return;
+    }
+    ID3D12GraphicsCommandList* commands = list->list();
+    ID3D12DescriptorHeap* heaps[] = {host_heap->heap()};
+    commands->SetDescriptorHeaps(1, heaps);
+    commands->SetComputeRootSignature(root.Get());
+    commands->SetPipelineState(pipeline.Get());
+    commands->SetComputeRootUnorderedAccessView(0, output->first->GetGPUVirtualAddress());
+    commands->Dispatch(1, 1, 1);
+    list->close();
+    gpu->execute({list.get()});
+    host::wait_idle();
+    const auto* read = reinterpret_cast<const std::uint32_t*>(output->second);
+    CHECK(read[0] == kMagic);
+    CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
+    release(heap);
+    release(buffer);
 }

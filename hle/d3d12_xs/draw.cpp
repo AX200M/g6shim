@@ -510,6 +510,8 @@ bool State::bind(host::HostList& list, const pipeline_host::HostPipeline& pipeli
     ID3D12GraphicsCommandList* commands = list.list();
     if (compute && heaps_[0] == nullptr)
         if (Object* view = descriptor_host::largest_view_heap()) heaps_[0] = view;
+    for (Object* heap : heaps_)
+        if (heap != nullptr) list.note_descriptor_heap(heap);
     const bool heaps_changed = host_heaps_ != heaps_;
     if (heaps_changed) {
         std::vector<ID3D12DescriptorHeap*> heaps;

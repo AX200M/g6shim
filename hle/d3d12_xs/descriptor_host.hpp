@@ -48,6 +48,8 @@ public:
     void constant_at(std::uint32_t index, std::uint64_t gpu, std::uint32_t bytes);
     std::optional<descriptor::View> mirror(std::uint32_t index, std::uint64_t handle, bool for_draw);
     std::uint64_t window_stamp(std::uint32_t index) const;
+    std::uint8_t kind_at(std::uint32_t index) const;
+    void note_kind(std::uint32_t index, bool buffer);
     Microsoft::WRL::ComPtr<ID3D12Resource> kept(std::uint32_t index);
 
 private:
@@ -73,6 +75,7 @@ private:
     bool sampler_ = false;
     std::unique_ptr<std::mutex[]> stripes_;
     std::vector<std::uint64_t> made_;
+    std::vector<std::uint8_t> slot_kind_;
     std::mutex kept_mutex_;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> kept_;
     std::vector<std::atomic<std::uint64_t>> window_generation_;
