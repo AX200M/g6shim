@@ -7,17 +7,20 @@
 #include "texture.hpp"
 
 #include <g6shim/log.hpp>
+#include <g6shim/settings.hpp>
 #include <g6shim/shader/emit/emit.hpp>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <limits>
 #include <map>
 #include <shared_mutex>
+#include <thread>
 
 namespace g6shim::d3d12_xs::descriptor_host {
 
@@ -78,6 +81,41 @@ struct BufferHeap {
     std::uint64_t generation = 0;
 };
 
+struct SlotBits {
+    void reset(std::uint32_t slots) {
+        words_ = (static_cast<std::size_t>(slots) + 63) / 64;
+        words = std::vector<std::atomic<std::uint64_t>>(words_);
+    }
+
+    void mark(std::uint32_t index) {
+        const std::size_t word = index / 64;
+        if (word >= words_) return;
+        words[word].fetch_or(1ull << (index % 64), std::memory_order_release);
+    }
+
+    std::uint64_t take(std::uint32_t word) {
+        if (word >= words_) return 0;
+        if (words[word].load(std::memory_order_acquire) == 0) return 0;
+        return words[word].exchange(0, std::memory_order_acq_rel);
+    }
+
+    std::uint32_t word_count() const { return static_cast<std::uint32_t>(words_); }
+
+    std::size_t words_ = 0;
+    std::vector<std::atomic<std::uint64_t>> words;
+};
+
+std::atomic<int> g_lazy{-1};
+std::atomic<std::uint64_t> g_marked{0};
+std::atomic<std::uint64_t> g_materialized{0};
+std::atomic<std::uint64_t> g_skipped{0};
+
+void note_marked() { g_marked.fetch_add(1, std::memory_order_relaxed); }
+
+void note_materialized() { g_materialized.fetch_add(1, std::memory_order_relaxed); }
+
+void note_skipped() { g_skipped.fetch_add(1, std::memory_order_relaxed); }
+
 struct HeapEntry {
     std::uint64_t start = 0;
     std::uint64_t end = 0;
@@ -91,6 +129,8 @@ struct HeapEntry {
     std::optional<HeapData> image_data;
     std::optional<BufferHeap> buffer_data;
     std::vector<std::uint32_t> pending;
+    SlotBits dirty;
+    std::atomic<std::uint64_t> seen_eviction{0};
     std::mutex mutex;
 };
 
@@ -555,10 +595,18 @@ HostHeap::HostHeap(Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap, std::uint6
       count_(count),
       dynamic_(dynamic),
       sampler_(sampler),
+      stripes_(std::make_unique<std::mutex[]>(kStripes)),
       made_(count, 0),
       kept_(static_cast<std::size_t>(count) + dynamic),
       window_generation_(static_cast<std::size_t>(count) + dynamic),
       taken_(dynamic, false) {}
+
+std::mutex& HostHeap::stripe(std::uint32_t index) { return stripes_[index % kStripes]; }
+
+std::uint64_t HostHeap::window_stamp(std::uint32_t index) const {
+    if (index >= window_generation_.size()) return kNoWindow;
+    return window_generation_[index].load(std::memory_order_relaxed);
+}
 
 std::unique_ptr<HostHeap> HostHeap::create(bool sampler, std::uint32_t count) {
     host::Host* gpu = host::host();
@@ -751,12 +799,15 @@ std::optional<descriptor::View> HostHeap::mirror(std::uint32_t index, std::uint6
     std::memcpy(record.data(), reinterpret_cast<const void*>(static_cast<std::uintptr_t>(handle)),
                 sizeof record);
     const std::uint64_t key = static_cast<std::uint64_t>(record[2]) << 32 | record[1];
-    std::lock_guard<std::mutex> lock(made_mutex_);
+    std::lock_guard<std::mutex> lock(stripe(index));
     std::optional<descriptor::View> view = descriptor::view(handle);
     if (!view) {
         if (made_[index] != 0) {
             made_[index] = 0;
             make_null(index);
+            note_materialized();
+        } else {
+            note_skipped();
         }
         return std::nullopt;
     }
@@ -764,11 +815,16 @@ std::optional<descriptor::View> HostHeap::mirror(std::uint32_t index, std::uint6
     if (made_[index] != key) {
         const bool later = !for_draw && view_is_buffer(*view);
         made_[index] = later ? 0 : key;
-        std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> kept =
-            later ? std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>>(Microsoft::WRL::ComPtr<ID3D12Resource>())
-                  : make(*view, cpu(index));
-        if (!kept && !sampler_) null_for(*view, cpu(index));
-        keep(index, kept ? *kept : Microsoft::WRL::ComPtr<ID3D12Resource>());
+        if (later) {
+            keep(index, Microsoft::WRL::ComPtr<ID3D12Resource>());
+        } else {
+            std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> kept = make(*view, cpu(index));
+            if (!kept && !sampler_) null_for(*view, cpu(index));
+            keep(index, kept ? *kept : Microsoft::WRL::ComPtr<ID3D12Resource>());
+            note_materialized();
+        }
+    } else {
+        note_skipped();
     }
     return view;
 }
@@ -1323,6 +1379,7 @@ void register_heap(Object* heap, std::uint64_t start, std::uint64_t end) {
     entry->count = descriptor_heap->desc.count;
     entry->step = *step;
     entry->sampler = descriptor_heap->desc.kind == descriptor::kSamplersKind;
+    entry->dirty.reset(entry->count);
     std::unique_lock<std::shared_mutex> lock(g_heaps_mutex);
     g_heaps.push_back(std::move(entry));
 }
@@ -1334,11 +1391,18 @@ void drop_heap(Object* heap) {
                   g_heaps.end());
 }
 
+bool lazy_descriptors();
+
 void mirror(std::uint64_t handle) {
     std::shared_ptr<HeapEntry> entry = entry_for_handle(handle);
     if (!entry || entry->step == 0) return;
     const std::uint32_t index = static_cast<std::uint32_t>((handle - entry->start) / entry->step);
     if (index >= entry->count) return;
+    if (lazy_descriptors()) {
+        entry->dirty.mark(index);
+        note_marked();
+        return;
+    }
     std::lock_guard<std::mutex> lock(entry->mutex);
     if (!entry->host) {
         if (!entry->tried) entry->pending.push_back(index);
@@ -1413,6 +1477,135 @@ std::optional<HeapDataBinding> buffer_heap_data(Object* heap, host::HostList& li
     }
     for (const BufferHeapAlias& alias : stale) alias.backing->refresh(list, alias.address, alias.bytes);
     return binding;
+}
+
+namespace {
+
+void materialize_indices(HostHeap& host, std::uint64_t start, std::uint32_t step,
+                         std::span<const std::uint32_t> slots) {
+    const auto one = [&](std::uint32_t index) {
+        host.mirror(index, start + static_cast<std::uint64_t>(index) * step, true);
+    };
+    constexpr std::size_t kParallelAt = 1024;
+    if (slots.size() < kParallelAt) {
+        for (const std::uint32_t index : slots) one(index);
+        return;
+    }
+    unsigned workers = std::thread::hardware_concurrency();
+    if (workers == 0) workers = 2;
+    workers = std::min(workers, 8u);
+    const std::size_t chunk = (slots.size() + workers - 1) / workers;
+    std::vector<std::thread> threads;
+    threads.reserve(workers);
+    for (unsigned worker = 0; worker < workers; ++worker) {
+        const std::size_t from = static_cast<std::size_t>(worker) * chunk;
+        if (from >= slots.size()) break;
+        const std::size_t to = std::min(slots.size(), from + chunk);
+        threads.emplace_back([&one, &slots, from, to] {
+            for (std::size_t i = from; i < to; ++i) one(slots[i]);
+        });
+    }
+    for (std::thread& thread : threads) thread.join();
+}
+
+void note_evicted(HeapEntry& entry) {
+    HostHeap* host = entry.host.get();
+    if (host == nullptr) return;
+    const std::uint64_t generation = shadow::eviction_generation();
+    const std::uint64_t seen = entry.seen_eviction.exchange(generation, std::memory_order_acq_rel);
+    if (seen == generation) return;
+    const std::uint64_t current = generation + 1;
+    const std::uint32_t count = host->count();
+    for (std::uint32_t index = 0; index < count; ++index) {
+        const std::uint64_t stamp = host->window_stamp(index);
+        if (stamp != 0 && stamp != current) entry.dirty.mark(index);
+    }
+}
+
+void collect_dirty(HeapEntry& entry, std::vector<std::uint32_t>& slots) {
+    const std::uint32_t words = entry.dirty.word_count();
+    for (std::uint32_t word = 0; word < words; ++word) {
+        std::uint64_t bits = entry.dirty.take(word);
+        while (bits != 0) {
+            const auto bit = static_cast<unsigned>(std::countr_zero(bits));
+            const std::uint32_t index = word * 64 + bit;
+            if (index < entry.count) slots.push_back(index);
+            bits &= bits - 1;
+        }
+    }
+}
+
+void apply_heap_data(HeapEntry& entry, std::span<const std::uint32_t> slots,
+                     std::vector<BufferHeapAlias>& refresh) {
+    if (!entry.image_data && !entry.buffer_data) return;
+    std::lock_guard<std::mutex> lock(entry.mutex);
+    if (entry.host == nullptr) return;
+    for (const std::uint32_t index : slots) {
+        const std::uint64_t handle = entry.start + static_cast<std::uint64_t>(index) * entry.step;
+        const auto view = descriptor::view(handle);
+        if (entry.image_data) write_image_slot(*entry.image_data, index, view);
+        if (entry.buffer_data) {
+            write_buffer_slot(*entry.host, *entry.buffer_data, index, view);
+            const auto alias = entry.buffer_data->aliases.find(index);
+            if (alias != entry.buffer_data->aliases.end() && alias->second.backing) refresh.push_back(alias->second);
+        }
+    }
+}
+
+void sweep_entry(const std::shared_ptr<HeapEntry>& entry, std::span<host::HostList* const> lists) {
+    if (!entry) return;
+    if (entry->host) note_evicted(*entry);
+    std::vector<std::uint32_t> slots;
+    collect_dirty(*entry, slots);
+    if (slots.empty()) return;
+    if (entry->host == nullptr && for_heap(entry->heap) == nullptr) return;
+    if (entry->host == nullptr) return;
+    materialize_indices(*entry->host, entry->start, entry->step, slots);
+    std::vector<BufferHeapAlias> refresh;
+    apply_heap_data(*entry, slots, refresh);
+    for (host::HostList* const list : lists) {
+        if (list == nullptr) continue;
+        for (const BufferHeapAlias& alias : refresh) alias.backing->refresh(*list, alias.address, alias.bytes);
+    }
+}
+
+}  // namespace
+
+bool lazy_descriptors() {
+    const int cached = g_lazy.load(std::memory_order_relaxed);
+    if (cached >= 0) return cached != 0;
+    const std::optional<std::string> setting = settings::get("G6SHIM_LAZY_DESCRIPTORS");
+    const bool on = !setting || setting->empty() || setting->front() != '0';
+    g_lazy.store(on ? 1 : 0, std::memory_order_relaxed);
+    return on;
+}
+
+void refresh_descriptor_settings() { g_lazy.store(-1, std::memory_order_relaxed); }
+
+void sweep_before_submission(std::span<host::HostList* const> lists) {
+    if (!lazy_descriptors()) return;
+    std::vector<std::shared_ptr<HeapEntry>> heaps;
+    {
+        std::shared_lock<std::shared_mutex> lock(g_heaps_mutex);
+        heaps = g_heaps;
+    }
+    for (const auto& entry : heaps) sweep_entry(entry, lists);
+}
+
+std::optional<descriptor::View> materialize_for_draw(Object* heap, std::uint32_t index, std::uint64_t handle) {
+    const std::shared_ptr<HeapEntry> entry = entry_for_heap(heap);
+    if (!entry || index >= entry->count) return std::nullopt;
+    HostHeap* host = for_heap(heap);
+    if (host == nullptr) return std::nullopt;
+    return host->mirror(index, handle, true);
+}
+
+DescriptorStats take_descriptor_stats() {
+    DescriptorStats stats;
+    stats.marked = g_marked.exchange(0, std::memory_order_relaxed);
+    stats.materialized = g_materialized.exchange(0, std::memory_order_relaxed);
+    stats.skipped = g_skipped.exchange(0, std::memory_order_relaxed);
+    return stats;
 }
 
 }  // namespace g6shim::d3d12_xs::descriptor_host

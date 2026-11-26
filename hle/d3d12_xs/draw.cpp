@@ -667,7 +667,7 @@ void State::table_entry(host::HostList& list, const g6shim::shader::UsedResource
     descriptor_host::HostHeap* host_heap = descriptor_host::for_heap(const_cast<descriptor::Heap*>(heap));
     const auto index = heap->index(handle);
     if (host_heap == nullptr || !index) return;
-    const auto view = host_heap->mirror(*index, handle, true);
+    const auto view = descriptor_host::materialize_for_draw(const_cast<descriptor::Heap*>(heap), *index, handle);
     if (view) readable(list, used, *view);
 }
 

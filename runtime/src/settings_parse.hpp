@@ -45,6 +45,7 @@ inline constexpr Binding kBindings[] = {
     {"G6SHIM_D3D_WARP", "graphics", "d3d_warp"},
     {"G6SHIM_FRAME_TIMING", "graphics", "frame_timing"},
     {"G6SHIM_CACHE_DIR", "graphics", "cache_dir"},
+    {"G6SHIM_LAZY_DESCRIPTORS", "graphics", "lazy_descriptors"},
     {"G6SHIM_INPUT_AUTOPRESS", "input", "autopress"},
     {"G6SHIM_BCPACK_TABLES", "storage", "bcpack_tables"},
     {"G6SHIM_DATA_DIR", "saves", "dir"},

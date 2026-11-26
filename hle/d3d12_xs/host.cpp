@@ -4,6 +4,7 @@
 
 #include "g_present_plane_ps.h"
 #include "g_present_plane_vs.h"
+#include "descriptor_host.hpp"
 #include "queue.hpp"
 #include "resource.hpp"
 #include "shadow.hpp"
@@ -160,12 +161,17 @@ void Meter::frame(HWND hwnd) {
         logged = now;
         const shadow::LooseStats loose = shadow::loose_stats();
         const IntervalTiming interval = take_interval_timing();
+        const descriptor_host::DescriptorStats descriptors = descriptor_host::take_descriptor_stats();
         if (settings::enabled("G6SHIM_FRAME_TIMING")) {
             G6SHIM_INFO("d3d12_xs: %.1f fps, %.1f ms/frame, loose title memory %zu windows %llu MiB, %llu evicted, "
+                        "descriptors marked %llu materialized %llu skipped %llu, "
                         "%llu submissions, prepare %.1f/%.1f ms %llu bytes, execute %.1f/%.1f ms, wait %.1f/%.1f ms, "
                         "copy-back %.1f/%.1f ms %llu bytes, gpu %.1f ms",
                         fps, ms, loose.windows, static_cast<unsigned long long>(loose.bytes >> 20),
                         static_cast<unsigned long long>(loose.evicted - evicted),
+                        static_cast<unsigned long long>(descriptors.marked),
+                        static_cast<unsigned long long>(descriptors.materialized),
+                        static_cast<unsigned long long>(descriptors.skipped),
                         static_cast<unsigned long long>(interval.submissions), interval.prepare.milliseconds,
                         interval.prepare_max_ms, static_cast<unsigned long long>(interval.prepare.bytes),
                         interval.execute_call.milliseconds, interval.execute_max_ms, interval.wait.milliseconds,
@@ -173,10 +179,14 @@ void Meter::frame(HWND hwnd) {
                         static_cast<unsigned long long>(interval.copy_back.bytes), interval.gpu.milliseconds);
         } else {
             G6SHIM_INFO("d3d12_xs: %.1f fps, %.1f ms/frame, loose title memory %zu windows %llu MiB, %llu evicted, "
+                        "descriptors marked %llu materialized %llu skipped %llu, "
                         "%llu submissions, prepare %.1f/%.1f ms %llu bytes, execute %.1f/%.1f ms, wait %.1f/%.1f ms, "
                         "copy-back %.1f/%.1f ms %llu bytes",
                         fps, ms, loose.windows, static_cast<unsigned long long>(loose.bytes >> 20),
                         static_cast<unsigned long long>(loose.evicted - evicted),
+                        static_cast<unsigned long long>(descriptors.marked),
+                        static_cast<unsigned long long>(descriptors.materialized),
+                        static_cast<unsigned long long>(descriptors.skipped),
                         static_cast<unsigned long long>(interval.submissions), interval.prepare.milliseconds,
                         interval.prepare_max_ms, static_cast<unsigned long long>(interval.prepare.bytes),
                         interval.execute_call.milliseconds, interval.execute_max_ms, interval.wait.milliseconds,
@@ -752,6 +762,7 @@ void Host::execute(const std::vector<HostList*>& runs) {
     release_retained();
     SubmissionTiming timing;
     const auto prepared = std::chrono::steady_clock::now();
+    descriptor_host::sweep_before_submission(runs);
     Batch batch;
     std::vector<ID3D12CommandList*> lists;
     lists.reserve(runs.size() * 2 + 2);

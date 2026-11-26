@@ -358,12 +358,15 @@ TEST(d3d12_xs_indexed_image_shape_follows_view_writes_and_copies) {
             CHECK(record(0) == kShape);
             CHECK(record(1) == Data::Record{});
             descriptor::copy_simple(nullptr, 1, heap.start + step, heap.start, desc.kind);
+            descriptor_host::sweep_before_submission({});
             CHECK(record(1) == kShape);
             descriptor::create_srv(nullptr, nullptr, words.data(), heap.start);
+            descriptor_host::sweep_before_submission({});
             constexpr Data::Record kNullImage{0, 0, 0, 1};
             CHECK(record(0) == kNullImage);
             constexpr std::array kConstant{0x1000u, 0u, 256u, 0u};
             descriptor::create_cbv(nullptr, kConstant.data(), heap.start + step);
+            descriptor_host::sweep_before_submission({});
             CHECK(record(1) == Data::Record{});
             CHECK(descriptor_host::image_heap_data(object)->index == binding->index);
             const D3D12_RANGE no_write{0, 0};
@@ -437,6 +440,7 @@ TEST(d3d12_xs_indexed_buffer_views_track_strides_and_bounds) {
             CHECK(first[Data::kRecords] == 4);
             CHECK(record(1) == Data::Record{});
             descriptor::copy_simple(nullptr, 1, heap.start + step, heap.start, desc.kind);
+            descriptor_host::sweep_before_submission({});
             const auto copy = record(1);
             CHECK(copy[Data::kDescriptor] != first[Data::kDescriptor]);
             CHECK(copy[Data::kStride] == first[Data::kStride]);
@@ -446,6 +450,7 @@ TEST(d3d12_xs_indexed_buffer_views_track_strides_and_bounds) {
             srv.Buffer.FirstElement = 2;
             srv.Buffer.NumElements = 3;
             create(heap.start);
+            descriptor_host::sweep_before_submission({});
             const auto updated = record(0);
             CHECK(updated[Data::kDescriptor] == first[Data::kDescriptor]);
             CHECK(updated[Data::kStride] == 20);
@@ -453,6 +458,7 @@ TEST(d3d12_xs_indexed_buffer_views_track_strides_and_bounds) {
             CHECK(updated[Data::kRecords] == 3);
             srv.Buffer.NumElements = 5;
             create(heap.start);
+            descriptor_host::sweep_before_submission({});
             CHECK(record(0) == Data::Record{});
             const D3D12_RANGE no_write{0, 0};
             binding->resource->Unmap(0, &no_write);

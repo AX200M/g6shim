@@ -17,6 +17,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -45,6 +46,7 @@ public:
     void make_null(std::uint32_t index);
     void constant_at(std::uint32_t index, std::uint64_t gpu, std::uint32_t bytes);
     std::optional<descriptor::View> mirror(std::uint32_t index, std::uint64_t handle, bool for_draw);
+    std::uint64_t window_stamp(std::uint32_t index) const;
     Microsoft::WRL::ComPtr<ID3D12Resource> kept(std::uint32_t index);
 
 private:
@@ -55,8 +57,10 @@ private:
     void null_sampler(std::uint32_t index);
     void keep(std::uint32_t index, Microsoft::WRL::ComPtr<ID3D12Resource> resource);
     bool window_evicted(std::uint32_t index);
+    std::mutex& stripe(std::uint32_t index);
 
     static constexpr std::uint64_t kNoWindow = 0;
+    static constexpr std::uint32_t kStripes = 512;
 
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap_;
     std::uint64_t cpu_ = 0;
@@ -65,7 +69,7 @@ private:
     std::uint32_t count_ = 0;
     std::uint32_t dynamic_ = 0;
     bool sampler_ = false;
-    std::mutex made_mutex_;
+    std::unique_ptr<std::mutex[]> stripes_;
     std::vector<std::uint64_t> made_;
     std::mutex kept_mutex_;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> kept_;
@@ -80,6 +84,18 @@ void drop_heap(Object* heap);
 void mirror(std::uint64_t handle);
 void release_dynamic(Object* heap, std::uint32_t first, std::uint32_t count);
 HostHeap* for_heap(Object* heap);
+
+struct DescriptorStats {
+    std::uint64_t marked = 0;
+    std::uint64_t materialized = 0;
+    std::uint64_t skipped = 0;
+};
+
+bool lazy_descriptors();
+void refresh_descriptor_settings();
+void sweep_before_submission(std::span<host::HostList* const> lists);
+std::optional<descriptor::View> materialize_for_draw(Object* heap, std::uint32_t index, std::uint64_t handle);
+DescriptorStats take_descriptor_stats();
 
 bool view_is_buffer(const descriptor::View& view);
 std::optional<std::pair<std::uint64_t, std::uint64_t>> buffer_range(const descriptor::View& view);
