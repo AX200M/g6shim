@@ -1456,10 +1456,6 @@ struct IndexedBufferView {
 };
 
 std::optional<IndexedBufferView> indexed_buffer_view(const descriptor::View& view) {
-    if (const auto* constant = std::get_if<descriptor::ConstantView>(&view)) {
-        if (constant->address == 0 || constant->size == 0) return std::nullopt;
-        return IndexedBufferView{0, constant->size, constant->address, constant->size};
-    }
     const auto desc = shader_buffer_desc(view);
     if (!desc || null_shader_buffer(view)) return std::nullopt;
     const auto range = buffer_range(view);
