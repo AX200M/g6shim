@@ -426,8 +426,15 @@ void register_buffer(std::uintptr_t resource, std::uint64_t start, std::uint64_t
 }
 
 void unregister_buffer(std::uintptr_t resource, std::uint64_t start) {
-    std::lock_guard<std::mutex> lock(g_buffers_mutex);
-    g_buffers.erase(BufferKey{start, resource});
+    std::shared_ptr<Shadow> dropped;
+    {
+        std::lock_guard<std::mutex> lock(g_buffers_mutex);
+        const auto found = g_buffers.find(BufferKey{start, resource});
+        if (found == g_buffers.end()) return;
+        dropped = std::move(found->second.shadow);
+        g_buffers.erase(found);
+    }
+    if (dropped) host::retire(std::move(dropped));
 }
 
 std::optional<std::shared_ptr<Shadow>> find(std::uint64_t address, std::uint64_t bytes) {
@@ -545,20 +552,27 @@ void collect_host_ranges(std::vector<HostRange>& out) {
 
 void submission_completed() {
     const std::uint64_t now = g_submission.fetch_add(1, std::memory_order_relaxed) + 1;
-    std::lock_guard<std::mutex> lock(g_loose_mutex);
+    std::vector<std::shared_ptr<Shadow>> gone;
     bool evicted = false;
-    for (auto it = g_loose.begin(); it != g_loose.end();) {
-        const std::shared_ptr<Shadow>& window = it->second;
-        if (window.use_count() == 1 && now - window->last_used() > kIdleSubmissions) {
+    {
+        std::lock_guard<std::mutex> lock(g_loose_mutex);
+        const bool flying = host::submission_in_flight();
+        for (auto it = g_loose.begin(); it != g_loose.end();) {
+            const std::shared_ptr<Shadow>& window = it->second;
+            if (!window || window.use_count() != 1 || now - window->last_used() <= kIdleSubmissions ||
+                (flying && host::references(window->buffer()) > 1)) {
+                ++it;
+                continue;
+            }
             g_loose_buffers.erase(window->buffer());
+            gone.push_back(window);
             it = g_loose.erase(it);
             g_evicted.fetch_add(1, std::memory_order_relaxed);
             evicted = true;
-        } else {
-            ++it;
         }
     }
     if (evicted) g_generation.fetch_add(1, std::memory_order_release);
+    for (std::shared_ptr<Shadow>& shadow : gone) host::retire(std::move(shadow));
 }
 
 std::uint64_t eviction_generation() { return g_generation.load(std::memory_order_acquire); }

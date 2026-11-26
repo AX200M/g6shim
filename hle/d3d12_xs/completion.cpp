@@ -203,6 +203,7 @@ std::uint64_t copy_back_flight(Flight& flight) {
     for (const WriteStep& write : flight.deferred) write.written.write(write.destination, write.bytes);
     shadow::submission_completed();
     descriptor_host::release_retired_views();
+    release_retired();
     return copied;
 }
 
@@ -243,6 +244,7 @@ void retire_one() {
     } else {
         discard_writes(snapshot.writes);
         release_cards(snapshot);
+        release_retired();
     }
     record_submission_timing(snapshot.timing);
     std::vector<PendingSignal> ready;
@@ -508,7 +510,10 @@ void enqueue_flight(FlightInput flight) {
 
 void stop_completion() {
     Lane& owned = lane();
-    if (!owned.started.load(std::memory_order_acquire)) return;
+    if (!owned.started.load(std::memory_order_acquire)) {
+        drain_retired();
+        return;
+    }
     owned.stop.store(true, std::memory_order_release);
     owned.paused.store(false, std::memory_order_release);
     if (owned.wake != nullptr) ::SetEvent(owned.wake);
@@ -522,6 +527,7 @@ void stop_completion() {
         ::CloseHandle(owned.wake);
         owned.wake = nullptr;
     }
+    drain_retired();
 }
 
 }  // namespace g6shim::d3d12_xs::host

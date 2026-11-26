@@ -580,7 +580,11 @@ std::uint32_t barrier(Object* object, std::uint32_t count, const Barrier* barrie
         std::vector<Barrier> converted;
         for (const Barrier& entry : std::span<const Barrier>(barriers, count)) {
             const auto host_entry = host_barrier(*host, entry);
-            if (host_entry) converted.push_back(*host_entry);
+            if (host_entry) {
+                converted.push_back(*host_entry);
+                if (entry.first != nullptr)
+                    host->keep(texture::host_texture(static_cast<Object*>(const_cast<void*>(entry.first))));
+            }
         }
         for (const Barrier& entry : std::span<const Barrier>(barriers, count)) {
             if (entry.kind != 1 && entry.first != nullptr &&

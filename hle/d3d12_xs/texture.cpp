@@ -172,6 +172,13 @@ std::optional<std::pair<void*, std::uint32_t>> host_transition(Object* object, s
 
 void forget(Object* object) {
     if (object == nullptr) return;
+    if (const std::shared_ptr<later::HostTexture> copy = resource::host_copy(object)) {
+        host::retire(copy->texture);
+        if (copy->depth_uav) {
+            host::retire(copy->depth_uav->depth.texture);
+            host::retire(copy->depth_uav->stencil.texture);
+        }
+    }
     const auto key = reinterpret_cast<std::uintptr_t>(object);
     {
         std::lock_guard<std::mutex> lock(g_staging_mutex);

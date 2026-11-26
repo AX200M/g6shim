@@ -219,6 +219,23 @@ std::uint32_t in_flight_for_test();
 void pause_completion_for_test(bool pause);
 void abandon_in_flight_for_test();
 void set_device_removed_for_test(bool removed);
+void retire(Microsoft::WRL::ComPtr<IUnknown> object);
+void retire_hold(std::shared_ptr<void> hold);
+template <typename T>
+void retire(std::shared_ptr<T> object) {
+    if (!object) return;
+    std::shared_ptr<void> hold(object, object.get());
+    retire_hold(std::move(hold));
+}
+void release_retired();
+void drain_retired();
+std::uint64_t bury_lag();
+std::uint32_t references(IUnknown* object);
+bool submission_in_flight();
+std::uint64_t retired_count_for_test();
+std::uint64_t free_during_submission_faults_for_test();
+void set_bury_lag_for_test(std::uint64_t lag);
+void reset_bury_lag_for_test();
 
 class HostList;
 
@@ -233,6 +250,10 @@ public:
     ID3D12Device* device() const { return device_.Get(); }
     ID3D12CommandQueue* queue() const { return queue_.Get(); }
     ID3D12Fence* fence() const { return fence_.Get(); }
+    std::uint64_t published_submission() const {
+        return submitted_published_.load(std::memory_order_acquire);
+    }
+
 
     std::unique_ptr<HostList> new_list();
     void execute(const std::vector<HostList*>& runs);
@@ -271,6 +292,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Fence> fence_;
     std::mutex submitted_mutex_;
     std::uint64_t submitted_ = 0;
+    std::atomic<std::uint64_t> submitted_published_{0};
     struct HeldSubmission {
         std::uint64_t enqueued = 0;
         bool signalled = false;

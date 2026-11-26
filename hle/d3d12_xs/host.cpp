@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -686,6 +687,90 @@ struct BarrierBatch {
     }
 };
 
+struct Retired {
+    std::uint64_t until = 0;
+    Microsoft::WRL::ComPtr<IUnknown> com;
+    std::shared_ptr<void> hold;
+};
+
+std::mutex g_retired_mutex;
+std::deque<Retired> g_retired;
+std::atomic<std::uint64_t> g_free_faults{0};
+std::atomic<std::int64_t> g_lag_override{-1};
+std::once_flag g_free_fault_logged;
+
+bool limited_host_ram() {
+    static const bool limited = [] {
+        MEMORYSTATUSEX status{};
+        status.dwLength = sizeof status;
+        if (::GlobalMemoryStatusEx(&status) == 0) return false;
+        constexpr std::uint64_t kGib = 1024ull * 1024ull * 1024ull;
+        return status.ullTotalPhys <= 32 * kGib;
+    }();
+    return limited;
+}
+
+std::uint64_t configured_bury_lag() {
+    static const std::uint64_t lag = [] {
+        const std::uint64_t fallback = limited_host_ram() ? 16 : 64;
+        const std::optional<std::string> value = settings::get("G6SHIM_BURY_LAG");
+        if (!value || value->empty()) return fallback;
+        char* end = nullptr;
+        const unsigned long long parsed = std::strtoull(value->c_str(), &end, 10);
+        if (end == value->c_str()) return fallback;
+        return static_cast<std::uint64_t>(parsed);
+    }();
+    return lag;
+}
+
+std::uint64_t finished_fence() {
+    Host* gpu = host();
+    if (gpu == nullptr || gpu->fence() == nullptr) return 0;
+    const UINT64 value = gpu->fence()->GetCompletedValue();
+    if (value == UINT64_MAX) return gpu->published_submission();
+    return value;
+}
+
+void note_free_during_submission() {
+    g_free_faults.fetch_add(1, std::memory_order_relaxed);
+    std::call_once(g_free_fault_logged, [] {
+        G6SHIM_WARN("d3d12_xs: a host object was freed while a submission was in flight");
+    });
+}
+
+void enqueue_retired(Microsoft::WRL::ComPtr<IUnknown> com, std::shared_ptr<void> hold) {
+    if (!com && !hold) return;
+    const std::uint64_t lag = bury_lag();
+    Host* gpu = host();
+    const std::uint64_t started = gpu != nullptr ? gpu->published_submission() : 0;
+    const std::uint64_t finished = finished_fence();
+    if (started > finished) note_free_during_submission();
+    if (lag == 0 && started <= finished) return;
+    Retired entry;
+    entry.until = started + lag;
+    entry.com = std::move(com);
+    entry.hold = std::move(hold);
+    std::lock_guard<std::mutex> lock(g_retired_mutex);
+    g_retired.push_back(std::move(entry));
+}
+
+void append_named(std::vector<Microsoft::WRL::ComPtr<IUnknown>>& objects,
+                  const std::shared_ptr<later::HostTexture>& copy) {
+    if (!copy) return;
+    if (copy->texture) objects.emplace_back(copy->texture.Get());
+    if (!copy->depth_uav) return;
+    if (copy->depth_uav->depth.texture) objects.emplace_back(copy->depth_uav->depth.texture.Get());
+    if (copy->depth_uav->stencil.texture) objects.emplace_back(copy->depth_uav->stencil.texture.Get());
+}
+
+void keep_named(HostList& list, const std::shared_ptr<later::HostTexture>& copy) {
+    if (!copy) return;
+    if (copy->texture) list.keep(copy->texture.Get());
+    if (!copy->depth_uav) return;
+    if (copy->depth_uav->depth.texture) list.keep(copy->depth_uav->depth.texture.Get());
+    if (copy->depth_uav->stencil.texture) list.keep(copy->depth_uav->stencil.texture.Get());
+}
+
 }  // namespace
 
 struct Host::Composer {
@@ -701,7 +786,10 @@ struct Host::Composer {
     std::array<Pipeline, kPresentPipelineSlots> pipelines{};
 };
 
-Host::~Host() { stop_completion(); }
+Host::~Host() {
+    stop_completion();
+    drain_retired();
+}
 
 Host* Host::get() {
     static Host* instance = []() -> Host* {
@@ -713,6 +801,71 @@ Host* Host::get() {
 }
 
 Host* host() { return Host::get(); }
+
+std::uint64_t bury_lag() {
+    const std::int64_t over = g_lag_override.load(std::memory_order_relaxed);
+    if (over >= 0) return static_cast<std::uint64_t>(over);
+    return configured_bury_lag();
+}
+
+void retire(Microsoft::WRL::ComPtr<IUnknown> object) { enqueue_retired(std::move(object), nullptr); }
+
+void retire_hold(std::shared_ptr<void> hold) { enqueue_retired(nullptr, std::move(hold)); }
+
+void release_retired() {
+    Host* gpu = host();
+    if (gpu != nullptr && gpu->fence() != nullptr && gpu->fence()->GetCompletedValue() == UINT64_MAX) {
+        drain_retired();
+        return;
+    }
+    const std::uint64_t finished = finished_fence();
+    std::vector<Retired> done;
+    {
+        std::lock_guard<std::mutex> lock(g_retired_mutex);
+        std::deque<Retired> waiting;
+        for (Retired& entry : g_retired) {
+            if (entry.until <= finished) done.push_back(std::move(entry));
+            else waiting.push_back(std::move(entry));
+        }
+        g_retired.swap(waiting);
+    }
+}
+
+void drain_retired() {
+    std::deque<Retired> dropped;
+    {
+        std::lock_guard<std::mutex> lock(g_retired_mutex);
+        dropped.swap(g_retired);
+    }
+}
+
+std::uint32_t references(IUnknown* object) {
+    if (object == nullptr) return 0;
+    object->AddRef();
+    return object->Release();
+}
+
+bool submission_in_flight() {
+    Host* gpu = host();
+    if (gpu == nullptr || gpu->fence() == nullptr) return false;
+    if (gpu->fence()->GetCompletedValue() == UINT64_MAX) return false;
+    return gpu->published_submission() > gpu->fence()->GetCompletedValue();
+}
+
+std::uint64_t retired_count_for_test() {
+    std::lock_guard<std::mutex> lock(g_retired_mutex);
+    return g_retired.size();
+}
+
+std::uint64_t free_during_submission_faults_for_test() {
+    return g_free_faults.load(std::memory_order_relaxed);
+}
+
+void set_bury_lag_for_test(std::uint64_t lag) {
+    g_lag_override.store(static_cast<std::int64_t>(lag), std::memory_order_relaxed);
+}
+
+void reset_bury_lag_for_test() { g_lag_override.store(-1, std::memory_order_relaxed); }
 
 void set_submission_step_for_test(SubmissionStep step, void* context) {
     std::lock_guard<std::mutex> lock(submission_hook_mutex);
@@ -834,6 +987,7 @@ void Host::execute(const std::vector<HostList*>& runs) {
     timing.prepare.bytes = batch.copied();
     const bool timed = !async && bracket_timestamps(lists);
     ++submitted_;
+    submitted_published_.store(submitted_, std::memory_order_release);
     const auto executed = std::chrono::steady_clock::now();
     if (!lists.empty()) queue_->ExecuteCommandLists(static_cast<UINT>(lists.size()), lists.data());
     timing.execute_call.milliseconds = milliseconds_since(executed);
@@ -855,6 +1009,7 @@ void Host::execute(const std::vector<HostList*>& runs) {
             log_messages();
             note_submission_timing(std::move(timing));
             if (cards_open) card::release_recorder();
+            release_retired();
             return;
         }
         if (timed) {
@@ -900,6 +1055,7 @@ void Host::execute(const std::vector<HostList*>& runs) {
         log_messages();
         shadow::submission_completed();
         descriptor_host::release_retired_views();
+        release_retired();
         return;
     }
     const HRESULT signalled = queue_->Signal(fence_.Get(), submitted_);
@@ -924,6 +1080,7 @@ void Host::execute(const std::vector<HostList*>& runs) {
             complete_submission(queue_.Get(), fence_.Get(), submitted_, event_);
             card::release_recorder();
         }
+        release_retired();
         return;
     }
     FlightInput flight;
@@ -960,6 +1117,7 @@ void Host::execute(const std::vector<HostList*>& runs) {
     flight.cards = std::move(cards);
     flight.cards_open = cards_open;
     enqueue_flight(std::move(flight));
+    release_retired();
     log_messages();
 }
 
@@ -1043,6 +1201,7 @@ std::optional<double> Host::resolve_timestamps() {
 }
 
 void Host::release_retained() {
+    release_retired();
     if (!device_ || FAILED(device_->GetDeviceRemovedReason())) {
         held_.clear();
         return;
@@ -1671,11 +1830,23 @@ void HostList::retain_objects(std::vector<Microsoft::WRL::ComPtr<IUnknown>>& obj
     if (list_) objects.emplace_back(list_.Get());
     if (prelude_allocator_) objects.emplace_back(prelude_allocator_.Get());
     if (prelude_) objects.emplace_back(prelude_.Get());
+    if (budget_buffer_) objects.emplace_back(budget_buffer_.Get());
+    {
+        std::lock_guard<std::mutex> states(states_mutex_);
+        for (const auto& entry : states_) append_named(objects, entry.second.copy);
+    }
     std::lock_guard<std::mutex> lock(deferred_mutex_);
     for (const auto& upload : deferred_.uploads)
         if (upload) objects.emplace_back(upload.Get());
     for (const auto& kept : deferred_.kept)
         if (kept) objects.emplace_back(kept.Get());
+    for (const Step& step : deferred_.copies) {
+        if (const auto* staged = std::get_if<TextureStep>(&step)) {
+            if (staged->staging && staged->staging->buffer()) objects.emplace_back(staged->staging->buffer());
+        } else if (const auto* refresh = std::get_if<RefreshStep>(&step)) {
+            if (refresh->shadow && refresh->shadow->buffer()) objects.emplace_back(refresh->shadow->buffer());
+        }
+    }
     allocator_busy_ = true;
 }
 
@@ -1684,6 +1855,7 @@ std::optional<std::pair<ID3D12Resource*, std::uint32_t>> HostList::transition(Ob
     ID3D12Resource* texture = texture::host_texture(object);
     std::shared_ptr<later::HostTexture> copy = resource::host_copy(object);
     if (texture == nullptr || !copy) return std::nullopt;
+    keep_named(*this, copy);
     const std::uint32_t state = legal_state(texture, wanted);
     std::lock_guard<std::mutex> lock(states_mutex_);
     auto [entry, inserted] = states_.try_emplace(reinterpret_cast<std::uintptr_t>(copy.get()));
@@ -1700,6 +1872,7 @@ std::optional<std::pair<ID3D12Resource*, std::uint32_t>> HostList::transition(Ob
 void HostList::note_state(Object* object, std::uint32_t state) {
     std::shared_ptr<later::HostTexture> copy = resource::host_copy(object);
     if (!copy) return;
+    keep_named(*this, copy);
     std::lock_guard<std::mutex> lock(states_mutex_);
     states_[reinterpret_cast<std::uintptr_t>(copy.get())] = State{state, state, std::move(copy)};
 }
