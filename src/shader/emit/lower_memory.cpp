@@ -720,12 +720,39 @@ std::vector<V> Lower::load_indexed_heap_buffer(const Source& src, V index, V off
     return end_guarded(outer, missed);
 }
 
+V Lower::root_view_bytes(std::uint8_t slot) {
+    using SourceKind = UserData::Source;
+    constexpr Why beyond = "a root view size beyond host root constants";
+    for (const auto& [index, entry] : user_reads_)
+        if (entry.source == SourceKind::RootViewBytes && entry.slot == slot) return user_dword(index).value;
+    constexpr std::uint32_t kRootDwords = 64;
+    std::uint32_t index = 0;
+    for (const RootParam& param : x_->native->layout) {
+        if (param.user_data >= kRootDwords || param.sgprs > kRootDwords - param.user_data) fail(beyond);
+        index = std::max(index, std::uint32_t{param.user_data} + param.sgprs);
+    }
+    for (const auto& used : user_reads_) index = std::max(index, used.first + 1);
+    if (index >= kRootDwords) fail(beyond);
+    RootType root;
+    root.kind = RootType::Kind::Descriptor;
+    user_reads_.emplace(index, UserData{index, slot, root, 0, SourceKind::RootViewBytes});
+    return user_dword(index).value;
+}
+
 V Lower::raw_byte_fits(V handle, V byte, std::uint32_t bytes) {
     const std::size_t c = cur_;
     const Ty i32 = s_.t.i32;
-    const Ty dims = s_.m.named_struct("dx.types.Dimensions", {i32, i32, i32, i32});
-    const V d = s_.op(c, "getDimensions", Attr::ReadOnly, dims, 72, {handle, s_.m.undef(i32)});
-    const V size = s_.m.extract(c, d, 0);
+    std::optional<std::uint8_t> root_slot;
+    for (const auto& [slot, root_handle] : s_.root_srvs)
+        if (root_handle.kind == handle.kind && root_handle.index == handle.index) root_slot = slot;
+    V size;
+    if (root_slot) {
+        size = root_view_bytes(*root_slot);
+    } else {
+        const Ty dims = s_.m.named_struct("dx.types.Dimensions", {i32, i32, i32, i32});
+        const V d = s_.op(c, "getDimensions", Attr::ReadOnly, dims, 72, {handle, s_.m.undef(i32)});
+        size = s_.m.extract(c, d, 0);
+    }
     const V width = s_.m.i32(bytes == 0 ? 1 : bytes);
     const V end = s_.m.bin(c, Bin::Add, byte, width);
     const V no_wrap = s_.m.cmp(c, pred::kIuge, end, byte);

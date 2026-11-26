@@ -36,6 +36,7 @@ constexpr std::uint32_t kDepthWrite = 0x10;
 constexpr std::uint32_t kShaderResource = 0x40 | 0x80;
 constexpr std::uint32_t kUnorderedAccess = 0x8;
 constexpr std::uint64_t kSrvViewBytes = 2 << 20;
+constexpr std::uint64_t kSrvReadBytes = 2 << 20;
 constexpr std::uint64_t kCbvViewBytes = 1 << 16;
 constexpr std::uint32_t kTriangles = 4;
 constexpr std::uint32_t kRectangleTopology = 17;
@@ -72,15 +73,27 @@ std::uint64_t descriptor_hash(std::uint64_t table, std::uint32_t count) {
     return hash;
 }
 
-std::optional<std::uint64_t> root_view(host::HostList& list, std::uint64_t address, bool srv) {
+std::optional<std::shared_ptr<shadow::Shadow>> root_window(std::uint64_t address, bool srv) {
     auto found = shadow::find(address, 1);
     if (!found) return std::nullopt;
     if (srv && (*found)->left(address) < kSrvViewBytes && shadow::live_loose((*found)->buffer())) {
         const auto wider = shadow::find(address, kSrvViewBytes);
         if (wider) found = wider;
     }
+    return found;
+}
+
+std::uint32_t root_view_bytes(std::uint64_t address) {
+    const auto found = root_window(address, true);
+    if (!found) return 0;
+    return static_cast<std::uint32_t>(std::min((*found)->left(address), kSrvReadBytes));
+}
+
+std::optional<std::uint64_t> root_view(host::HostList& list, std::uint64_t address, bool srv) {
+    const auto found = root_window(address, srv);
+    if (!found) return std::nullopt;
     const auto& shadow = *found;
-    const std::uint64_t length = std::min(shadow->left(address), srv ? kSrvViewBytes : kCbvViewBytes);
+    const std::uint64_t length = std::min(shadow->left(address), srv ? kSrvReadBytes : kCbvViewBytes);
     const std::uint64_t gpu = shadow->gpu(address);
     if (srv || gpu % 256 == 0) {
         shadow->refresh(list, address, length);
@@ -399,6 +412,11 @@ const descriptor::Heap* State::heap_of(std::uint64_t handle) const {
 std::optional<std::uint32_t> State::descriptor_value(
     host::HostList& list, bool compute, const g6shim::shader::emit::UserData& data) const {
     using Source = g6shim::shader::emit::UserData::Source;
+    if (data.source == Source::RootViewBytes) {
+        const auto& bound = roots(compute);
+        if (data.slot >= bound.size() || bound[data.slot].kind != Root::Kind::kView) return 0u;
+        return root_view_bytes(bound[data.slot].value);
+    }
     if (data.source == Source::ViewHeapCount || data.source == Source::SamplerHeapCount ||
         data.source == Source::NullViewBase) {
         Object* heap = heaps_[data.source == Source::SamplerHeapCount ? 1 : 0];

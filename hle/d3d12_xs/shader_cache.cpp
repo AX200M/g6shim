@@ -305,7 +305,7 @@ std::optional<HostShader> decode_entry(std::span<const std::uint8_t> bytes) {
         using UserData = g6shim::shader::emit::UserData;
         using Source = UserData::Source;
         if (!index || !slot || !root || !dword || !source || *slot > 0xFF ||
-            *source > static_cast<std::uint32_t>(Source::NullViewBase))
+            *source > static_cast<std::uint32_t>(Source::RootViewBytes))
             return std::nullopt;
         const RootType type = root_type(*root);
         const auto field = static_cast<Source>(*source);
@@ -315,6 +315,7 @@ std::optional<HostShader> decode_entry(std::span<const std::uint8_t> bytes) {
         if (field == Source::ImageHeapData || field == Source::BufferHeapData || field == Source::ViewHeapCount ||
             field == Source::NullViewBase)
             expected = RootType::Kind::ResourceHeap;
+        if (field == Source::RootViewBytes) expected = RootType::Kind::Descriptor;
         if (field != Source::Root && type.kind != expected)
             return std::nullopt;
         shader.user_data.push_back(UserData{*index, static_cast<std::uint8_t>(*slot), type, *dword,

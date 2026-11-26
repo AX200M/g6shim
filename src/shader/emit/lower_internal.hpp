@@ -236,6 +236,7 @@ private:
     V heap_limit(bool sampler);
     V null_view_slot(std::uint32_t props);
     V raw_byte_fits(V handle, V byte, std::uint32_t bytes);
+    V root_view_bytes(std::uint8_t slot);
     std::vector<V> bounded_raw_words(V handle, V byte, std::uint32_t count);
     V bounded_heap_index(V index, bool sampler, std::uint32_t props);
     void valu(const IrInst& inst, std::size_t b, std::size_t i);

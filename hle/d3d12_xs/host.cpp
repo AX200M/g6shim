@@ -205,6 +205,15 @@ void log_host_memory() {
                 static_cast<long long>(objects.committed), static_cast<long long>(objects.placed),
                 static_cast<long long>(objects.at_address), static_cast<unsigned long long>(placed.replaced),
                 static_cast<unsigned long long>(placed.slots_cleared), text.c_str());
+    std::string view_base;
+    std::string resident;
+    for (std::size_t bucket = 0; bucket < descriptor_host::kMipBuckets; ++bucket) {
+        view_base += (bucket == 0 ? "" : "/") + std::to_string(placed.view_base_mip[bucket]);
+        resident += (bucket == 0 ? "" : "/") + std::to_string(placed.first_resident_mip[bucket]);
+    }
+    G6SHIM_INFO("d3d12_xs: placed textures by view base mip 0..5+ %s, by first mip with memory 0..5+ %s, %llu "
+                "without a layout",
+                view_base.c_str(), resident.c_str(), static_cast<unsigned long long>(placed.unknown_layout));
 }
 
 void Meter::frame(HWND hwnd) {

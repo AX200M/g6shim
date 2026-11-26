@@ -118,9 +118,14 @@ void release_retired_views();
 std::uint64_t retired_view_count();
 std::size_t placed_texture_count();
 
+inline constexpr std::size_t kMipBuckets = 6;
+
 struct PlacedStats {
     std::uint64_t replaced = 0;
     std::uint64_t slots_cleared = 0;
+    std::array<std::uint64_t, kMipBuckets> view_base_mip{};
+    std::array<std::uint64_t, kMipBuckets> first_resident_mip{};
+    std::uint64_t unknown_layout = 0;
 };
 
 PlacedStats placed_stats();

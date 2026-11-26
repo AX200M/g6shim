@@ -264,6 +264,7 @@ struct Resource : Object {
     std::uint32_t heap_flags;
     Backing backing;
     std::shared_ptr<later::HostTexture> host;
+    std::uint32_t host_base_mip = 0;
 };
 
 Resource* resource_of(Object* object) { return static_cast<Resource*>(object); }
@@ -273,10 +274,25 @@ const std::array<const void*, 32>& resource_functions() {
     return table;
 }
 
+ResourceDesc from_mip(const ResourceDesc& desc, std::uint32_t base_mip) {
+    constexpr std::uint32_t kVolume = 4;
+    ResourceDesc reduced = desc;
+    if (base_mip == 0) return reduced;
+    reduced.width = std::max<std::uint64_t>(desc.width >> base_mip, 1);
+    reduced.height = std::max<std::uint32_t>(desc.height >> base_mip, 1);
+    if (desc.dimension == kVolume)
+        reduced.depth_or_array_size =
+            static_cast<std::uint16_t>(std::max<std::uint32_t>(std::uint32_t{desc.depth_or_array_size} >> base_mip, 1));
+    reduced.mip_levels = static_cast<std::uint16_t>(desc.mip_levels - base_mip);
+    return reduced;
+}
+
 HRESULT hand_out_resource(const ResourceDesc& desc, const HeapProperties& heap, std::uint32_t heap_flags,
-                          Backing backing, std::uint32_t state, const void* clear, const Iid* iid, Object** out) {
-    auto host = later::create_host_texture(desc, state, clear);
+                          Backing backing, std::uint32_t state, const void* clear, const Iid* iid, Object** out,
+                          std::uint32_t base_mip = 0) {
+    auto host = later::create_host_texture(from_mip(desc, base_mip), state, clear);
     auto resource = std::make_unique<Resource>(desc, heap, heap_flags, std::move(backing), std::move(host));
+    resource->host_base_mip = base_mip;
     if (desc.dimension == kBuffer) later::shadow_register(resource.get(), resource->data(), desc.width);
     return hand_out(kResource, std::move(resource), iid, kResourceIids, out);
 }
@@ -650,6 +666,17 @@ HRESULT create_at_address(Object*, std::uint64_t address, const ResourceDesc* de
     return hand_out_resource(*desc, kDefault, 0, Backing(reinterpret_cast<std::uint8_t*>(address)), kCommon, clear,
                              iid, out);
 }
+
+HRESULT create_at_address_from_mip(std::uint64_t address, const ResourceDesc* desc, std::uint32_t base_mip,
+                                   Object** out) {
+    if (desc == nullptr || address == 0 || base_mip >= desc->mip_levels) return E_INVALIDARG;
+    constexpr std::uint32_t kCommon = 0;
+    constexpr HeapProperties kDefault{1, 0, 0, 1, 1};
+    return hand_out_resource(*desc, kDefault, 0, Backing(reinterpret_cast<std::uint8_t*>(address)), kCommon, nullptr,
+                             &kResourceIids[0], out, base_mip);
+}
+
+std::uint32_t host_base_mip(Object* object) { return object != nullptr ? resource_of(object)->host_base_mip : 0; }
 
 void copyable_footprints(Object*, const ResourceDesc* desc, std::uint32_t first, std::uint32_t count,
                          std::uint64_t base, PlacedFootprint* layouts, std::uint32_t* rows,

@@ -26,6 +26,7 @@
 #include <shared_mutex>
 #include <span>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -531,6 +532,50 @@ void null_like(const std::array<std::uint32_t, 10>& words, D3D12_CPU_DESCRIPTOR_
     gpu->device()->CreateShaderResourceView(nullptr, &desc, at);
 }
 
+bool block_compressed(std::uint32_t format) {
+    constexpr std::uint32_t kFirstBlock = DXGI_FORMAT_BC1_TYPELESS;
+    constexpr std::uint32_t kLastLegacyBlock = DXGI_FORMAT_BC5_SNORM;
+    constexpr std::uint32_t kFirstWideBlock = DXGI_FORMAT_BC6H_TYPELESS;
+    constexpr std::uint32_t kLastBlock = DXGI_FORMAT_BC7_UNORM_SRGB;
+    return (format >= kFirstBlock && format <= kLastLegacyBlock) || (format >= kFirstWideBlock && format <= kLastBlock);
+}
+
+bool views_mips(D3D12_SRV_DIMENSION dimension) {
+    return dimension == D3D12_SRV_DIMENSION_TEXTURE2D || dimension == D3D12_SRV_DIMENSION_TEXTURE2DARRAY ||
+           dimension == D3D12_SRV_DIMENSION_TEXTURECUBE || dimension == D3D12_SRV_DIMENSION_TEXTURECUBEARRAY ||
+           dimension == D3D12_SRV_DIMENSION_TEXTURE3D;
+}
+
+std::uint32_t usable_base_mip(const resource::ResourceDesc& desc, const D3D12_SHADER_RESOURCE_VIEW_DESC& view) {
+    constexpr std::uint32_t kTargetDepthOrUnordered = 0x7;
+    constexpr std::uint32_t kBlockTexels = 4;
+    if (!views_mips(view.ViewDimension) || (desc.flags & kTargetDepthOrUnordered) != 0 || desc.sample_count > 1 ||
+        desc.mip_levels <= 1)
+        return 0;
+    std::uint32_t base = std::min<std::uint32_t>(view.Texture2D.MostDetailedMip, desc.mip_levels - 1u);
+    const bool blocks = block_compressed(resource::pc_format(desc.format));
+    for (; base > 0; --base) {
+        const std::uint64_t width = desc.width >> base;
+        const std::uint32_t height = desc.height >> base;
+        if (width == 0 || height == 0) continue;
+        if (!blocks || (width % kBlockTexels == 0 && height % kBlockTexels == 0)) break;
+    }
+    return base;
+}
+
+void from_base_mip(D3D12_SHADER_RESOURCE_VIEW_DESC& view, std::uint32_t base_mip) {
+    if (base_mip == 0 || !views_mips(view.ViewDimension)) return;
+    view.Texture2D.MostDetailedMip -= std::min<UINT>(view.Texture2D.MostDetailedMip, base_mip);
+    FLOAT* clamp = nullptr;
+    if (view.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D) clamp = &view.Texture2D.ResourceMinLODClamp;
+    else if (view.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2DARRAY) clamp = &view.Texture2DArray.ResourceMinLODClamp;
+    else if (view.ViewDimension == D3D12_SRV_DIMENSION_TEXTURECUBE) clamp = &view.TextureCube.ResourceMinLODClamp;
+    else if (view.ViewDimension == D3D12_SRV_DIMENSION_TEXTURECUBEARRAY)
+        clamp = &view.TextureCubeArray.ResourceMinLODClamp;
+    else clamp = &view.Texture3D.ResourceMinLODClamp;
+    *clamp = std::max(*clamp - static_cast<FLOAT>(base_mip), 0.0f);
+}
+
 std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> make(const descriptor::View& view,
                                                            D3D12_CPU_DESCRIPTOR_HANDLE at);
 
@@ -702,6 +747,7 @@ std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> make(const descriptor::Vie
         if (texture != nullptr) {
             std::optional<D3D12_SHADER_RESOURCE_VIEW_DESC> desc;
             if (shader->desc) desc = srv_desc(*shader->desc);
+            if (desc) from_base_mip(*desc, resource::host_base_mip(object));
             std::uint32_t format = desc ? static_cast<std::uint32_t>(desc->Format) : 0;
             if (!fits(texture, desc ? &format : nullptr, false)) return std::nullopt;
             if (desc) desc->Format = static_cast<DXGI_FORMAT>(format);
@@ -797,11 +843,15 @@ struct PlacedTexture {
     std::uint64_t used_frame = 0;
 };
 
-std::map<std::pair<std::uint64_t, std::array<std::uint32_t, 14>>, PlacedTexture> g_placed;
+using PlacedKey = std::tuple<std::uint64_t, std::array<std::uint32_t, 14>, std::uint32_t>;
+std::map<PlacedKey, PlacedTexture> g_placed;
 std::uint64_t g_placed_swept_frame = 0;
 std::vector<Object*> g_placed_replaced;
 std::atomic<std::uint64_t> g_placed_replaced_count{0};
 std::atomic<std::uint64_t> g_placed_slots_cleared{0};
+std::array<std::atomic<std::uint64_t>, kMipBuckets> g_placed_view_base{};
+std::array<std::atomic<std::uint64_t>, kMipBuckets> g_placed_first_resident{};
+std::atomic<std::uint64_t> g_placed_unknown_layout{0};
 
 }  // namespace
 
@@ -1666,11 +1716,19 @@ std::optional<std::uint32_t> sampler_lod_word(const descriptor::Heap& heap, std:
     return encode(desc.MinLOD) | (encode(desc.MaxLOD) << kLodFieldBits);
 }
 
+void note_placed_mips(const descriptor::PlacedView& placed, std::uint64_t address,
+                      const resource::ResourceDesc& desc);
+
 std::optional<descriptor::View> placed_texture(const descriptor::View& view) {
     const auto* placed = std::get_if<descriptor::PlacedView>(&view);
     if (placed == nullptr || placed->unordered || placed->resource[0] == kBufferDimension) return std::nullopt;
     const std::uint64_t address = placed_address(*placed);
-    const auto key = std::make_pair(address, placed->resource);
+    resource::ResourceDesc desc{};
+    std::memcpy(&desc, placed->resource.data(), sizeof desc);
+    std::array<std::uint32_t, 10> view_words{};
+    std::copy_n(placed->desc.begin(), view_words.size(), view_words.begin());
+    const std::uint32_t base_mip = usable_base_mip(desc, srv_desc(view_words));
+    const PlacedKey key{address, placed->resource, base_mip};
     {
         std::lock_guard<std::mutex> lock(g_placed_mutex);
         const auto found = g_placed.find(key);
@@ -1683,26 +1741,13 @@ std::optional<descriptor::View> placed_texture(const descriptor::View& view) {
             return descriptor::View{descriptor::ShaderView{reinterpret_cast<std::size_t>(object), words}};
         }
     }
-    resource::ResourceDesc desc{};
-    std::memcpy(&desc, placed->resource.data(), sizeof desc);
     Object* out = nullptr;
-    if (FAILED(resource::create_at_address(nullptr, address, &desc, 0, nullptr, &resource::kResourceIids[0], &out)) ||
-        out == nullptr)
+    if (FAILED(resource::create_at_address_from_mip(address, &desc, base_mip, &out)) || out == nullptr)
         return std::nullopt;
     {
         std::lock_guard<std::mutex> lock(g_placed_mutex);
         const auto [at, fresh] = g_placed.try_emplace(key, PlacedTexture{out, frame::current_frame()});
-        if (fresh) {
-            auto other = g_placed.lower_bound(std::make_pair(address, std::array<std::uint32_t, 14>{}));
-            while (other != g_placed.end() && other->first.first == address) {
-                if (other == at) {
-                    ++other;
-                    continue;
-                }
-                g_placed_replaced.push_back(other->second.object);
-                other = g_placed.erase(other);
-            }
-        }
+        if (fresh) note_placed_mips(*placed, address, desc);
         if (!fresh) {
             resource::release_resource(out);
             out = at->second.object;
@@ -1721,8 +1766,41 @@ std::size_t placed_texture_count() {
 }
 
 PlacedStats placed_stats() {
-    return PlacedStats{g_placed_replaced_count.load(std::memory_order_relaxed),
-                       g_placed_slots_cleared.load(std::memory_order_relaxed)};
+    PlacedStats stats;
+    stats.replaced = g_placed_replaced_count.load(std::memory_order_relaxed);
+    stats.slots_cleared = g_placed_slots_cleared.load(std::memory_order_relaxed);
+    for (std::size_t bucket = 0; bucket < kMipBuckets; ++bucket) {
+        stats.view_base_mip[bucket] = g_placed_view_base[bucket].load(std::memory_order_relaxed);
+        stats.first_resident_mip[bucket] = g_placed_first_resident[bucket].load(std::memory_order_relaxed);
+    }
+    stats.unknown_layout = g_placed_unknown_layout.load(std::memory_order_relaxed);
+    return stats;
+}
+
+void note_placed_mips(const descriptor::PlacedView& placed, std::uint64_t address,
+                      const resource::ResourceDesc& desc) {
+    std::array<std::uint32_t, 10> words{};
+    std::copy_n(placed.desc.begin(), words.size(), words.begin());
+    const D3D12_SHADER_RESOURCE_VIEW_DESC view = srv_desc(words);
+    const std::size_t base = std::min<std::size_t>(view.Texture2D.MostDetailedMip, kMipBuckets - 1);
+    g_placed_view_base[base].fetch_add(1, std::memory_order_relaxed);
+    const auto layout = resource::texture_layout(desc);
+    if (!layout || layout->planes.empty() || layout->planes[0].layout.mips.empty()) {
+        g_placed_unknown_layout.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const auto& mips = layout->planes[0].layout.mips;
+    std::size_t resident = mips.size();
+    for (std::size_t mip = 0; mip < mips.size(); ++mip) {
+        const std::uint64_t bytes =
+            std::max<std::uint64_t>(std::uint64_t{mips[mip].pitch} * mips[mip].rows * std::max(mips[mip].depth, 1u), 1);
+        if (texture::committed(reinterpret_cast<const void*>(static_cast<std::uintptr_t>(address + mips[mip].offset)),
+                               static_cast<std::size_t>(bytes))) {
+            resident = mip;
+            break;
+        }
+    }
+    g_placed_first_resident[std::min(resident, kMipBuckets - 1)].fetch_add(1, std::memory_order_relaxed);
 }
 
 std::size_t expire_placed_textures() {

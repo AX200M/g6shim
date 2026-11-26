@@ -56,7 +56,7 @@ class Staging {
 public:
     Staging(Microsoft::WRL::ComPtr<ID3D12Resource> buffer, std::uint8_t* data,
             std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints, std::vector<std::uint32_t> rows,
-            gfx10::Layout layout, std::uint32_t mips, const std::uint8_t* memory);
+            gfx10::Layout layout, std::uint32_t mips, const std::uint8_t* memory, std::uint32_t base_mip);
 
     void refresh();
 
@@ -78,6 +78,7 @@ private:
     std::vector<std::uint32_t> rows_;
     gfx10::Layout layout_;
     std::uint32_t mips_ = 0;
+    std::uint32_t base_mip_ = 0;
     const std::uint8_t* memory_ = nullptr;
     std::mutex last_mutex_;
     Last last_;

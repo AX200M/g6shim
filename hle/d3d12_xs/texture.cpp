@@ -233,13 +233,14 @@ bool title_written(ID3D12Resource* texture) {
 
 Staging::Staging(Microsoft::WRL::ComPtr<ID3D12Resource> buffer, std::uint8_t* data,
                  std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints, std::vector<std::uint32_t> rows,
-                 gfx10::Layout layout, std::uint32_t mips, const std::uint8_t* memory)
+                 gfx10::Layout layout, std::uint32_t mips, const std::uint8_t* memory, std::uint32_t base_mip)
     : buffer_(std::move(buffer)),
       data_(data),
       footprints_(std::move(footprints)),
       rows_(std::move(rows)),
       layout_(std::move(layout)),
       mips_(mips),
+      base_mip_(base_mip),
       memory_(memory) {}
 
 void Staging::refresh() { refresh_now(); }
@@ -278,7 +279,7 @@ void Staging::detile(std::span<const std::uint8_t> tiled) {
         const std::size_t rows = rows_[i];
         const std::size_t bytes = pitch * rows * part.Depth;
         std::span<std::uint8_t> linear(data_ + footprint.Offset, bytes);
-        const gfx10::Error error = layout_.detile(tiled, mip, slice, linear, pitch, pitch * rows);
+        const gfx10::Error error = layout_.detile(tiled, mip + base_mip_, slice, linear, pitch, pitch * rows);
         if (error != gfx10::Error::kOk) {
             G6SHIM_WARN("d3d12_xs: texture not detiled (mip %u, slice %u, error %d)", mip, slice,
                         static_cast<int>(error));
@@ -321,7 +322,7 @@ std::optional<std::shared_ptr<Staging>> staging(Object* object, ID3D12Resource* 
                  static_cast<unsigned long long>(total));
     auto made = std::make_shared<Staging>(std::move(buffer->first), buffer->second, std::move(footprints),
                                           std::move(rows), layout, static_cast<std::uint32_t>(desc.MipLevels),
-                                          memory->first);
+                                          memory->first, resource::host_base_mip(object));
     return made;
 }
 
