@@ -80,10 +80,17 @@ private:
     std::shared_ptr<g6shim::d3d12_xs::card::Side> card_;
 };
 
+struct HostRange {
+    std::uint64_t gpu = 0;
+    std::uint64_t bytes = 0;
+    std::string label;
+};
+
 void register_buffer(std::uintptr_t resource, std::uint64_t start, std::uint64_t bytes);
 void unregister_buffer(std::uintptr_t resource, std::uint64_t start);
 std::optional<std::shared_ptr<Shadow>> find(std::uint64_t address, std::uint64_t bytes);
 std::string nearest(std::uint64_t va);
+void collect_host_ranges(std::vector<HostRange>& out);
 void submission_completed();
 std::uint64_t eviction_generation();
 bool live_loose(ID3D12Resource* buffer);

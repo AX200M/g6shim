@@ -31,6 +31,30 @@ constexpr std::uint64_t kFnvPrime = 1099511628211ull;
 std::mutex g_staging_mutex;
 std::unordered_map<std::uintptr_t, std::shared_ptr<Staging>> g_staging;
 
+struct NotedRange {
+    std::weak_ptr<later::HostTexture> owner;
+    std::uint64_t gpu = 0;
+    std::uint64_t bytes = 0;
+    std::string name;
+};
+
+std::mutex g_ranges_mutex;
+std::vector<NotedRange> g_ranges;
+
+void remember_range(const std::shared_ptr<later::HostTexture>& owner, ID3D12Resource* texture, std::string name,
+                    ID3D12Device* device) {
+    if (owner == nullptr || texture == nullptr || device == nullptr || name.empty()) return;
+    const D3D12_RESOURCE_DESC desc = texture->GetDesc();
+    const D3D12_RESOURCE_ALLOCATION_INFO info = device->GetResourceAllocationInfo(0, 1, &desc);
+    const std::uint64_t gpu = texture->GetGPUVirtualAddress();
+    if (gpu == 0 || info.SizeInBytes == 0 || info.SizeInBytes == UINT64_MAX) return;
+    std::lock_guard<std::mutex> lock(g_ranges_mutex);
+    g_ranges.erase(std::remove_if(g_ranges.begin(), g_ranges.end(),
+                                  [](const NotedRange& noted) { return noted.owner.expired(); }),
+                   g_ranges.end());
+    g_ranges.push_back(NotedRange{owner, gpu, info.SizeInBytes, std::move(name)});
+}
+
 std::mutex g_written_mutex;
 std::unordered_set<std::uintptr_t> g_written;
 
@@ -106,7 +130,24 @@ std::shared_ptr<later::HostTexture> create_host_texture(const resource::Resource
     host_texture->texture = std::move(texture);
     host_texture->state.store(initial, std::memory_order_relaxed);
     if (both) attach_depth_uav(*host_texture, host_desc, direct, clear);
+    remember_range(host_texture, host_texture->texture.Get(), label, gpu->device());
+    if (host_texture->depth_uav) {
+        remember_range(host_texture, host_texture->depth_uav->depth.texture.Get(), std::string(label) + " depth",
+                       gpu->device());
+        remember_range(host_texture, host_texture->depth_uav->stencil.texture.Get(), std::string(label) + " stencil",
+                       gpu->device());
+    }
     return host_texture;
+}
+
+std::vector<GpuRange> live_ranges() {
+    std::lock_guard<std::mutex> lock(g_ranges_mutex);
+    std::vector<GpuRange> ranges;
+    for (const NotedRange& noted : g_ranges) {
+        if (noted.owner.expired() || noted.gpu == 0 || noted.bytes == 0) continue;
+        ranges.push_back(GpuRange{noted.gpu, noted.bytes, noted.name});
+    }
+    return ranges;
 }
 
 ID3D12Resource* host_texture(Object* object) {

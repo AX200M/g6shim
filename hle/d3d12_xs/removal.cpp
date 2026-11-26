@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "removal.hpp"
 
+#include "card.hpp"
+#include "shadow.hpp"
+#include "texture.hpp"
 #include <g6shim/log.hpp>
 #include <g6shim/settings.hpp>
 
@@ -9,9 +12,11 @@
 #include <d3d12.h>
 #include <wrl/client.h>
 
-#include <atomic>
 #include <cstdio>
+#include <deque>
+#include <limits>
 #include <mutex>
+#include <unordered_map>
 
 namespace g6shim::d3d12_xs::removal {
 
@@ -74,6 +79,47 @@ void log_report(const BreadcrumbReport& report) {
     }
 }
 
+void log_span(const char* which, const std::optional<GpuSpan>& span) {
+    if (!span) {
+        G6SHIM_ERROR("d3d12_xs: nearest %s: none", which);
+        return;
+    }
+    G6SHIM_ERROR("d3d12_xs: nearest %s: %s %llx+%llx", which, span->label.c_str(),
+                 static_cast<unsigned long long>(span->gpu), static_cast<unsigned long long>(span->bytes));
+}
+
+void log_nearest(std::uint64_t address) {
+    std::vector<GpuSpan> spans;
+    std::vector<shadow::HostRange> title;
+    shadow::collect_host_ranges(title);
+    spans.reserve(title.size());
+    for (const shadow::HostRange& range : title)
+        spans.push_back(GpuSpan{range.gpu, range.bytes, range.label});
+    for (const card::GpuRange& range : card::live_ranges())
+        spans.push_back(GpuSpan{range.gpu, range.bytes, "card buffer"});
+    for (const texture::GpuRange& range : texture::live_ranges())
+        spans.push_back(GpuSpan{range.gpu, range.bytes, range.name});
+    const NearestSpans nearest = nearest_spans(address, spans);
+    if (nearest.containing)
+        G6SHIM_ERROR("d3d12_xs: page fault inside %s %llx+%llx", nearest.containing->label.c_str(),
+                     static_cast<unsigned long long>(nearest.containing->gpu),
+                     static_cast<unsigned long long>(nearest.containing->bytes));
+    log_span("below", nearest.below);
+    log_span("above", nearest.above);
+}
+
+void log_markers(const UnfinishedList& list) {
+    const std::vector<std::string> recorded = markers_for(list.name);
+    if (recorded.empty()) return;
+    const std::vector<RecordedMarker> around = markers_around(list.ops, list.done, recorded);
+    for (const RecordedMarker& marker : around) {
+        if (marker.text.empty())
+            G6SHIM_ERROR("d3d12_xs:   marker op %u", marker.index);
+        else
+            G6SHIM_ERROR("d3d12_xs:   marker op %u %s", marker.index, marker.text.c_str());
+    }
+}
+
 void log_node(const char* narrow, const wchar_t* wide, const void* list, std::uint32_t done, std::uint32_t total,
               const D3D12_AUTO_BREADCRUMB_OP* history, const D3D12_DRED_BREADCRUMB_CONTEXT* contexts,
               std::uint32_t context_count) {
@@ -93,7 +139,10 @@ void log_node(const char* narrow, const wchar_t* wide, const void* list, std::ui
             unfinished.contexts.push_back(std::move(context));
         }
     }
-    if (const std::optional<BreadcrumbReport> report = format_unfinished_list(unfinished)) log_report(*report);
+    if (const std::optional<BreadcrumbReport> report = format_unfinished_list(unfinished)) {
+        log_report(*report);
+        log_markers(unfinished);
+    }
 }
 
 void log_page_fault(ID3D12DeviceRemovedExtendedData* dred) {
@@ -104,6 +153,7 @@ void log_page_fault(ID3D12DeviceRemovedExtendedData* dred) {
         G6SHIM_ERROR("d3d12_xs: page fault at 0x%llX", static_cast<unsigned long long>(fault.PageFaultVA));
         log_allocations("existing", fault.pHeadExistingAllocationNode);
         log_allocations("freed", fault.pHeadRecentFreedAllocationNode);
+        log_nearest(fault.PageFaultVA);
         return;
     }
     D3D12_DRED_PAGE_FAULT_OUTPUT fault{};
@@ -111,6 +161,7 @@ void log_page_fault(ID3D12DeviceRemovedExtendedData* dred) {
     G6SHIM_ERROR("d3d12_xs: page fault at 0x%llX", static_cast<unsigned long long>(fault.PageFaultVA));
     log_allocations("existing", fault.pHeadExistingAllocationNode);
     log_allocations("freed", fault.pHeadRecentFreedAllocationNode);
+    log_nearest(fault.PageFaultVA);
 }
 
 void log_breadcrumbs(ID3D12DeviceRemovedExtendedData* dred) {
@@ -192,6 +243,92 @@ std::optional<BreadcrumbReport> format_unfinished_list(const UnfinishedList& lis
         report.steps.push_back(std::move(step));
     }
     return report;
+}
+
+namespace {
+
+std::mutex marker_mutex;
+std::unordered_map<std::string, std::vector<std::string>> live_markers;
+std::deque<std::pair<std::string, std::vector<std::string>>> retired_markers;
+
+}  // namespace
+
+std::vector<RecordedMarker> markers_around(std::span<const std::uint32_t> ops, std::uint32_t done,
+                                           std::span<const std::string> recorded) {
+    std::vector<RecordedMarker> placed;
+    std::size_t next = 0;
+    for (std::uint32_t index = 0; index < ops.size(); ++index) {
+        if (ops[index] != kSetMarker) continue;
+        RecordedMarker marker;
+        marker.index = index;
+        if (next < recorded.size()) marker.text = recorded[next];
+        ++next;
+        placed.push_back(std::move(marker));
+    }
+    const bool started = done > 0;
+    const std::uint32_t last = started ? done - 1 : 0;
+    std::vector<RecordedMarker> before;
+    std::vector<RecordedMarker> after;
+    for (const RecordedMarker& marker : placed) {
+        if (started && marker.index <= last)
+            before.push_back(marker);
+        else
+            after.push_back(marker);
+    }
+    if (before.size() > kMarkersBeforeLast)
+        before.erase(before.begin(), before.end() - static_cast<std::ptrdiff_t>(kMarkersBeforeLast));
+    if (after.size() > kMarkersAfterLast) after.resize(kMarkersAfterLast);
+    before.insert(before.end(), after.begin(), after.end());
+    return before;
+}
+
+NearestSpans nearest_spans(std::uint64_t address, std::span<const GpuSpan> spans) {
+    NearestSpans found;
+    std::uint64_t below_end = 0;
+    std::uint64_t above_start = std::numeric_limits<std::uint64_t>::max();
+    for (const GpuSpan& span : spans) {
+        if (span.bytes == 0 || span.gpu > std::numeric_limits<std::uint64_t>::max() - span.bytes) continue;
+        const std::uint64_t end = span.gpu + span.bytes;
+        if (span.gpu <= address && address < end) {
+            found.containing = span;
+            continue;
+        }
+        if (end <= address && (found.below == std::nullopt || end >= below_end)) {
+            below_end = end;
+            found.below = span;
+        }
+        if (span.gpu > address && span.gpu < above_start) {
+            above_start = span.gpu;
+            found.above = span;
+        }
+    }
+    return found;
+}
+
+void note_list_marker(std::string_view list_name, std::string text) {
+    if (list_name.empty() || !requested()) return;
+    if (text.size() > kMaxMarkerChars) text.resize(kMaxMarkerChars);
+    std::lock_guard<std::mutex> lock(marker_mutex);
+    live_markers[std::string(list_name)].push_back(std::move(text));
+}
+
+std::vector<std::string> markers_for(std::string_view list_name) {
+    std::lock_guard<std::mutex> lock(marker_mutex);
+    const auto live = live_markers.find(std::string(list_name));
+    if (live != live_markers.end()) return live->second;
+    for (auto retired = retired_markers.rbegin(); retired != retired_markers.rend(); ++retired)
+        if (retired->first == list_name) return retired->second;
+    return {};
+}
+
+void forget_markers(std::string_view list_name) {
+    if (list_name.empty()) return;
+    std::lock_guard<std::mutex> lock(marker_mutex);
+    const auto live = live_markers.find(std::string(list_name));
+    if (live == live_markers.end()) return;
+    retired_markers.emplace_back(live->first, std::move(live->second));
+    live_markers.erase(live);
+    while (retired_markers.size() > kRetiredMarkerLists) retired_markers.pop_front();
 }
 
 bool requested() { return settings::enabled("G6SHIM_D3D_DRED"); }

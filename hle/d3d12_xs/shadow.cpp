@@ -518,6 +518,31 @@ std::string nearest(std::uint64_t va) {
     return out;
 }
 
+void collect_host_ranges(std::vector<HostRange>& out) {
+    {
+        std::lock_guard<std::mutex> lock(g_buffers_mutex);
+        for (const auto& [key, entry] : g_buffers) {
+            if (!entry.shadow) continue;
+            HostRange range;
+            range.gpu = entry.shadow->gpu(key.first);
+            range.bytes = entry.end - key.first;
+            range.label = "shadow";
+            out.push_back(std::move(range));
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_loose_mutex);
+        for (const auto& [key, window] : g_loose) {
+            if (!window) continue;
+            HostRange range;
+            range.gpu = window->gpu(key.first);
+            range.bytes = window->bytes();
+            range.label = "loose";
+            out.push_back(std::move(range));
+        }
+    }
+}
+
 void submission_completed() {
     const std::uint64_t now = g_submission.fetch_add(1, std::memory_order_relaxed) + 1;
     std::lock_guard<std::mutex> lock(g_loose_mutex);

@@ -101,6 +101,13 @@ struct DepthUavBinding {
     bool twin = false;
 };
 
+struct GpuRange {
+    std::uint64_t gpu = 0;
+    std::uint64_t bytes = 0;
+    std::string name;
+};
+
+std::vector<GpuRange> live_ranges();
 bool depth_unordered_direct(std::uint32_t format, std::uint32_t samples);
 void attach_depth_uav(later::HostTexture& host, const resource::ResourceDesc& host_desc, bool direct,
                       const void* clear);

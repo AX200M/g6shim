@@ -16,7 +16,7 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -893,7 +893,20 @@ bool State::execute_indirect(host::HostList& list, std::tuple<std::uint32_t, std
         finish_depth_uav(list);
         return false;
     }
-    mark(list, kind == kDispatch);
+    const auto* marked = pipeline_bridge::host_pipeline_for(reinterpret_cast<Object*>(pipeline_), kind == kDispatch);
+    if (marked == nullptr && kind == kDispatch)
+        marked = pipeline_bridge::host_pipeline_for(reinterpret_cast<Object*>(pipeline_), false);
+    const char* kind_name = "draw";
+    if (kind == kIndexed) kind_name = "indexed draw";
+    else if (kind == kDispatch) kind_name = "dispatch";
+    else if (kind == kMesh) kind_name = "mesh";
+    char suffix[96] = {};
+    std::snprintf(suffix, sizeof suffix, " indirect %s args %llx+%llx max %u", kind_name,
+                  static_cast<unsigned long long>((*args)->gpu(arguments)),
+                  static_cast<unsigned long long>(length), max);
+    std::string text = marked != nullptr ? marked->name : "untitled";
+    text += suffix;
+    host::mark_work(list, text);
     list.list()->ExecuteIndirect(host_signature, max, (*args)->buffer(), (*args)->offset(arguments),
                                  counter_shadow ? (*counter_shadow)->buffer() : nullptr,
                                  counter_shadow ? (*counter_shadow)->offset(counter_at) : 0);

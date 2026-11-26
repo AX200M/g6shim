@@ -331,6 +331,17 @@ std::shared_ptr<Side> Side::try_create(ID3D12Device* device, std::uint64_t bytes
     return side;
 }
 
+std::vector<GpuRange> live_ranges() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    std::vector<GpuRange> ranges;
+    for (const std::weak_ptr<Side>& weak : g_live) {
+        const std::shared_ptr<Side> side = weak.lock();
+        if (!side || side->gpu() == 0 || side->bytes() == 0) continue;
+        ranges.push_back(GpuRange{side->gpu(), side->bytes()});
+    }
+    return ranges;
+}
+
 Side::~Side() { release_reserved(reserved_); }
 
 const std::uint8_t* Side::fetched(std::uint32_t piece) const {

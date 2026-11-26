@@ -749,15 +749,19 @@ std::optional<double> last_gpu_milliseconds_for_test() {
     return std::nullopt;
 }
 
-void name_command_list(ID3D12GraphicsCommandList* list) {
+std::string name_command_list(ID3D12GraphicsCommandList* list) {
     static std::atomic<std::uint64_t> next{0};
     const auto number = next.fetch_add(1, std::memory_order_relaxed) + 1;
     char text[32] = {};
     std::snprintf(text, sizeof text, "host list %llu", static_cast<unsigned long long>(number));
     name(list, text);
+    return text;
 }
 
-void mark_work(HostList& list, std::string_view label) { removal::mark(list.list(), label); }
+void mark_work(HostList& list, std::string_view label) {
+    removal::mark(list.list(), label);
+    list.note_marker(std::string(label));
+}
 
 std::unique_ptr<HostList> Host::new_list() {
     if (!device_) return nullptr;
@@ -774,7 +778,7 @@ std::unique_ptr<HostList> Host::new_list() {
                                           nullptr, IID_PPV_ARGS(&made->prelude_))))
         return nullptr;
     made->prelude_->Close();
-    name_command_list(made->list_.Get());
+    made->list_name(name_command_list(made->list_.Get()));
     name_command_list(made->prelude_.Get());
     return made;
 }
@@ -1543,13 +1547,23 @@ void HostList::close() {
         fail("a host command list did not close: a command recorded into it was invalid");
 }
 
+void HostList::note_marker(std::string text) {
+    if (!removal::requested()) return;
+    if (text.size() > removal::kMaxMarkerChars) text.resize(removal::kMaxMarkerChars);
+    removal::note_list_marker(list_name_, text);
+    markers_.push_back(std::move(text));
+}
+
 void HostList::reset() {
     texture::drop_depth_uav_notes(this);
     {
         std::lock_guard<std::mutex> lock(deferred_mutex_);
         deferred_ = Deferred{};
     }
+    const std::string retired = list_name_;
     if (allocator_busy_) replace_busy_allocators();
+    removal::forget_markers(retired);
+    markers_.clear();
     {
         states_.clear();
     }
@@ -1587,7 +1601,7 @@ void HostList::replace_busy_allocators() {
                                                  nullptr, IID_PPV_ARGS(&prelude_))) ||
         FAILED(list_->Close()) || FAILED(prelude_->Close()))
         fail("a host command list did not replace a busy allocator");
-    name_command_list(list_.Get());
+    list_name(name_command_list(list_.Get()));
     name_command_list(prelude_.Get());
 }
 

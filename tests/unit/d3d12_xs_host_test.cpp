@@ -931,6 +931,50 @@ TEST(d3d12_xs_unfinished_breadcrumb_window_keeps_context) {
     CHECK(start->steps.front().op_name == "DrawInstanced");
     CHECK(start->steps.front().context == "[vertex aa, pixel bb]");
     CHECK(start->steps.back().index == 3);
+    std::vector<std::uint32_t> history(12, 6);
+    history[2] = removal::kSetMarker;
+    history[4] = removal::kSetMarker;
+    history[6] = removal::kSetMarker;
+    history[8] = removal::kSetMarker;
+    history[9] = 5;
+    history[10] = removal::kSetMarker;
+    history[11] = removal::kSetMarker;
+    const std::vector<std::string> recorded = {"a", "b", "c", "d", "e", "f"};
+    const auto around = removal::markers_around(history, 9, recorded);
+    CHECK(around.size() == 5);
+    if (around.size() == 5) {
+        CHECK(around[0].index == 4);
+        CHECK(around[0].text == "b");
+        CHECK(around[1].index == 6);
+        CHECK(around[1].text == "c");
+        CHECK(around[2].index == 8);
+        CHECK(around[2].text == "d");
+        CHECK(around[3].index == 10);
+        CHECK(around[3].text == "e");
+        CHECK(around[4].index == 11);
+        CHECK(around[4].text == "f");
+    }
+    const auto opening = removal::markers_around(history, 0, recorded);
+    CHECK(opening.size() == 2);
+    if (opening.size() == 2) {
+        CHECK(opening[0].text == "a");
+        CHECK(opening[1].text == "b");
+    }
+    const std::vector<removal::GpuSpan> spans = {
+        {0x1000, 0x100, "shadow"},
+        {0x3000, 0x200, "texture"},
+    };
+    const auto between = removal::nearest_spans(0x2000, spans);
+    CHECK(between.containing == std::nullopt);
+    CHECK(between.below.has_value());
+    CHECK(between.above.has_value());
+    if (between.below) CHECK(between.below->label == "shadow");
+    if (between.above) CHECK(between.above->label == "texture");
+    const auto inside = removal::nearest_spans(0x1050, spans);
+    CHECK(inside.containing.has_value());
+    if (inside.containing) CHECK(inside.containing->label == "shadow");
+    CHECK(inside.below == std::nullopt);
+    CHECK(inside.above.has_value());
 }
 
 TEST(d3d12_xs_removal_diagnostics_do_not_block_device_creation) {

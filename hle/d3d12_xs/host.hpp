@@ -345,6 +345,9 @@ public:
     bool first_use(std::size_t key);
     bool first_refresh(const void* owner, std::uint64_t generation);
     void used_pipeline(const std::string& name);
+    void note_marker(std::string text);
+    const std::string& list_name() const { return list_name_; }
+    void list_name(std::string name) { list_name_ = std::move(name); }
     void note_descriptor_heap(Object* heap);
     std::vector<Object*> descriptor_heaps() const;
 
@@ -393,6 +396,8 @@ private:
     std::uint64_t budget_gpu_ = 0;
     std::uint8_t* budget_data_ = nullptr;
     Microsoft::WRL::ComPtr<ID3D12Resource> budget_buffer_;
+    std::string list_name_;
+    std::vector<std::string> markers_;
 };
 
 Host* host();

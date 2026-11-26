@@ -46,6 +46,12 @@ private:
 
 Batch take_batch();
 void wait_recorder();
+struct GpuRange {
+    std::uint64_t gpu = 0;
+    std::uint64_t bytes = 0;
+};
+
+std::vector<GpuRange> live_ranges();
 void mark_recorder_busy();
 void release_recorder();
 
