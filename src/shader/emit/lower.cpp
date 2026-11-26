@@ -1048,12 +1048,20 @@ V Lower::i32_of(Value v) {
 Val Lower::user(std::size_t param, std::uint32_t dword) {
     const RootParam& rp = x_->native->layout[param];
     if (rp.root.kind == RootType::Kind::ResourceHeap || rp.root.kind == RootType::Kind::SamplerHeap)
-        return Val::i32(s_.m.i32(0));
+        return Val::missing("a descriptor heap pointer used as an address");
     if (rp.root.kind != RootType::Kind::Constants && rp.root.kind != RootType::Kind::Table)
         return Val::missing("a root descriptor");
     const std::uint32_t index = static_cast<std::uint32_t>(rp.user_data) + dword;
     user_reads_[index] = UserData{index, rp.slot, rp.root, dword};
     return user_dword(index);
+}
+
+bool Lower::heap_pointer(Value value) const {
+    if (heap_pointers_.contains(value)) return true;
+    const auto param = params_.find(value);
+    if (param == params_.end() || param->second.first >= x_->native->layout.size()) return false;
+    const RootType::Kind kind = x_->native->layout[param->second.first].root.kind;
+    return kind == RootType::Kind::ResourceHeap || kind == RootType::Kind::SamplerHeap;
 }
 
 Val Lower::descriptor_address(UserData data) {

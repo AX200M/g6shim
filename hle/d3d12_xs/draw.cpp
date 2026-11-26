@@ -508,22 +508,12 @@ bool State::prepare_for(host::HostList& list, bool indexed, bool mesh) {
 
 bool State::bind(host::HostList& list, const pipeline_host::HostPipeline& pipeline, bool compute) {
     ID3D12GraphicsCommandList* commands = list.list();
-    if (host_heaps_ != heaps_) {
-        std::vector<ID3D12DescriptorHeap*> heaps;
-        for (Object* heap : heaps_) {
-            if (heap == nullptr) continue;
-            descriptor_host::HostHeap* host_heap = descriptor_host::for_heap(heap);
-            if (host_heap == nullptr) continue;
-            list.keep(host_heap->heap());
-            heaps.push_back(host_heap->heap());
-        }
-        commands->SetDescriptorHeaps(static_cast<UINT>(heaps.size()), heaps.empty() ? nullptr : heaps.data());
-        host_heaps_ = heaps_;
-        host_roots_ = {nullptr, nullptr};
-    }
+    const bool heaps_changed = host_heaps_ != heaps_;
+    if (heaps_changed) host_roots_ = {nullptr, nullptr};
     const std::size_t stage_index = compute ? 1 : 0;
     ID3D12RootSignature* root = pipeline.root.Get();
-    if (host_roots_[stage_index] != root) {
+    const bool signature_changed = host_roots_[stage_index] != root;
+    if (signature_changed) {
         if (compute)
             commands->SetComputeRootSignature(root);
         else
@@ -536,6 +526,23 @@ bool State::bind(host::HostList& list, const pipeline_host::HostPipeline& pipeli
         list.used_pipeline(pipeline.name);
         list.keep(pipeline.pso.Get());
         list.keep(root);
+    }
+    if (heaps_changed || signature_changed) {
+        std::vector<ID3D12DescriptorHeap*> heaps;
+        bool missing = false;
+        for (Object* heap : heaps_) {
+            if (heap == nullptr) continue;
+            descriptor_host::HostHeap* host_heap = descriptor_host::for_heap(heap);
+            if (host_heap == nullptr) {
+                missing = true;
+                continue;
+            }
+            list.keep(host_heap->heap());
+            heaps.push_back(host_heap->heap());
+        }
+        if (missing) return false;
+        commands->SetDescriptorHeaps(static_cast<UINT>(heaps.size()), heaps.empty() ? nullptr : heaps.data());
+        host_heaps_ = heaps_;
     }
     for (const pipeline_host::Stage& stage : pipeline.stages) {
         const Translated* translated = stage.translated();

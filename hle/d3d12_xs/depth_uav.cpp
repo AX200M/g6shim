@@ -197,21 +197,22 @@ Microsoft::WRL::ComPtr<ID3D12Resource> make_twin(ID3D12Device* device, const D3D
 void clear_plane(ID3D12Resource* texture, bool integer, float depth, std::uint32_t stencil) {
     host::Host* gpu = host::host();
     if (gpu == nullptr || texture == nullptr) return;
-    D3D12_DESCRIPTOR_HEAP_DESC heap_desc{};
-    heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heap_desc.NumDescriptors = 1;
-    heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap;
-    if (FAILED(gpu->device()->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap)))) return;
+    static std::once_flag once;
+    static Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap;
+    std::call_once(once, [gpu] {
+        D3D12_DESCRIPTOR_HEAP_DESC heap_desc{};
+        heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        heap_desc.NumDescriptors = 1;
+        heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        gpu->device()->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap));
+    });
+    if (!heap) return;
+    }
     D3D12_UNORDERED_ACCESS_VIEW_DESC view{};
     view.Format = texture->GetDesc().Format;
     view.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
     const D3D12_CPU_DESCRIPTOR_HANDLE cpu = heap->GetCPUDescriptorHandleForHeapStart();
     const D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle = heap->GetGPUDescriptorHandleForHeapStart();
-    descriptor_host::note_shader_heap(gpu_handle.ptr, gpu->device()->GetDescriptorHandleIncrementSize(
-                                                           D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV),
-                                      gpu->device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV),
-                                      false);
     gpu->device()->CreateUnorderedAccessView(texture, nullptr, &view, cpu);
     const std::unique_ptr<host::HostList> commands = gpu->new_list();
     if (!commands) return;

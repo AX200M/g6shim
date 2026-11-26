@@ -228,6 +228,7 @@ private:
     V lane_heap_index(const Source& src, bool sampler, std::uint32_t props);
     V fetched_index(Site load, std::uint8_t first, bool sampler, std::uint32_t props);
     V heap_byte_address(Site load, std::uint8_t first);
+    bool heap_pointer(Value value) const;
     V heap_index(Site load, std::uint8_t first, bool sampler, std::uint32_t props);
     V heap_limit(bool sampler);
     V null_view_slot(std::uint32_t props);
@@ -286,6 +287,7 @@ private:
     std::vector<std::tuple<V, std::size_t, std::size_t>> data_phis_;
     std::unordered_set<Value, ValueHash> read_phis_;
     std::unordered_map<Value, std::pair<std::size_t, std::uint32_t>, ValueHash> params_;
+    std::unordered_set<Value, ValueHash> heap_pointers_;
     std::unordered_map<Value, UserData, ValueHash> descriptor_addresses_;
     std::vector<ImageHeapRead> image_heap_reads_;
     std::unordered_map<Value, ImageHeapWord, ValueHash> image_heap_words_;

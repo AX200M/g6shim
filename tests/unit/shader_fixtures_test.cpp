@@ -68,6 +68,7 @@ constexpr std::string_view kSelectReadLaneMask = "select_readlane_mask";
 constexpr std::string_view kSpilledComputeRoot = "spilled_compute_root";
 constexpr std::string_view kImageGather4Lod = "image_gather4_lod";
 constexpr std::string_view kImageGather4LodBorder = "image_gather4_lod_border";
+constexpr std::string_view kHeapPointerAsAddress = "heap_pointer_as_address";
 
 const Fixture* find_fixture(std::string_view name) {
     const auto found = std::find_if(std::begin(kFixtures), std::end(kFixtures),
@@ -434,7 +435,8 @@ TEST(shader_fixtures_translate_and_validate) {
             fixture.name == kHeapTableOffset || fixture.name == kBufferHeapStride ||
             fixture.name == kRawOffsetBound ||
             fixture.name == kSamplerLodData || fixture.name == kSpilledComputeRoot ||
-            fixture.name == kImageGather4Lod || fixture.name == kImageGather4LodBorder)
+            fixture.name == kImageGather4Lod || fixture.name == kImageGather4LodBorder ||
+            fixture.name == kHeapPointerAsAddress)
             continue;
         bool translated = true;
         Lowered lowered;
@@ -1360,4 +1362,22 @@ TEST(shader_fixtures_gather_four_texels_at_a_level) {
     const std::array<std::uint32_t, 4> edge_expected{0u, float_bits(1.0f), 0u, 0u};
     CHECK(center == center_expected);
     CHECK(edge == edge_expected);
+}
+
+TEST(shader_fixtures_refuse_a_heap_pointer_used_as_an_address) {
+    const Fixture* fixture = find_fixture(kHeapPointerAsAddress);
+    CHECK(fixture != nullptr);
+    if (fixture == nullptr) return;
+    constexpr std::uint8_t kHeapUserData = 4;
+    constexpr std::uint8_t kHeapSlot = 1;
+    bool refused = false;
+    try {
+        lower_compute(fixture->words, kFixtureVgprs,
+                      {root_param(RootType::Kind::ResourceHeap, kHeapUserData, kHeapSlot)}, {},
+                      (kHeapUserData + 1u) << kUserSgprShift, {1, 1, 1});
+    } catch (const std::exception& error) {
+        refused = std::string_view(error.what()).find("a descriptor heap pointer used as an address") !=
+                  std::string_view::npos;
+    }
+    CHECK(refused);
 }

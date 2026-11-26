@@ -95,6 +95,11 @@ void Lower::sop(const IrInst& inst) {
     };
     if (name == "s_mov_b32" && lo && src.size() == 1) {
         const auto value = scalar_value(src[0]);
+        if (value && heap_pointer(*value)) {
+            heap_pointers_.insert(*lo);
+            vals_[*lo] = Val::missing("a descriptor heap pointer used as an address");
+            return;
+        }
         if (value) {
             const auto indexed = image_heap_words_.find(*value);
             if (indexed != image_heap_words_.end()) {
@@ -1291,7 +1296,7 @@ V Lower::heap_byte_address(Site load, std::uint8_t first) {
     const std::size_t c = cur_;
     const std::optional<Value> read = li.read(Reg::s(base->code));
     if (!read) fail("a descriptor load");
-    V addr = i32_of(*read);
+    V addr = heap_pointer(*read) ? s_.m.i32(0) : i32_of(*read);
     const V k = s_.m.i32(static_cast<std::uint32_t>(fields->offset) +
                          4u * static_cast<std::uint32_t>(first));
     addr = s_.m.bin(c, Bin::Add, addr, k);
