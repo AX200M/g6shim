@@ -207,7 +207,6 @@ void clear_plane(ID3D12Resource* texture, bool integer, float depth, std::uint32
         gpu->device()->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap));
     });
     if (!heap) return;
-    }
     D3D12_UNORDERED_ACCESS_VIEW_DESC view{};
     view.Format = texture->GetDesc().Format;
     view.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
