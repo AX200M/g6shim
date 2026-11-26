@@ -28,7 +28,7 @@ struct UserData {
         ImageSamplingFields, TypedBufferFormatWord, TypedBufferHighWord,
         ConstantBufferHighWord, ConstantBufferRecordCount, ConstantBufferFormatWord,
         ShaderBufferRecordCount, ImageWidthLowBits, ImageDimensions, SamplerLodWord, ImageBaseMip, ImageHeapData,
-        BufferHeapData
+        BufferHeapData, ViewHeapCount, SamplerHeapCount
     };
 
     std::uint32_t index = 0;

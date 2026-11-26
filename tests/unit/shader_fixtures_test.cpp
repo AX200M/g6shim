@@ -59,6 +59,7 @@ constexpr std::string_view kImageShapeOnly = "image_shape_only";
 constexpr std::string_view kImageHeapShape = "image_heap_shape";
 constexpr std::string_view kImageHeapShapeLoop = "image_heap_shape_loop";
 constexpr std::string_view kBufferHeapStride = "buffer_heap_stride";
+constexpr std::string_view kHeapIndexBound = "heap_index_bound";
 constexpr std::string_view kSamplerLodData = "sampler_lod_data";
 constexpr std::string_view kPackedInputPartner = "packed_input_partner";
 constexpr std::string_view kSelectReadLaneMask = "select_readlane_mask";
@@ -125,6 +126,8 @@ void check_indexed_buffer_results(Lowered lowered) {
         if (field.index >= constants.size()) { CHECK(false); return; }
         count = std::max(count, field.index + 1);
         if (field.source == UserData::Source::BufferHeapData) constants[field.index] = kMetadata;
+        if (field.source == UserData::Source::ViewHeapCount)
+            constants[field.index] = heap->count() + heap->dynamic_slots();
         if (field.root.kind == RootType::Kind::Table) constants[field.index] = kOutputDescriptor * 32;
     }
     D3D12_ROOT_PARAMETER parameter{};
@@ -417,7 +420,7 @@ TEST(shader_fixtures_translate_and_validate) {
             fixture.name == kImageSampleBiasA16 || fixture.name == kScalarBufferCountOnly ||
             fixture.name == kPackedInputPartner || fixture.name == kSelectReadLaneMask ||
             fixture.name == kImageShapeOnly || fixture.name == kImageHeapShape ||
-            fixture.name == kImageHeapShapeLoop ||
+            fixture.name == kImageHeapShapeLoop || fixture.name == kHeapIndexBound ||
             fixture.name == kBufferHeapStride || fixture.name == kSamplerLodData ||
             fixture.name == kSpilledComputeRoot || fixture.name == kImageGather4Lod ||
             fixture.name == kImageGather4LodBorder)
@@ -850,6 +853,35 @@ TEST(shader_fixtures_translate_a_buffer_load_with_a_runtime_stride) {
         }
         check_dxil(lowered.dxil, fixture->name);
         check_indexed_buffer_results(lowered);
+    } catch (const std::exception& error) {
+        std::printf("fixture %s did not translate: %s\n", fixture->name, error.what());
+        CHECK(false);
+    }
+}
+
+TEST(shader_fixtures_bound_a_descriptor_heap_index) {
+    const Fixture* fixture = find_fixture(kHeapIndexBound);
+    CHECK(fixture != nullptr);
+    if (fixture == nullptr) return;
+    constexpr std::uint8_t kHeapUserData = 4;
+    constexpr std::uint8_t kHeapSlot = 2;
+    constexpr std::uint8_t kOutputUserData = 6;
+    constexpr std::uint8_t kOutputSlot = 1;
+    try {
+        const auto lowered = lower_compute(fixture->words, kFixtureVgprs,
+            {root_param(RootType::Kind::Constants, kConstantsUserData, kConstantsSlot),
+             root_param(RootType::Kind::ResourceHeap, kHeapUserData, kHeapSlot),
+             root_param(RootType::Kind::Table, kOutputUserData, kOutputSlot)},
+            {used_uav(kOutputUserData, kOutputSlot)}, (kOutputUserData + 1u) << kUserSgprShift, {1, 1, 1});
+        const auto field = std::find_if(lowered.user_data.begin(), lowered.user_data.end(), [](const UserData& entry) {
+            return entry.source == UserData::Source::ViewHeapCount;
+        });
+        CHECK(field != lowered.user_data.end());
+        if (field != lowered.user_data.end()) {
+            CHECK(field->root.kind == RootType::Kind::ResourceHeap);
+            CHECK(field->index >= kOutputUserData + 1);
+        }
+        check_dxil(lowered.dxil, fixture->name);
     } catch (const std::exception& error) {
         std::printf("fixture %s did not translate: %s\n", fixture->name, error.what());
         CHECK(false);

@@ -48,6 +48,8 @@ The test lowers each program as a wave32 compute shader with 8 VGPRs, five user 
 
 `buffer_heap_stride.s` reads three dwords from an indexed buffer selected by a computed heap address. The shader uses both an index and a byte offset. The test runs two strides and checks the results for an out-of-range read, a wrapping offset and an invalid heap slot.
 
+`heap_index_bound.s` loads one buffer descriptor from the resource heap at an index taken from a root constant and stores one dword through the output UAV. A dynamic heap index is kept inside the host descriptor heap.
+
 `sampler_lod_data.s` reads and compares the LOD word of the second sampler heap slot without sampling an image.
 
 `packed_input_partner.s` interpolates the high half of the third packed component. Its two half-precision signature rows share one hardware attribute. The cases cover an adjacent partner, a unique partner beyond a separate input, and rejection when no eligible partner exists.

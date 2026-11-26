@@ -390,6 +390,13 @@ const descriptor::Heap* State::heap_of(std::uint64_t handle) const {
 std::optional<std::uint32_t> State::descriptor_value(
     host::HostList& list, bool compute, const g6shim::shader::emit::UserData& data) const {
     using Source = g6shim::shader::emit::UserData::Source;
+    if (data.source == Source::ViewHeapCount || data.source == Source::SamplerHeapCount) {
+        Object* heap = heaps_[data.source == Source::SamplerHeapCount ? 1 : 0];
+        if (heap == nullptr) return std::nullopt;
+        descriptor_host::HostHeap* host_heap = descriptor_host::for_heap(heap);
+        if (host_heap == nullptr) return std::nullopt;
+        return host_heap->count() + host_heap->dynamic_slots();
+    }
     if (data.source == Source::ImageHeapData || data.source == Source::BufferHeapData) {
         if (heaps_[0] == nullptr) return std::nullopt;
         const auto binding = data.source == Source::ImageHeapData

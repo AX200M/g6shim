@@ -1276,7 +1276,7 @@ V Lower::fetched_index(Site load, std::uint8_t first, bool sampler) {
                          4u * static_cast<std::uint32_t>(first));
     at = s_.m.bin(c, Bin::Add, at, k);
     const V shift = s_.m.i32(sampler ? 4 : 5);
-    return s_.m.bin(c, Bin::LShr, at, shift);
+    return bounded_heap_index(s_.m.bin(c, Bin::LShr, at, shift), sampler);
 }
 
 V Lower::heap_byte_address(Site load, std::uint8_t first) {
@@ -1310,7 +1310,41 @@ V Lower::heap_byte_address(Site load, std::uint8_t first) {
 
 V Lower::heap_index(Site load, std::uint8_t first, bool sampler) {
     const V address = heap_byte_address(load, first);
-    return s_.m.bin(cur_, Bin::LShr, address, s_.m.i32(sampler ? 4 : 5));
+    V index = s_.m.bin(cur_, Bin::LShr, address, s_.m.i32(sampler ? 4 : 5));
+    const IrInst& li = x_->p->blocks[load.block].insts[load.index];
+    const auto* fields = std::get_if<SmemFields>(&li.fields);
+    const auto* soffset = fields == nullptr ? nullptr : std::get_if<ScalarOperand>(&fields->soffset);
+    if (soffset == nullptr || soffset->code != kNull) index = bounded_heap_index(index, sampler);
+    return index;
 }
+
+V Lower::heap_limit(bool sampler) {
+    using SourceKind = UserData::Source;
+    const SourceKind source = sampler ? SourceKind::SamplerHeapCount : SourceKind::ViewHeapCount;
+    for (const auto& [index, entry] : user_reads_) {
+        if (entry.source == source) return user_dword(index).value;
+    }
+    constexpr std::uint32_t kRootDwords = 64;
+    std::uint32_t index = 0;
+    for (const RootParam& param : x_->native->layout) {
+        if (param.user_data >= kRootDwords || param.sgprs > kRootDwords - param.user_data)
+            fail("a descriptor heap limit beyond host root constants");
+        index = std::max(index, std::uint32_t{param.user_data} + param.sgprs);
+    }
+    for (const auto& used : user_reads_) index = std::max(index, used.first + 1);
+    if (index >= kRootDwords) fail("a descriptor heap limit beyond host root constants");
+    RootType root;
+    root.kind = sampler ? RootType::Kind::SamplerHeap : RootType::Kind::ResourceHeap;
+    user_reads_.emplace(index, UserData{index, 0, root, 0, source});
+    return user_dword(index).value;
+}
+
+V Lower::bounded_heap_index(V index, bool sampler) {
+    if (index.kind == V::Kind::Const) return index;
+    const std::size_t c = cur_;
+    const V in_range = s_.m.cmp(c, pred::kIult, index, heap_limit(sampler));
+    return s_.m.select(c, in_range, index, s_.m.i32(0));
+}
+
 
 }  // namespace g6shim::shader::emit
