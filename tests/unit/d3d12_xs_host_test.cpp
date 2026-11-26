@@ -414,6 +414,63 @@ TEST(d3d12_xs_host_completed_submission_publishes_deferred_writes) {
     CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
 }
 
+TEST(d3d12_xs_host_interval_timing_sums_and_keeps_the_max) {
+    host::SubmissionTiming first{};
+    first.prepare.milliseconds = 10;
+    first.prepare.bytes = 100;
+    first.execute_call.milliseconds = 1;
+    first.wait.milliseconds = 4;
+    first.copy_back.milliseconds = 2;
+    first.copy_back.bytes = 30;
+    first.gpu.milliseconds = 3;
+    first.gpu_known = true;
+    host::SubmissionTiming second{};
+    second.prepare.milliseconds = 6;
+    second.prepare.bytes = 50;
+    second.execute_call.milliseconds = 5;
+    second.wait.milliseconds = 1;
+    second.copy_back.milliseconds = 8;
+    second.copy_back.bytes = 20;
+    const host::SubmissionTiming samples[] = {first, second};
+    const host::IntervalTiming summary = host::summarise_interval(samples);
+    CHECK(summary.submissions == 2);
+    CHECK(summary.prepare.milliseconds == 16);
+    CHECK(summary.prepare_max_ms == 10);
+    CHECK(summary.prepare.bytes == 150);
+    CHECK(summary.execute_call.milliseconds == 6);
+    CHECK(summary.execute_max_ms == 5);
+    CHECK(summary.wait.milliseconds == 5);
+    CHECK(summary.wait_max_ms == 4);
+    CHECK(summary.copy_back.milliseconds == 10);
+    CHECK(summary.copy_back_max_ms == 8);
+    CHECK(summary.copy_back.bytes == 50);
+    CHECK(summary.gpu.milliseconds == 3);
+    CHECK(summary.gpu_samples == 1);
+    const host::IntervalTiming empty = host::summarise_interval({});
+    CHECK(empty.submissions == 0);
+    CHECK(empty.gpu_samples == 0);
+}
+
+struct FrameTimingGuard {
+    FrameTimingGuard() { ::SetEnvironmentVariableA("G6SHIM_FRAME_TIMING", "1"); }
+    ~FrameTimingGuard() { ::SetEnvironmentVariableA("G6SHIM_FRAME_TIMING", nullptr); }
+};
+
+TEST(d3d12_xs_host_timestamps_resolve_to_a_non_negative_gpu_duration) {
+    host::Host* gpu = test_host();
+    if (gpu == nullptr) return;
+    const FrameTimingGuard timing;
+    auto list = gpu->new_list();
+    CHECK(list != nullptr);
+    if (!list) return;
+    list->close();
+    gpu->execute({list.get()});
+    const std::optional<double> duration = host::last_gpu_milliseconds_for_test();
+    CHECK(duration.has_value());
+    if (duration) CHECK(*duration >= 0);
+    CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
+}
+
 TEST(d3d12_xs_host_watch_reports_written_pages_to_every_asker) {
     auto* memory = static_cast<std::uint8_t*>(
         ::VirtualAlloc(nullptr, 4 * watch::kPageBytes, MEM_RESERVE | MEM_COMMIT | kWriteWatch, PAGE_READWRITE));

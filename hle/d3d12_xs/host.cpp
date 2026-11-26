@@ -146,6 +146,8 @@ struct Meter {
     void frame(HWND hwnd);
 };
 
+IntervalTiming take_interval_timing();
+
 void Meter::frame(HWND hwnd) {
     ++frames;
     const auto now = std::chrono::steady_clock::now();
@@ -157,9 +159,30 @@ void Meter::frame(HWND hwnd) {
     if (std::chrono::duration<double>(now - logged).count() >= 5.0) {
         logged = now;
         const shadow::LooseStats loose = shadow::loose_stats();
-        G6SHIM_INFO("d3d12_xs: %.1f fps, %.1f ms/frame, loose title memory %zu windows %llu MiB, %llu evicted", fps,
-                    ms, loose.windows, static_cast<unsigned long long>(loose.bytes >> 20),
-                    static_cast<unsigned long long>(loose.evicted - evicted));
+        const IntervalTiming interval = take_interval_timing();
+        if (settings::enabled("G6SHIM_FRAME_TIMING")) {
+            G6SHIM_INFO("d3d12_xs: %.1f fps, %.1f ms/frame, loose title memory %zu windows %llu MiB, %llu evicted, "
+                        "%llu submissions, prepare %.1f/%.1f ms %llu bytes, execute %.1f/%.1f ms, wait %.1f/%.1f ms, "
+                        "copy-back %.1f/%.1f ms %llu bytes, gpu %.1f ms",
+                        fps, ms, loose.windows, static_cast<unsigned long long>(loose.bytes >> 20),
+                        static_cast<unsigned long long>(loose.evicted - evicted),
+                        static_cast<unsigned long long>(interval.submissions), interval.prepare.milliseconds,
+                        interval.prepare_max_ms, static_cast<unsigned long long>(interval.prepare.bytes),
+                        interval.execute_call.milliseconds, interval.execute_max_ms, interval.wait.milliseconds,
+                        interval.wait_max_ms, interval.copy_back.milliseconds, interval.copy_back_max_ms,
+                        static_cast<unsigned long long>(interval.copy_back.bytes), interval.gpu.milliseconds);
+        } else {
+            G6SHIM_INFO("d3d12_xs: %.1f fps, %.1f ms/frame, loose title memory %zu windows %llu MiB, %llu evicted, "
+                        "%llu submissions, prepare %.1f/%.1f ms %llu bytes, execute %.1f/%.1f ms, wait %.1f/%.1f ms, "
+                        "copy-back %.1f/%.1f ms %llu bytes",
+                        fps, ms, loose.windows, static_cast<unsigned long long>(loose.bytes >> 20),
+                        static_cast<unsigned long long>(loose.evicted - evicted),
+                        static_cast<unsigned long long>(interval.submissions), interval.prepare.milliseconds,
+                        interval.prepare_max_ms, static_cast<unsigned long long>(interval.prepare.bytes),
+                        interval.execute_call.milliseconds, interval.execute_max_ms, interval.wait.milliseconds,
+                        interval.wait_max_ms, interval.copy_back.milliseconds, interval.copy_back_max_ms,
+                        static_cast<unsigned long long>(interval.copy_back.bytes));
+        }
         evicted = loose.evicted;
     }
     window::show_frame_rate(hwnd, window::FrameRate{fps, ms});
@@ -254,6 +277,99 @@ void log_submission_failure(const SubmissionResult& result, HRESULT removed) {
         "d3d12_xs: host submission not completed (signal 0x%08lX, event 0x%08lX, wait 0x%08lX, device 0x%08lX)",
         static_cast<unsigned long>(result.signal), static_cast<unsigned long>(result.armed),
         static_cast<unsigned long>(result.wait), static_cast<unsigned long>(removed));
+}
+
+double milliseconds_since(std::chrono::steady_clock::time_point start) {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+}
+
+constexpr std::size_t kMaxTimingSamples = 4096;
+std::mutex timing_mutex;
+std::vector<SubmissionTiming> timing_samples;
+
+void note_submission_timing(SubmissionTiming sample) {
+    std::lock_guard<std::mutex> lock(timing_mutex);
+    if (timing_samples.size() == kMaxTimingSamples) timing_samples.erase(timing_samples.begin());
+    timing_samples.push_back(std::move(sample));
+}
+
+IntervalTiming take_interval_timing() {
+    std::vector<SubmissionTiming> samples;
+    {
+        std::lock_guard<std::mutex> lock(timing_mutex);
+        samples.swap(timing_samples);
+    }
+    return summarise_interval(samples);
+}
+
+void write_budget(char* out, std::size_t out_size, bool known, std::uint64_t bytes) {
+    if (!known) {
+        std::snprintf(out, out_size, "unavailable");
+        return;
+    }
+    std::snprintf(out, out_size, "%llu MiB", static_cast<unsigned long long>(bytes >> 20));
+}
+
+void log_adapter(ID3D12Device* device, IDXGIAdapter* adapter, const DXGI_ADAPTER_DESC1& desc) {
+    wchar_t name[128] = {};
+    std::memcpy(name, desc.Description, sizeof name - sizeof(wchar_t));
+    LARGE_INTEGER version{};
+    const HRESULT umd = adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &version);
+    char driver[64] = {};
+    if (SUCCEEDED(umd)) {
+        const auto packed = static_cast<std::uint64_t>(version.QuadPart);
+        std::snprintf(driver, sizeof driver, "%u.%u.%u.%u", static_cast<unsigned>((packed >> 48) & 0xFFFF),
+                      static_cast<unsigned>((packed >> 32) & 0xFFFF), static_cast<unsigned>((packed >> 16) & 0xFFFF),
+                      static_cast<unsigned>(packed & 0xFFFF));
+    } else {
+        std::snprintf(driver, sizeof driver, "unavailable (0x%08lX)", static_cast<unsigned long>(umd));
+    }
+    D3D12_FEATURE_DATA_ARCHITECTURE1 architecture{};
+    const bool architecture_ok =
+        SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE1, &architecture, sizeof architecture));
+    const char* uma = architecture_ok ? (architecture.UMA ? "yes" : "no") : "unknown";
+    const char* coherent = architecture_ok ? (architecture.CacheCoherentUMA ? "yes" : "no") : "unknown";
+    Microsoft::WRL::ComPtr<IDXGIAdapter3> adapter3;
+    DXGI_QUERY_VIDEO_MEMORY_INFO local{};
+    DXGI_QUERY_VIDEO_MEMORY_INFO non_local{};
+    bool local_ok = false;
+    bool non_local_ok = false;
+    if (SUCCEEDED(adapter->QueryInterface(IID_PPV_ARGS(&adapter3)))) {
+        local_ok = SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local));
+        non_local_ok =
+            SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &non_local));
+    }
+    char local_budget[64] = {};
+    char non_local_budget[64] = {};
+    write_budget(local_budget, sizeof local_budget, local_ok, local.Budget);
+    write_budget(non_local_budget, sizeof non_local_budget, non_local_ok, non_local.Budget);
+    G6SHIM_INFO("d3d12_xs: host adapter %ls, LUID %08lX:%08lX, vendor %04X, device %04X, driver %s, %s, UMA %s, "
+                "cache-coherent UMA %s, local budget %s, non-local budget %s",
+                name, static_cast<unsigned long>(desc.AdapterLuid.HighPart),
+                static_cast<unsigned long>(desc.AdapterLuid.LowPart), desc.VendorId, desc.DeviceId, driver,
+                (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0 ? "software" : "hardware", uma, coherent, local_budget,
+                non_local_budget);
+}
+
+void log_host_adapter(ID3D12Device* device) {
+    Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
+    if (FAILED(::CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)))) {
+        G6SHIM_WARN("d3d12_xs: host adapter unknown (no DXGI factory)");
+        return;
+    }
+    const LUID luid = device->GetAdapterLuid();
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+    for (UINT index = 0;; ++index) {
+        adapter.Reset();
+        if (factory->EnumAdapters1(index, adapter.GetAddressOf()) == DXGI_ERROR_NOT_FOUND) break;
+        DXGI_ADAPTER_DESC1 desc{};
+        if (FAILED(adapter->GetDesc1(&desc))) continue;
+        if (desc.AdapterLuid.LowPart != luid.LowPart || desc.AdapterLuid.HighPart != luid.HighPart) continue;
+        log_adapter(device, adapter.Get(), desc);
+        return;
+    }
+    G6SHIM_WARN("d3d12_xs: host adapter LUID %08lX:%08lX was not enumerated",
+                static_cast<unsigned long>(luid.HighPart), static_cast<unsigned long>(luid.LowPart));
 }
 
 }  // namespace
@@ -352,7 +468,8 @@ void Batch::title_written() {
 }
 
 void Batch::flush() {
-    for (const auto& [shadow_entry, from, to] : refreshes_) shadow_entry->update(from, to - from);
+    for (const auto& [shadow_entry, from, to] : refreshes_)
+        copied_ += shadow_entry->update(from, to - from);
     refreshes_.clear();
 }
 
@@ -423,6 +540,7 @@ Host::Host() {
         return;
     }
     dsv_size_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+    log_host_adapter(device_.Get());
     G6SHIM_INFO("d3d12_xs: host D3D12 device ready");
 }
 
@@ -580,6 +698,37 @@ void set_submission_step_for_test(SubmissionStep step, void* context) {
     submission_hook.context = context;
 }
 
+void add_submission_timing(IntervalTiming& interval, const SubmissionTiming& sample) {
+    ++interval.submissions;
+    interval.prepare.milliseconds += sample.prepare.milliseconds;
+    interval.prepare.bytes += sample.prepare.bytes;
+    interval.prepare_max_ms = std::max(interval.prepare_max_ms, sample.prepare.milliseconds);
+    interval.execute_call.milliseconds += sample.execute_call.milliseconds;
+    interval.execute_max_ms = std::max(interval.execute_max_ms, sample.execute_call.milliseconds);
+    interval.wait.milliseconds += sample.wait.milliseconds;
+    interval.wait_max_ms = std::max(interval.wait_max_ms, sample.wait.milliseconds);
+    interval.copy_back.milliseconds += sample.copy_back.milliseconds;
+    interval.copy_back.bytes += sample.copy_back.bytes;
+    interval.copy_back_max_ms = std::max(interval.copy_back_max_ms, sample.copy_back.milliseconds);
+    if (!sample.gpu_known) return;
+    interval.gpu.milliseconds += sample.gpu.milliseconds;
+    interval.gpu.bytes += sample.gpu.bytes;
+    ++interval.gpu_samples;
+}
+
+IntervalTiming summarise_interval(std::span<const SubmissionTiming> samples) {
+    IntervalTiming interval;
+    for (const SubmissionTiming& sample : samples) add_submission_timing(interval, sample);
+    return interval;
+}
+
+std::optional<double> last_gpu_milliseconds_for_test() {
+    std::lock_guard<std::mutex> lock(timing_mutex);
+    for (auto sample = timing_samples.rbegin(); sample != timing_samples.rend(); ++sample)
+        if (sample->gpu_known) return sample->gpu.milliseconds;
+    return std::nullopt;
+}
+
 std::unique_ptr<HostList> Host::new_list() {
     if (!device_) return nullptr;
     std::unique_ptr<HostList> made(new HostList());
@@ -601,18 +750,27 @@ std::unique_ptr<HostList> Host::new_list() {
 void Host::execute(const std::vector<HostList*>& runs) {
     std::lock_guard<std::mutex> submitted_lock(submitted_mutex_);
     release_retained();
+    SubmissionTiming timing;
+    const auto prepared = std::chrono::steady_clock::now();
     Batch batch;
     std::vector<ID3D12CommandList*> lists;
-    lists.reserve(runs.size() * 2);
+    lists.reserve(runs.size() * 2 + 2);
     for (HostList* list : runs) {
         list->run_deferred(batch);
         if (ID3D12CommandList* prelude = list->prelude()) lists.push_back(prelude);
         lists.push_back(list->list());
     }
     batch.flush();
+    timing.prepare.milliseconds = milliseconds_since(prepared);
+    timing.prepare.bytes = batch.copied();
+    const bool timed = bracket_timestamps(lists);
     ++submitted_;
+    const auto executed = std::chrono::steady_clock::now();
     queue_->ExecuteCommandLists(static_cast<UINT>(lists.size()), lists.data());
+    timing.execute_call.milliseconds = milliseconds_since(executed);
+    const auto waited = std::chrono::steady_clock::now();
     const SubmissionResult result = complete_submission(queue_.Get(), fence_.Get(), submitted_, event_);
+    timing.wait.milliseconds = milliseconds_since(waited);
     const HRESULT removed = device_->GetDeviceRemovedReason();
     if (!submission_confirmed(result, removed)) {
         log_submission_failure(result, removed);
@@ -624,8 +782,16 @@ void Host::execute(const std::vector<HostList*>& runs) {
             retain_incomplete(runs, SUCCEEDED(result.signal));
         }
         log_messages();
+        note_submission_timing(std::move(timing));
         return;
     }
+    if (timed) {
+        if (const std::optional<double> gpu = resolve_timestamps()) {
+            timing.gpu.milliseconds = *gpu;
+            timing.gpu_known = true;
+        }
+    }
+    const auto copied_at = std::chrono::steady_clock::now();
     std::vector<std::tuple<std::shared_ptr<shadow::Shadow>, std::size_t, std::size_t>> back;
     for (HostList* list : runs) {
         std::lock_guard<std::mutex> lock(list->deferred_mutex_);
@@ -639,7 +805,11 @@ void Host::execute(const std::vector<HostList*>& runs) {
             if (!known) back.emplace_back(write->shadow, write->address, write->bytes);
         }
     }
-    for (const auto& [copy, address, bytes] : back) copy->copy_back(address, bytes);
+    std::uint64_t copied = 0;
+    for (const auto& [copy, address, bytes] : back) copied += copy->copy_back(address, bytes);
+    timing.copy_back.bytes = copied;
+    timing.copy_back.milliseconds = milliseconds_since(copied_at);
+    note_submission_timing(std::move(timing));
     for (HostList* list : runs) {
         std::lock_guard<std::mutex> lock(list->deferred_mutex_);
         for (const WriteStep& write : list->deferred_.writes) write.written.write(write.destination, write.bytes);
@@ -648,6 +818,79 @@ void Host::execute(const std::vector<HostList*>& runs) {
     release_retained();
     log_messages();
     shadow::submission_completed();
+}
+
+bool Host::ensure_timestamps() {
+    if (!timestamps_) timestamps_ = std::make_unique<TimestampQueries>();
+    TimestampQueries& queries = *timestamps_;
+    if (queries.ready) return true;
+    if (queries.failed) return false;
+    D3D12_QUERY_HEAP_DESC heap{};
+    heap.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+    heap.Count = 2;
+    D3D12_HEAP_PROPERTIES readback_heap{};
+    readback_heap.Type = D3D12_HEAP_TYPE_READBACK;
+    D3D12_RESOURCE_DESC readback{};
+    readback.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    readback.Width = sizeof(std::uint64_t) * 2;
+    readback.Height = 1;
+    readback.DepthOrArraySize = 1;
+    readback.MipLevels = 1;
+    readback.SampleDesc.Count = 1;
+    readback.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    void* mapped = nullptr;
+    if (FAILED(device_->CreateQueryHeap(&heap, IID_PPV_ARGS(&queries.heap))) ||
+        FAILED(device_->CreateCommittedResource(&readback_heap, D3D12_HEAP_FLAG_NONE, &readback,
+                                                D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                IID_PPV_ARGS(&queries.readback))) ||
+        FAILED(queries.readback->Map(0, nullptr, &mapped)) ||
+        FAILED(queue_->GetTimestampFrequency(&queries.frequency)) || queries.frequency == 0 ||
+        FAILED(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                               IID_PPV_ARGS(&queries.begin_allocator))) ||
+        FAILED(device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, queries.begin_allocator.Get(), nullptr,
+                                          IID_PPV_ARGS(&queries.begin_list))) ||
+        FAILED(queries.begin_list->Close()) ||
+        FAILED(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                               IID_PPV_ARGS(&queries.end_allocator))) ||
+        FAILED(device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, queries.end_allocator.Get(), nullptr,
+                                          IID_PPV_ARGS(&queries.end_list))) ||
+        FAILED(queries.end_list->Close())) {
+        queries.failed = true;
+        G6SHIM_WARN("d3d12_xs: host GPU timestamps unavailable");
+        return false;
+    }
+    queries.mapped = static_cast<std::uint64_t*>(mapped);
+    queries.ready = true;
+    return true;
+}
+
+bool Host::bracket_timestamps(std::vector<ID3D12CommandList*>& lists) {
+    if (!settings::enabled("G6SHIM_FRAME_TIMING") || !ensure_timestamps()) return false;
+    TimestampQueries& queries = *timestamps_;
+    if (FAILED(queries.begin_allocator->Reset()) ||
+        FAILED(queries.begin_list->Reset(queries.begin_allocator.Get(), nullptr)))
+        return false;
+    queries.begin_list->EndQuery(queries.heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0);
+    if (FAILED(queries.begin_list->Close())) return false;
+    if (FAILED(queries.end_allocator->Reset()) ||
+        FAILED(queries.end_list->Reset(queries.end_allocator.Get(), nullptr)))
+        return false;
+    queries.end_list->EndQuery(queries.heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 1);
+    queries.end_list->ResolveQueryData(queries.heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, queries.readback.Get(),
+                                       0);
+    if (FAILED(queries.end_list->Close())) return false;
+    lists.insert(lists.begin(), queries.begin_list.Get());
+    lists.push_back(queries.end_list.Get());
+    return true;
+}
+
+std::optional<double> Host::resolve_timestamps() {
+    if (!timestamps_ || !timestamps_->ready || timestamps_->mapped == nullptr || timestamps_->frequency == 0)
+        return std::nullopt;
+    const std::uint64_t begin = timestamps_->mapped[0];
+    const std::uint64_t end = timestamps_->mapped[1];
+    if (end < begin) return 0.0;
+    return static_cast<double>(end - begin) * 1000.0 / static_cast<double>(timestamps_->frequency);
 }
 
 void Host::release_retained() {

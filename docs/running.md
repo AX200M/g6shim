@@ -73,6 +73,7 @@ The two library-loader forwarders make `LoadLibraryExW`/`LoadLibraryW` of `xgame
 | `graphics` | `d3d_debug` | `G6SHIM_D3D_DEBUG` | off | Create the device with the Direct3D debug layer; invalid calls appear as debug output. The D3D11 device enables the layer only when the value is `1`. |
 | `graphics` | `d3d_dred` | `G6SHIM_D3D_DRED` | off | Record GPU progress and page faults, so the log says where the GPU stopped when the device is removed. The reason for a removal is logged without it. |
 | `graphics` | `d3d_warp` | `G6SHIM_D3D_WARP` | the default adapter | Create the host device on the software adapter. |
+| `graphics` | `frame_timing` | `G6SHIM_FRAME_TIMING` | off | Add GPU busy milliseconds to the periodic `d3d12_xs` frame-rate line. Timestamp queries bracket each submission and are read after the fence completes. The line always includes, since the previous line, submissions and total/max CPU milliseconds for deferred preparation (with bytes copied), the command-list execution call, the fence wait and copy-back (with bytes). |
 | `graphics` | `cache_dir` | `G6SHIM_CACHE_DIR` | `g6shim_cache` in the folder of the executable | Folder for translated shaders and compiled host pipelines. |
 | `input` | `autopress` | `G6SHIM_INPUT_AUTOPRESS` | none | Hold buttons for 0.2 s at those seconds after the first controller read, for example `6:Menu,9:A`. Buttons: `Menu View A B X Y Up Down Left Right`. |
 | `storage` | `bcpack_tables` | `G6SHIM_BCPACK_TABLES` | `bcpack-tables.bin` next to `XCRDAPI.dll` | BCPack constant tables for DirectStorage texture decompression. Without a table file BCPack requests fail; zlib and plain requests still run. |
@@ -87,6 +88,7 @@ fullscreen = 1
 [graphics]
 capture_frames = 300,600
 d3d_debug = 1
+frame_timing = 1
 
 [console]
 model = series-s

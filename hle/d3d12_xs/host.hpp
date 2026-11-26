@@ -130,10 +130,12 @@ struct Batch {
     bool texture_due(const void* staging);
     void title_written();
     void flush();
+    std::uint64_t copied() const { return copied_; }
 
 private:
     std::vector<std::tuple<std::shared_ptr<shadow::Shadow>, std::size_t, std::size_t>> refreshes_;
     std::unordered_set<const void*> textures_;
+    std::uint64_t copied_ = 0;
 };
 
 struct SubmissionResult {
@@ -146,6 +148,38 @@ using SubmissionStep = SubmissionResult (*)(ID3D12CommandQueue* queue, ID3D12Fen
                                            HANDLE event, void* context);
 
 void set_submission_step_for_test(SubmissionStep step, void* context);
+
+struct PhaseSample {
+    double milliseconds = 0;
+    std::uint64_t bytes = 0;
+};
+
+struct SubmissionTiming {
+    PhaseSample prepare;
+    PhaseSample execute_call;
+    PhaseSample wait;
+    PhaseSample copy_back;
+    PhaseSample gpu;
+    bool gpu_known = false;
+};
+
+struct IntervalTiming {
+    std::uint64_t submissions = 0;
+    PhaseSample prepare;
+    double prepare_max_ms = 0;
+    PhaseSample execute_call;
+    double execute_max_ms = 0;
+    PhaseSample wait;
+    double wait_max_ms = 0;
+    PhaseSample copy_back;
+    double copy_back_max_ms = 0;
+    PhaseSample gpu;
+    std::uint64_t gpu_samples = 0;
+};
+
+void add_submission_timing(IntervalTiming& interval, const SubmissionTiming& sample);
+IntervalTiming summarise_interval(std::span<const SubmissionTiming> samples);
+std::optional<double> last_gpu_milliseconds_for_test();
 
 class HostList;
 
@@ -222,6 +256,25 @@ private:
     std::mutex composer_mutex_;
     std::unique_ptr<Composer> composer_;
     bool composition_failed_ = false;
+
+    struct TimestampQueries {
+        Microsoft::WRL::ComPtr<ID3D12QueryHeap> heap;
+        Microsoft::WRL::ComPtr<ID3D12Resource> readback;
+        Microsoft::WRL::ComPtr<ID3D12CommandAllocator> begin_allocator;
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> begin_list;
+        Microsoft::WRL::ComPtr<ID3D12CommandAllocator> end_allocator;
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> end_list;
+        std::uint64_t frequency = 0;
+        std::uint64_t* mapped = nullptr;
+        bool ready = false;
+        bool failed = false;
+    };
+
+    bool bracket_timestamps(std::vector<ID3D12CommandList*>& lists);
+    std::optional<double> resolve_timestamps();
+    bool ensure_timestamps();
+
+    std::unique_ptr<TimestampQueries> timestamps_;
 };
 
 class HostList {
