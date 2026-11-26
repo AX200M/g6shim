@@ -13,6 +13,7 @@
 #include <cstring>
 #include <exception>
 #include <iterator>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -61,6 +62,7 @@ constexpr std::string_view kImageHeapShape = "image_heap_shape";
 constexpr std::string_view kImageHeapShapeLoop = "image_heap_shape_loop";
 constexpr std::string_view kBufferHeapStride = "buffer_heap_stride";
 constexpr std::string_view kHeapIndexBound = "heap_index_bound";
+constexpr std::string_view kHeapScalarLoad = "heap_scalar_load";
 constexpr std::string_view kRawOffsetBound = "raw_offset_bound";
 constexpr std::string_view kHeapTableOffset = "heap_table_offset";
 constexpr std::string_view kSamplerLodData = "sampler_lod_data";
@@ -84,7 +86,31 @@ Lowered lower_fixture(const Fixture& fixture, const std::vector<UsedResource>& u
                          used, kUserSgprs << kUserSgprShift, {1, 1, 1});
 }
 
-void check_indexed_buffer_results(Lowered lowered) {
+struct IndexedCase {
+    std::array<std::uint32_t, 3> constants;
+    std::array<std::uint32_t, 3> expected;
+};
+
+constexpr std::array<IndexedCase, 5> kRuntimeStrideCases{{
+    {{0, 1, 0}, {107, 108, 109}},
+    {{1, 1, 0}, {108, 109, 110}},
+    {{0, 3, 0}, {0, 0, 0}},
+    {{0, 0, UINT32_MAX - 3}, {0, 0, 0}},
+    {{2, 0, 0}, {0, 0, 0}},
+}};
+
+constexpr std::uint32_t kUnwritten = UINT32_MAX;
+constexpr std::array<IndexedCase, 7> kHeapScalarCases{{
+    {{0, 8, 0}, {105, 110, kUnwritten}},
+    {{0, 16, 0}, {107, 112, kUnwritten}},
+    {{0, 20, 0}, {108, 0, kUnwritten}},
+    {{1, 0, 0}, {102, 107, kUnwritten}},
+    {{0, 48, 0}, {0, 0, kUnwritten}},
+    {{0, 2, 0}, {0, 0, kUnwritten}},
+    {{2, 8, 0}, {0, 0, kUnwritten}},
+}};
+
+void check_indexed_buffer_results(Lowered lowered, std::span<const IndexedCase> cases) {
     using namespace g6shim::d3d12_xs;
     using Microsoft::WRL::ComPtr;
     host::Host* gpu = host::host();
@@ -176,11 +202,8 @@ void check_indexed_buffer_results(Lowered lowered) {
         std::memcpy(result.data(), output->second, sizeof result);
         return result;
     };
-    CHECK((run(0, 1, 0) == std::array{107u, 108u, 109u}));
-    CHECK((run(1, 1, 0) == std::array{108u, 109u, 110u}));
-    CHECK((run(0, 3, 0) == std::array{0u, 0u, 0u}));
-    CHECK((run(0, 0, UINT32_MAX - 3) == std::array{0u, 0u, 0u}));
-    CHECK((run(2, 0, 0) == std::array{0u, 0u, 0u}));
+    for (const IndexedCase& entry : cases)
+        CHECK((run(entry.constants[0], entry.constants[1], entry.constants[2]) == entry.expected));
 }
 
 std::uint32_t float_bits(float value) {
@@ -438,7 +461,7 @@ TEST(shader_fixtures_translate_and_validate) {
             fixture.name == kRawOffsetBound ||
             fixture.name == kSamplerLodData || fixture.name == kSpilledComputeRoot ||
             fixture.name == kImageGather4Lod || fixture.name == kImageGather4LodBorder ||
-            fixture.name == kHeapPointerAsAddress)
+            fixture.name == kHeapPointerAsAddress || fixture.name == kHeapScalarLoad)
             continue;
         bool translated = true;
         Lowered lowered;
@@ -863,6 +886,36 @@ TEST(shader_fixtures_heap_shape_read_in_a_loop_creates_a_pipeline_on_the_default
     CHECK(SUCCEEDED(device->CreateComputePipelineState(&pipeline_desc, IID_PPV_ARGS(&pipeline))));
 }
 
+TEST(shader_fixtures_bound_a_scalar_load_through_a_heap_index) {
+    const Fixture* fixture = find_fixture(kHeapScalarLoad);
+    CHECK(fixture != nullptr);
+    if (fixture == nullptr) return;
+    constexpr std::uint8_t kHeapUserData = 4;
+    constexpr std::uint8_t kHeapSlot = 2;
+    constexpr std::uint8_t kOutputUserData = 6;
+    constexpr std::uint8_t kOutputSlot = 1;
+    try {
+        const auto lowered = lower_compute(fixture->words, kFixtureVgprs,
+            {root_param(RootType::Kind::Constants, kConstantsUserData, kConstantsSlot),
+             root_param(RootType::Kind::ResourceHeap, kHeapUserData, kHeapSlot),
+             root_param(RootType::Kind::Table, kOutputUserData, kOutputSlot)},
+            {used_uav(kOutputUserData, kOutputSlot)}, (kOutputUserData + 1u) << kUserSgprShift, {1, 1, 1});
+        const auto field = std::find_if(lowered.user_data.begin(), lowered.user_data.end(), [](const UserData& entry) {
+            return entry.source == UserData::Source::BufferHeapData;
+        });
+        CHECK(field != lowered.user_data.end());
+        if (field != lowered.user_data.end()) {
+            CHECK(field->root.kind == RootType::Kind::ResourceHeap);
+            CHECK(field->slot == kHeapSlot);
+        }
+        check_dxil(lowered.dxil, fixture->name);
+        check_indexed_buffer_results(lowered, kHeapScalarCases);
+    } catch (const std::exception& error) {
+        std::printf("fixture %s did not translate: %s\n", fixture->name, error.what());
+        CHECK(false);
+    }
+}
+
 TEST(shader_fixtures_translate_a_buffer_load_with_a_runtime_stride) {
     const Fixture* fixture = find_fixture(kBufferHeapStride);
     CHECK(fixture != nullptr);
@@ -886,7 +939,7 @@ TEST(shader_fixtures_translate_a_buffer_load_with_a_runtime_stride) {
             CHECK(field->slot == kHeapSlot);
         }
         check_dxil(lowered.dxil, fixture->name);
-        check_indexed_buffer_results(lowered);
+        check_indexed_buffer_results(lowered, kRuntimeStrideCases);
     } catch (const std::exception& error) {
         std::printf("fixture %s did not translate: %s\n", fixture->name, error.what());
         CHECK(false);

@@ -1456,6 +1456,10 @@ struct IndexedBufferView {
 };
 
 std::optional<IndexedBufferView> indexed_buffer_view(const descriptor::View& view) {
+    if (const auto* constant = std::get_if<descriptor::ConstantView>(&view)) {
+        if (constant->address == 0 || constant->size == 0) return std::nullopt;
+        return IndexedBufferView{0, constant->size, constant->address, constant->size};
+    }
     const auto desc = shader_buffer_desc(view);
     if (!desc || null_shader_buffer(view)) return std::nullopt;
     const auto range = buffer_range(view);
@@ -1540,7 +1544,7 @@ void write_buffer_slot(HostHeap& host_heap, BufferHeap& heap, std::uint32_t inde
 std::optional<HeapData> create_heap_data(HeapEntry& entry) {
     host::Host* gpu = host::host();
     if (!entry.host || gpu == nullptr) return std::nullopt;
-    const std::uint32_t count = std::min({entry.count, entry.host->count(), kPortableViews});
+    const std::uint32_t count = std::min(entry.count, entry.host->count());
     if (count == 0) return std::nullopt;
     const auto reserved = entry.host->dynamic(1);
     if (!reserved) return std::nullopt;

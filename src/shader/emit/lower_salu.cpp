@@ -627,6 +627,17 @@ void Lower::smem(const IrInst& inst, Site site) {
         }
         return;
     }
+    if (kind == nullptr && indexed_by_resource_heap(src)) {
+        constexpr std::uint32_t kLoadWords = 4;
+        for (std::uint32_t first = 0; first < count; first += kLoadWords) {
+            const std::uint32_t part = std::min(kLoadWords, count - first);
+            const V at = s_.m.bin(cur_, Bin::Add, addr, s_.m.i32(first * static_cast<std::uint32_t>(sizeof(std::uint32_t))));
+            const std::vector<V> words = load_indexed_heap_buffer(src, s_.m.i32(0), at, part, std::nullopt);
+            for (std::uint32_t k = 0; k < part; ++k)
+                write(inst, Reg::s(static_cast<std::uint8_t>(code + first + k)), words[k], std::nullopt);
+        }
+        return;
+    }
     const V h = handle(site, src, false, {13, static_cast<std::uint32_t>(kCodeCbvSize)});
     std::optional<std::uint32_t> constant;
     if (addr.kind == V::Kind::Const && is_null(fields->soffset) && !extra) constant = total;

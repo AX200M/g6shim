@@ -652,14 +652,18 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
     }
 }
 
+bool Lower::indexed_by_resource_heap(const Source& src) const {
+    if (src.kind != Source::Kind::Loaded) return false;
+    const auto address = scalar_.find(src.load);
+    if (address == scalar_.end() || address->second.param >= x_->native->layout.size()) return false;
+    return x_->native->layout[address->second.param].root.kind == RootType::Kind::ResourceHeap;
+}
+
 std::vector<V> Lower::load_indexed_heap_buffer(const Source& src, V index, V offset, std::uint32_t count,
                                                std::optional<V> guard_value) {
     constexpr Why unknown = "a structured buffer of unknown stride";
-    if (src.kind != Source::Kind::Loaded) fail(unknown);
-    const auto address = scalar_.find(src.load);
-    if (address == scalar_.end() || address->second.param >= x_->native->layout.size()) fail(unknown);
-    const RootParam& root = x_->native->layout[address->second.param];
-    if (root.root.kind != RootType::Kind::ResourceHeap) fail(unknown);
+    if (!indexed_by_resource_heap(src)) fail(unknown);
+    const RootParam& root = x_->native->layout[scalar_.find(src.load)->second.param];
 
     using Data = BufferHeapData;
     const V byte_address = heap_byte_address(src.load, src.first);

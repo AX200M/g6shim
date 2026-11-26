@@ -221,6 +221,7 @@ private:
     void code_smem(const IrInst& inst, Address a);
     V cbuffer_dword(V h, V a);
     std::vector<V> format_load(V h, V off, std::uint8_t format, std::uint32_t channels);
+    bool indexed_by_resource_heap(const Source& src) const;
     std::vector<V> load_indexed_heap_buffer(const Source& src, V index, V offset, std::uint32_t count,
                                              std::optional<V> guard_value);
     std::pair<std::uint32_t, std::optional<V>> built_offset(const Source& src);
