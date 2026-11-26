@@ -162,7 +162,7 @@ std::pair<std::size_t, std::size_t> Shadow::inside(std::size_t address, std::siz
     return {from - start, to - start};
 }
 
-void Shadow::writing(std::size_t address, std::size_t bytes) {
+std::size_t Shadow::writing(std::size_t address, std::size_t bytes) {
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
         pending_.emplace_back(address, address + bytes);
@@ -172,10 +172,14 @@ void Shadow::writing(std::size_t address, std::size_t bytes) {
     std::size_t start = from;
     std::size_t end = to;
     if (before_) {
-        start = std::min(before_->first, from);
-        end = std::max(before_->first + before_->second.size(), to);
+        const std::size_t kept_from = before_->first;
+        const std::size_t kept_to = kept_from + before_->second.size();
+        if (kept_from <= from && to <= kept_to) return 0;
+        const std::size_t kept = kept_to - kept_from;
+        const std::size_t limit = static_cast<std::size_t>(bytes_);
+        start = from < kept_from ? std::min(from, kept_from - std::min(kept_from, kept)) : kept_from;
+        end = to > kept_to ? std::max(to, std::min(limit, kept_to + std::min(limit - kept_to, kept))) : kept_to;
     }
-    if (before_ && before_->first == start && before_->first + before_->second.size() == end) return;
     std::vector<std::uint8_t> grown = pooled(end - start);
     if (before_) {
         std::vector<std::uint8_t> bytes_before = std::move(before_->second);
@@ -188,6 +192,7 @@ void Shadow::writing(std::size_t address, std::size_t bytes) {
         append(grown, data_ + start, end - start);
     }
     before_ = std::make_pair(start, std::move(grown));
+    return end - start;
 }
 
 std::size_t Shadow::merge_card(std::size_t address, std::size_t bytes) {

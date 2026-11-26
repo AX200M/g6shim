@@ -344,6 +344,37 @@ TEST(d3d12_xs_host_shadow_copies_back_only_what_shaders_changed) {
     shadow::unregister_buffer(kSlot, address);
 }
 
+TEST(d3d12_xs_host_shadow_copies_back_writes_that_walk_a_buffer) {
+    if (test_host() == nullptr) return;
+    constexpr std::size_t kBytes = 4096;
+    constexpr std::size_t kStep = 16;
+    constexpr std::array<std::size_t, 6> kWrites{1024, 1040, 1056, 2048, 512, 4080};
+    constexpr std::size_t kTitleChange = 1100;
+    std::vector<std::uint8_t> title(kBytes, 4);
+    const auto address = reinterpret_cast<std::uint64_t>(title.data());
+    constexpr std::uintptr_t kSlot = 0x5152;
+    shadow::register_buffer(kSlot, address, title.size());
+    const auto copy = shadow::find(address, title.size());
+    CHECK(copy.has_value());
+    if (!copy) return;
+    CHECK((*copy)->update(address, title.size()) == title.size());
+    for (const std::size_t at : kWrites) (*copy)->writing(address + at, kStep);
+    title[kTitleChange] = 77;
+    for (const std::size_t at : kWrites) (*copy)->data()[at] = 9;
+    for (const std::size_t at : kWrites) CHECK((*copy)->copy_back(address + at, kStep) == kStep);
+    for (const std::size_t at : kWrites) {
+        CHECK(title[at] == 9);
+        CHECK(title[at + 1] == 4);
+    }
+    CHECK(title[kTitleChange] == 77);
+    CHECK(title[0] == 4);
+    (*copy)->writing(address, kStep);
+    (*copy)->data()[1] = 5;
+    CHECK((*copy)->copy_back(address, kStep) == kStep);
+    CHECK(title[1] == 5);
+    shadow::unregister_buffer(kSlot, address);
+}
+
 namespace {
 
 struct FailedStep {

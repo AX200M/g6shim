@@ -52,7 +52,7 @@ public:
 
     void refresh(host::HostList& list, std::uint64_t address, std::uint64_t bytes);
     void gpu_writes(host::HostList& list, std::uint64_t address, std::uint64_t bytes);
-    void writing(std::size_t address, std::size_t bytes);
+    std::size_t writing(std::size_t address, std::size_t bytes);
     std::size_t copy_back(std::size_t address, std::size_t bytes);
     void discard_write(std::size_t address, std::size_t bytes);
     std::size_t update(std::size_t address, std::size_t bytes);
