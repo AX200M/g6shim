@@ -23,6 +23,7 @@ namespace feature {
 
 inline constexpr std::uint64_t kRawBuffers = 1ull << 4;
 inline constexpr std::uint64_t kStencilRef = 1ull << 11;
+inline constexpr std::uint64_t kTiledResources = 1ull << 12;
 inline constexpr std::uint64_t kTypedUavLoads = 1ull << 13;
 inline constexpr std::uint64_t kWaveOps = 1ull << 19;
 inline constexpr std::uint64_t kInt64 = 1ull << 20;
@@ -80,6 +81,8 @@ struct Shader {
     V heap_handle(std::size_t block, V index, bool sampler, bool nonuniform,
                   std::pair<std::uint32_t, std::uint32_t> props);
     std::vector<std::uint8_t> finish();
+
+    bool uses_level_clamp = false;
 
 private:
     void fix_user_data_size(std::uint32_t size);

@@ -55,6 +55,7 @@ constexpr std::string_view kScalarRawHighWord = "scalar_raw_buffer_high_word";
 constexpr std::string_view kScalarTypedFormat = "scalar_typed_buffer_format";
 constexpr std::string_view kScalarImageAddress = "scalar_image_address";
 constexpr std::string_view kImageSampleBiasA16 = "image_sample_bias_a16";
+constexpr std::string_view kImageSampleClamp = "image_sample_clamp";
 constexpr std::string_view kImageShapeOnly = "image_shape_only";
 constexpr std::string_view kImageHeapShape = "image_heap_shape";
 constexpr std::string_view kImageHeapShapeLoop = "image_heap_shape_loop";
@@ -428,7 +429,8 @@ TEST(shader_fixtures_translate_and_validate) {
             fixture.name == kScalarBufferFields || fixture.name == kScalarStructuredFields ||
             fixture.name == kScalarRawHighWord || fixture.name == kScalarTypedFormat ||
             fixture.name == kScalarImageAddress || fixture.name == kScalarConstantBufferWords ||
-            fixture.name == kImageSampleBiasA16 || fixture.name == kScalarBufferCountOnly ||
+            fixture.name == kImageSampleBiasA16 || fixture.name == kImageSampleClamp ||
+            fixture.name == kScalarBufferCountOnly ||
             fixture.name == kPackedInputPartner || fixture.name == kSelectReadLaneMask ||
             fixture.name == kImageShapeOnly || fixture.name == kImageHeapShape ||
             fixture.name == kImageHeapShapeLoop || fixture.name == kHeapIndexBound ||
@@ -499,8 +501,10 @@ TEST(shader_fixtures_translate_spilled_compute_root_words) {
     CHECK(rejected);
 }
 
-TEST(shader_fixtures_translate_biased_sample_with_packed_coordinates) {
-    const Fixture* fixture = find_fixture(kImageSampleBiasA16);
+namespace {
+
+void check_sample_fixture(std::string_view name, const char* compute_label) {
+    const Fixture* fixture = find_fixture(name);
     CHECK(fixture != nullptr);
     if (fixture == nullptr) return;
 
@@ -525,12 +529,22 @@ TEST(shader_fixtures_translate_biased_sample_with_packed_coordinates) {
             native.io = ComputeIo{(kSamplerUserData + 1u) << kUserSgprShift, {32, 1, 1}};
         try {
             const Lowered lowered = lower_native(native);
-            check_dxil(lowered.dxil, stage == HwStage::Ps ? fixture->name : "image_sample_compute");
+            check_dxil(lowered.dxil, stage == HwStage::Ps ? fixture->name : compute_label);
         } catch (const std::exception& error) {
             std::printf("fixture %s did not translate: %s\n", fixture->name, error.what());
             CHECK(false);
         }
     }
+}
+
+}  // namespace
+
+TEST(shader_fixtures_translate_biased_sample_with_packed_coordinates) {
+    check_sample_fixture(kImageSampleBiasA16, "image_sample_compute");
+}
+
+TEST(shader_fixtures_translate_samples_with_a_level_clamp) {
+    check_sample_fixture(kImageSampleClamp, "image_sample_clamp_compute");
 }
 
 TEST(shader_fixtures_translate_an_implicit_packed_pixel_input_pair) {

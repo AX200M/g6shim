@@ -38,6 +38,8 @@ The test lowers each program as a wave32 compute shader with 8 VGPRs, five user 
 
 `image_sample_bias_a16.s` uses a dedicated register for the half-precision bias and a non-sequential address register for the two packed half-precision coordinates. The fixture validates implicit and biased sampling in both pixel and compute shaders.
 
+`image_sample_clamp.s` samples a 2D image with explicit gradients and a level clamp, then with implicit gradients and the same clamp, from seven and three address registers. It is validated in pixel and compute shaders.
+
 `image_gather4_lod.s` gathers one channel of a 2D image at a level taken from a root constant. The image and the output UAV share the descriptor table; the sampler comes from the sampler heap. `image_gather4_lod_border.s` is the same gather with an immediate border sampler and a zero texel offset. The execution test samples mip 1 of a 4x4 texture.
 
 `spilled_compute_root.s` reads one descriptor table pointer and two constant words from a fixed scalar load. The test verifies the logical root indices and rejects the same pointer pattern with a different hardware user-register count.

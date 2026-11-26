@@ -228,7 +228,7 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
     }
     std::uint32_t op = 0;
     bool sample = false;
-    if (name == "image_sample" || name == "image_sample_o") {
+    if (name == "image_sample" || name == "image_sample_o" || name == "image_sample_cl") {
         op = 60;
         sample = true;
     } else if (name == "image_sample_lz" || name == "image_sample_l") {
@@ -240,7 +240,7 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
     } else if (name == "image_sample_c_lz") {
         op = 65;
         sample = true;
-    } else if (name == "image_sample_d") {
+    } else if (name == "image_sample_d" || name == "image_sample_d_cl") {
         op = 63;
         sample = true;
     } else if (name == "image_get_lod" && s_.pixel) {
@@ -351,6 +351,17 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
             }
             return;
         }
+        constexpr std::uint32_t kFloatMagnitude = 0x7FFF'FFFF;
+        constexpr std::uint32_t kHalfMagnitude = 0x7FFF;
+        const bool clamped = name.ends_with("_cl");
+        const V clamp_bits = clamped ? addr_val(first + grads + coords, bias_words) : iu;
+        if (clamped) {
+            const std::optional<std::int64_t> constant = s_.m.int_value(clamp_bits);
+            const std::uint32_t magnitude = a16 ? kHalfMagnitude : kFloatMagnitude;
+            if (!constant || (static_cast<std::uint32_t>(*constant) & magnitude) != 0)
+                s_.uses_level_clamp = true;
+        }
+        const V clamp = clamped ? to_float(clamp_bits) : fu;
         const std::size_t offsets =
             kind == 5 ? 0 : std::min<std::size_t>(coords - ((kind == 6 || kind == 7) ? 1u : 0u), 3);
         const V zero = s_.m.i32(0);
@@ -372,7 +383,7 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
                 }
             }
             args.insert(args.end(), os.begin(), os.end());
-            args.push_back(fu);
+            args.push_back(clamp);
             r = s_.op(c, "sample.f32", Attr::ReadOnly, s_.t.res_ret, 60, args);
         } else if (op == 61) {
             const V bias = to_float(addr_val(0));
@@ -390,7 +401,7 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
             }
             args.insert(args.end(), os.begin(), os.end());
             args.insert(args.end(), g.begin(), g.end());
-            args.push_back(fu);
+            args.push_back(clamp);
             r = s_.op(c, "sampleGrad.f32", Attr::ReadOnly, s_.t.res_ret, 63, args);
         } else if (op == 64 || op == 65) {
             const V reference = as_float(addr_val(first - 1));

@@ -26,6 +26,7 @@ constexpr std::uint32_t kProgramKindShift = 16;
 constexpr std::uint32_t kProgramKindMask = 0x66;
 constexpr std::uint32_t kRootCbvSize = 65536;
 constexpr std::uint32_t kRootCbvBlobDwords = 16384;
+constexpr std::uint32_t kFeatureTiledResources = 0x100;
 constexpr std::uint32_t kFeatureStencilRef = 0x200;
 constexpr std::uint32_t kFeatureTypedUavLoads = 0x800;
 constexpr std::uint32_t kFeatureWaveOps = 0x4000;
@@ -308,6 +309,9 @@ std::vector<std::uint8_t> Shader::finish() {
         signatures = m.md_node({ins, outs, prim_outputs});
     }
 
+    constexpr std::uint32_t kComputeImplicitLodValidatorMinor = 8;
+    const bool compute_implicit_lod = threads && !mesh && uses_implicit_lod_;
+    if (uses_level_clamp && compute_implicit_lod) flags |= feature::kTiledResources;
     if (pixel && std::any_of(outputs.begin(), outputs.end(),
                              [](const SigElement& element) { return element.kind == 20; }))
         flags |= feature::kStencilRef;
@@ -360,8 +364,6 @@ std::vector<std::uint8_t> Shader::finish() {
     const Md six = i32c(6);
     const Md version = m.md_node({one, six});
     m.named_md("dx.version", {version});
-    constexpr std::uint32_t kComputeImplicitLodValidatorMinor = 8;
-    const bool compute_implicit_lod = threads && !mesh && uses_implicit_lod_;
     const Md validator_version = compute_implicit_lod
                                      ? m.md_node({one, i32c(kComputeImplicitLodValidatorMinor)})
                                      : version;
@@ -405,6 +407,7 @@ std::vector<std::uint8_t> Shader::finish() {
 
     std::uint64_t features = 0;
     if ((flags & feature::kStencilRef) != 0) features |= kFeatureStencilRef;
+    if ((flags & feature::kTiledResources) != 0) features |= kFeatureTiledResources;
     if ((flags & feature::kTypedUavLoads) != 0) features |= kFeatureTypedUavLoads;
     if ((flags & feature::kWaveOps) != 0) features |= kFeatureWaveOps;
     if ((flags & feature::kInt64) != 0) features |= kFeatureInt64;
