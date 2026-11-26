@@ -6,7 +6,7 @@
 #include "g_depth_copy_stencil_bit_ps.h"
 #include "g_depth_copy_stencil_ps.h"
 #include "g_depth_copy_vs.h"
-
+#include "removal.hpp"
 #include <g6shim/log.hpp>
 
 #include <algorithm>
@@ -362,6 +362,7 @@ void draw_copy(ID3D12GraphicsCommandList* commands, ID3D12PipelineState* state, 
     commands->OMSetStencilRef(stencil_ref);
     commands->SetGraphicsRootDescriptorTable(0, g_copier.views->GetGPUDescriptorHandleForHeapStart());
     commands->SetGraphicsRoot32BitConstant(1, constant, 0);
+    removal::mark(commands, "depth copy");
     commands->DrawInstanced(3, 1, 0, 0);
 }
 

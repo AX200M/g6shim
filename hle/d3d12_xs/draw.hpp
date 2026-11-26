@@ -92,6 +92,7 @@ private:
                                                                std::span<const g6shim::shader::UsedResource> used,
                                                                bool compute);
     void finish_depth_uav(host::HostList& list);
+    void mark(host::HostList& list, bool compute) const;
 
     std::uintptr_t pipeline_ = 0;
     std::array<Object*, 2> heaps_{nullptr, nullptr};

@@ -397,6 +397,7 @@ private:
 
 Host* host();
 void name(IUnknown* object, const std::string& text);
+void mark_work(HostList& list, std::string_view label);
 [[noreturn]] void fail(const std::string& text);
 
 void ensure_state(HostList& list, Object* resource, std::uint32_t state);

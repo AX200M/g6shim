@@ -5,6 +5,7 @@
 #include "d3d12_xs/descriptor.hpp"
 #include "d3d12_xs/descriptor_host.hpp"
 #include "d3d12_xs/host.hpp"
+#include "d3d12_xs/removal.hpp"
 #include "d3d12_xs/resource.hpp"
 #include "d3d12_xs/card.hpp"
 #include "d3d12_xs/shadow.hpp"
@@ -15,6 +16,7 @@
 #include <g6shim/window.hpp>
 
 #include <windows.h>
+#include <algorithm>
 
 #include <array>
 #include <atomic>
@@ -887,4 +889,60 @@ TEST(d3d12_xs_card_keeps_a_cpu_dword_beside_a_gpu_write) {
     CHECK(load_u32(title.data() + 4) == cpu_value);
     CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
     shadow::unregister_buffer(kSlot, address);
+}
+
+TEST(d3d12_xs_unfinished_breadcrumb_window_keeps_context) {
+    removal::UnfinishedList list;
+    list.name = "host list 3";
+    list.done = 6;
+    list.total = 10;
+    for (std::uint32_t op = 0; op < list.total; ++op) list.ops.push_back(op == 5 ? 6u : 15u);
+    list.contexts.push_back({5, "[compute 46911c97d5c892cd]"});
+    const auto report = removal::format_unfinished_list(list);
+    CHECK(report.has_value());
+    if (!report) return;
+    CHECK(report->name == "host list 3");
+    CHECK(report->done == 6);
+    CHECK(report->total == 10);
+    CHECK(report->steps.size() == 8);
+    CHECK(report->steps.front().index == 1);
+    CHECK(report->steps.back().index == 8);
+    const auto marked = std::find_if(report->steps.begin(), report->steps.end(),
+                                     [](const removal::BreadcrumbStep& step) { return step.index == 5; });
+    CHECK(marked != report->steps.end());
+    if (marked != report->steps.end()) {
+        CHECK(marked->op_name == "Dispatch");
+        CHECK(marked->context == "[compute 46911c97d5c892cd]");
+    }
+    removal::UnfinishedList finished = list;
+    finished.done = finished.total;
+    CHECK(!removal::format_unfinished_list(finished));
+    removal::UnfinishedList idle;
+    idle.name = "host list 1";
+    idle.done = 0;
+    idle.total = 5;
+    idle.ops = {3, 3, 3, 6, 6};
+    idle.contexts.push_back({0, "[vertex aa, pixel bb]"});
+    const auto start = removal::format_unfinished_list(idle);
+    CHECK(start.has_value());
+    if (!start) return;
+    CHECK(start->steps.size() == 4);
+    CHECK(start->steps.front().index == 0);
+    CHECK(start->steps.front().op_name == "DrawInstanced");
+    CHECK(start->steps.front().context == "[vertex aa, pixel bb]");
+    CHECK(start->steps.back().index == 3);
+}
+
+TEST(d3d12_xs_removal_diagnostics_do_not_block_device_creation) {
+    ::SetEnvironmentVariableA("G6SHIM_D3D_DRED", "1");
+    removal::enable();
+    Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
+    Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
+    Microsoft::WRL::ComPtr<ID3D12Device> device;
+    const bool created = SUCCEEDED(::CreateDXGIFactory2(0, IID_PPV_ARGS(&factory))) &&
+                         SUCCEEDED(factory->EnumWarpAdapter(IID_PPV_ARGS(&adapter))) &&
+                         SUCCEEDED(::D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&device)));
+    CHECK(created);
+    if (device) CHECK(device->GetDeviceRemovedReason() == S_OK);
+    ::SetEnvironmentVariableA("G6SHIM_D3D_DRED", nullptr);
 }

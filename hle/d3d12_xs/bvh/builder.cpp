@@ -3,6 +3,7 @@
 #include "builder.hpp"
 
 #include "g_bvh_build_dxil.h"
+#include "../removal.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -267,6 +268,7 @@ public:
         list_->SetComputeRootUnorderedAccessView(kRootSrc1, view(src1, align_src1));
         list_->SetComputeRootUnorderedAccessView(kRootSrc2, view(src2, false));
         list_->SetComputeRootUnorderedAccessView(kRootWindow, space_.host_base);
+        removal::mark(list_, "acceleration");
         list_->Dispatch((threads + kGroupThreads - 1u) / kGroupThreads, 1, 1);
         if (wait) barrier();
     }

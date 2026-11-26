@@ -4,6 +4,7 @@
 
 #include "g_card_piece_dxil.h"
 #include "host.hpp"
+#include "removal.hpp"
 
 #include <g6shim/log.hpp>
 #include <g6shim/settings.hpp>
@@ -380,6 +381,7 @@ void Side::hash_runs(ID3D12GraphicsCommandList* list, const std::vector<std::uin
         span.mode = mode;
         span.piece_bytes = static_cast<std::uint32_t>(kPieceBytes);
         list->SetComputeRoot32BitConstants(kRootSpan, kSpanDwords, &span, 0);
+        removal::mark(list, "card copy");
         list->Dispatch(pieces[i - 1] - pieces[run] + 1, 1, 1);
         run = i;
     }

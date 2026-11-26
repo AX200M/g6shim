@@ -7,6 +7,7 @@
 #include "card.hpp"
 #include "descriptor_host.hpp"
 #include "queue.hpp"
+#include "removal.hpp"
 #include "resource.hpp"
 #include "shadow.hpp"
 #include "texture.hpp"
@@ -499,6 +500,7 @@ Host::Host() {
         else
             G6SHIM_WARN("d3d12_xs: no host D3D12 debug layer");
     }
+    removal::enable();
     HRESULT made = E_FAIL;
     if (settings::enabled("G6SHIM_D3D_WARP")) {
         Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
@@ -530,6 +532,7 @@ Host::Host() {
         device_.Reset();
         return;
     }
+    name(queue_.Get(), "host queue");
     if (FAILED(device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_)))) {
         G6SHIM_WARN("d3d12_xs: no host fence");
         device_.Reset();
@@ -746,6 +749,16 @@ std::optional<double> last_gpu_milliseconds_for_test() {
     return std::nullopt;
 }
 
+void name_command_list(ID3D12GraphicsCommandList* list) {
+    static std::atomic<std::uint64_t> next{0};
+    const auto number = next.fetch_add(1, std::memory_order_relaxed) + 1;
+    char text[32] = {};
+    std::snprintf(text, sizeof text, "host list %llu", static_cast<unsigned long long>(number));
+    name(list, text);
+}
+
+void mark_work(HostList& list, std::string_view label) { removal::mark(list.list(), label); }
+
 std::unique_ptr<HostList> Host::new_list() {
     if (!device_) return nullptr;
     std::unique_ptr<HostList> made(new HostList());
@@ -761,6 +774,8 @@ std::unique_ptr<HostList> Host::new_list() {
                                           nullptr, IID_PPV_ARGS(&made->prelude_))))
         return nullptr;
     made->prelude_->Close();
+    name_command_list(made->list_.Get());
+    name_command_list(made->prelude_.Get());
     return made;
 }
 
@@ -824,6 +839,7 @@ void Host::execute(const std::vector<HostList*>& runs) {
         if (!submission_confirmed(result, removed)) {
             log_submission_failure(result, removed);
             if (FAILED(removed)) {
+                removal::report(device_.Get());
                 for (HostList* list : runs)
                     if (list != nullptr) list->discard_unpublished();
                 held_.clear();
@@ -887,6 +903,7 @@ void Host::execute(const std::vector<HostList*>& runs) {
         result.wait = WAIT_FAILED;
         log_submission_failure(result, removed);
         if (FAILED(removed)) {
+            removal::report(device_.Get());
             for (HostList* list : runs)
                 if (list != nullptr) list->discard_unpublished();
             held_.clear();
@@ -1356,6 +1373,7 @@ bool Host::compose_planes(ID3D12GraphicsCommandList* list, std::span<const Prese
     list->RSSetScissorRects(1, &scissor);
     list->OMSetRenderTargets(1, &render_target, FALSE, nullptr);
     list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    removal::mark(list, "present");
     list->DrawInstanced(3, 1, 0, 0);
     return true;
 }
@@ -1463,6 +1481,7 @@ void fail(const std::string& text) {
         if (FAILED(reason)) {
             std::snprintf(detail, sizeof detail, "; device removed: 0x%08lX", static_cast<unsigned long>(reason));
             message += detail;
+            removal::report(gpu->device());
         }
         if (const auto first = gpu->log_messages()) message += "; debug layer: " + *first;
     }
@@ -1568,6 +1587,8 @@ void HostList::replace_busy_allocators() {
                                                  nullptr, IID_PPV_ARGS(&prelude_))) ||
         FAILED(list_->Close()) || FAILED(prelude_->Close()))
         fail("a host command list did not replace a busy allocator");
+    name_command_list(list_.Get());
+    name_command_list(prelude_.Get());
 }
 
 void HostList::discard_unpublished() {

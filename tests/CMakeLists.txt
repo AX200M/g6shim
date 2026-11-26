@@ -131,6 +131,7 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/fence.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/frame.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/host.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/removal.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/completion.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/indirect.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/later.cpp"

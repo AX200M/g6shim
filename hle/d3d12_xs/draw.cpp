@@ -627,6 +627,7 @@ void State::dispatch(host::HostList& list, std::uint32_t x, std::uint32_t y, std
         drop();
         return;
     }
+    mark(list, true);
     list.list()->Dispatch(x, y, z);
     g_dispatched.fetch_add(1, std::memory_order_relaxed);
     finish_depth_uav(list);
@@ -646,6 +647,7 @@ void State::dispatch_mesh(host::HostList& list, std::uint32_t x) {
     if (ran) {
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> commands;
         if (SUCCEEDED(list.list()->QueryInterface(IID_PPV_ARGS(&commands)))) {
+            mark(list, false);
             commands->DispatchMesh(x, 1, 1);
             g_drawn.fetch_add(1, std::memory_order_relaxed);
         } else {
@@ -781,6 +783,7 @@ void State::draw(host::HostList& list, std::uint32_t vertices, std::uint32_t ins
     if (ran) {
         const std::uint32_t count = rectangles ? vertices / 3 * 6 : vertices;
         const std::uint32_t from = rectangles ? 0 : first;
+        mark(list, false);
         list.list()->DrawInstanced(count, instances, from, first_instance);
         g_drawn.fetch_add(1, std::memory_order_relaxed);
     } else {
@@ -841,6 +844,7 @@ void State::draw_indexed(host::HostList& list, std::uint32_t indices, std::uint3
     }
     const bool ran = topology_ != kRectangleTopology && prepare(list, true);
     if (ran) {
+        mark(list, false);
         list.list()->DrawIndexedInstanced(indices, instances, first, static_cast<INT>(base), first_instance);
         g_drawn.fetch_add(1, std::memory_order_relaxed);
     } else {
@@ -889,6 +893,7 @@ bool State::execute_indirect(host::HostList& list, std::tuple<std::uint32_t, std
         finish_depth_uav(list);
         return false;
     }
+    mark(list, kind == kDispatch);
     list.list()->ExecuteIndirect(host_signature, max, (*args)->buffer(), (*args)->offset(arguments),
                                  counter_shadow ? (*counter_shadow)->buffer() : nullptr,
                                  counter_shadow ? (*counter_shadow)->offset(counter_at) : 0);
@@ -899,6 +904,14 @@ bool State::execute_indirect(host::HostList& list, std::tuple<std::uint32_t, std
         g_drawn.fetch_add(1, std::memory_order_relaxed);
     finish_depth_uav(list);
     return true;
+}
+
+void State::mark(host::HostList& list, bool compute) const {
+    const auto* pipeline =
+        pipeline_bridge::host_pipeline_for(reinterpret_cast<Object*>(pipeline_), compute);
+    if (pipeline == nullptr && compute)
+        pipeline = pipeline_bridge::host_pipeline_for(reinterpret_cast<Object*>(pipeline_), false);
+    host::mark_work(list, pipeline != nullptr ? std::string_view(pipeline->name) : std::string_view("untitled"));
 }
 
 void viewports(host::HostList& list, std::span<const D3D12_VIEWPORT> viewports) {
