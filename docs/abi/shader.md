@@ -170,6 +170,9 @@ A pixel shader writing SV_DepthLessEqual (18) or SV_DepthGreaterEqual (19) inter
 
 Sampling offsets are 6-bit signed per coordinate in the console encoding, and DXIL's immediate offsets are -8 to 7, so a computed offset word must be constant and in range.
 
+`image_gather4_l` and `image_gather4_l_o` read one mip. DXIL gather has no level operand, so the four texels are loaded. The level is floor(max(level, 0) + 1/2), then clamped to [0, mip count - 1]. That rounding is unconfirmed: the public instruction set only says the user level replaces the computed level. Sampler level bias and clamps are not applied. Texel coordinates are floor(uv * size - 1/2) and the +1 neighbour, returned in gather order (0, 1), (1, 1), (1, 0), (0, 0). An immediate sampler's address mode is applied per texel; any other sampler clamps. Border returns that sampler's immediate border colour.
+
+
 ## 64-bit image atomics
 
 An image atomic whose `dmask` is 0x3, or 0xF for compare-and-swap, is a 64-bit atomic. It lowers to `dx.op.atomicBinOp.i64` or `dx.op.atomicCompareExchange.i64` on a UAV handle annotated as one U32 component (`0x105`), the annotation DXC emits for `RWTexture2D<uint64_t>`. Subtract is an add of the negated value. The return, when `glc` is set, is the previous 64-bit texel, split back into two VGPRs.

@@ -17,7 +17,10 @@
 #include <vector>
 
 #include <d3d12.h>
+#include <dxgi1_4.h>
 #include <wrl/client.h>
+
+
 
 namespace {
 
@@ -60,6 +63,8 @@ constexpr std::string_view kSamplerLodData = "sampler_lod_data";
 constexpr std::string_view kPackedInputPartner = "packed_input_partner";
 constexpr std::string_view kSelectReadLaneMask = "select_readlane_mask";
 constexpr std::string_view kSpilledComputeRoot = "spilled_compute_root";
+constexpr std::string_view kImageGather4Lod = "image_gather4_lod";
+constexpr std::string_view kImageGather4LodBorder = "image_gather4_lod_border";
 
 const Fixture* find_fixture(std::string_view name) {
     const auto found = std::find_if(std::begin(kFixtures), std::end(kFixtures),
@@ -169,6 +174,236 @@ void check_indexed_buffer_results(Lowered lowered) {
     CHECK((run(2, 0, 0) == std::array{0u, 0u, 0u}));
 }
 
+std::uint32_t float_bits(float value) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof bits);
+    return bits;
+}
+
+bool gather_on_warp(const char* label, const std::vector<std::uint8_t>& dxil,
+                    const std::vector<std::array<std::uint32_t, 4>>& sampler_words, float u, float v, float lod,
+                    std::array<std::uint32_t, 4>* out) {
+    using Microsoft::WRL::ComPtr;
+    ComPtr<IDXGIFactory4> factory;
+    if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)))) return false;
+    ComPtr<IDXGIAdapter1> adapter;
+    if (FAILED(factory->EnumWarpAdapter(IID_PPV_ARGS(&adapter)))) return false;
+    ComPtr<ID3D12Device> device;
+    if (FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)))) return false;
+
+    D3D12_ROOT_PARAMETER parameter{};
+    parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    std::vector<D3D12_STATIC_SAMPLER_DESC> static_samplers;
+    for (std::size_t n = 0; n < sampler_words.size(); ++n) {
+        const StaticSampler source = StaticSampler::from_words(sampler_words[n]);
+        D3D12_STATIC_SAMPLER_DESC sampler{};
+        sampler.Filter = static_cast<D3D12_FILTER>(source.filter);
+        sampler.AddressU = static_cast<D3D12_TEXTURE_ADDRESS_MODE>(source.address[0]);
+        sampler.AddressV = static_cast<D3D12_TEXTURE_ADDRESS_MODE>(source.address[1]);
+        sampler.AddressW = static_cast<D3D12_TEXTURE_ADDRESS_MODE>(source.address[2]);
+        sampler.MipLODBias = source.mip_lod_bias;
+        sampler.MaxAnisotropy = source.max_anisotropy;
+        sampler.ComparisonFunc = static_cast<D3D12_COMPARISON_FUNC>(source.comparison);
+        sampler.BorderColor = static_cast<D3D12_STATIC_BORDER_COLOR>(source.border);
+        sampler.MinLOD = source.min_lod;
+        sampler.MaxLOD = source.max_lod;
+        sampler.ShaderRegister = static_cast<UINT>(n);
+        sampler.RegisterSpace = 0;
+        sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        static_samplers.push_back(sampler);
+    }
+    D3D12_ROOT_SIGNATURE_DESC root_desc{};
+    root_desc.NumParameters = 1;
+    root_desc.pParameters = &parameter;
+    root_desc.NumStaticSamplers = static_cast<UINT>(static_samplers.size());
+    root_desc.pStaticSamplers = static_samplers.empty() ? nullptr : static_samplers.data();
+    root_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED |
+                      D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+    ComPtr<ID3DBlob> serialized;
+    if (FAILED(D3D12SerializeRootSignature(&root_desc, D3D_ROOT_SIGNATURE_VERSION_1, &serialized, nullptr)))
+        return false;
+    ComPtr<ID3D12RootSignature> root;
+    if (FAILED(device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(),
+                                           IID_PPV_ARGS(&root))))
+        return false;
+    D3D12_COMPUTE_PIPELINE_STATE_DESC pipeline{};
+    pipeline.pRootSignature = root.Get();
+    pipeline.CS = {dxil.data(), dxil.size()};
+    ComPtr<ID3D12PipelineState> state;
+    const HRESULT pipeline_hr = device->CreateComputePipelineState(&pipeline, IID_PPV_ARGS(&state));
+    if (FAILED(pipeline_hr)) {
+        std::printf("%s pipeline refused %08x\n", label, static_cast<unsigned>(pipeline_hr));
+        return false;
+    }
+
+    constexpr UINT kMips = 3;
+    constexpr UINT kWidth = 4;
+    D3D12_HEAP_PROPERTIES default_heap{};
+    default_heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC texture_desc{};
+    texture_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texture_desc.Width = kWidth;
+    texture_desc.Height = kWidth;
+    texture_desc.DepthOrArraySize = 1;
+    texture_desc.MipLevels = kMips;
+    texture_desc.Format = DXGI_FORMAT_R32_FLOAT;
+    texture_desc.SampleDesc.Count = 1;
+    ComPtr<ID3D12Resource> texture;
+    if (FAILED(device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &texture_desc,
+                                               D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&texture))))
+        return false;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprints[kMips]{};
+    UINT64 upload_bytes = 0;
+    device->GetCopyableFootprints(&texture_desc, 0, kMips, 0, footprints, nullptr, nullptr, &upload_bytes);
+    D3D12_HEAP_PROPERTIES upload_heap{};
+    upload_heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC upload_desc{};
+    upload_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    upload_desc.Width = upload_bytes;
+    upload_desc.Height = 1;
+    upload_desc.DepthOrArraySize = 1;
+    upload_desc.MipLevels = 1;
+    upload_desc.SampleDesc.Count = 1;
+    upload_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    ComPtr<ID3D12Resource> upload;
+    if (FAILED(device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &upload_desc,
+                                               D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload))))
+        return false;
+    void* mapped = nullptr;
+    if (FAILED(upload->Map(0, nullptr, &mapped))) return false;
+    auto* bytes = static_cast<std::uint8_t*>(mapped);
+    std::memset(bytes, 0, static_cast<std::size_t>(upload_bytes));
+    const auto put = [&](UINT mip, UINT x, UINT y, float value) {
+        const std::uint32_t bits = float_bits(value);
+        std::memcpy(bytes + footprints[mip].Offset + y * footprints[mip].Footprint.RowPitch + x * sizeof bits, &bits,
+                    sizeof bits);
+    };
+    for (UINT y = 0; y < kWidth; ++y)
+        for (UINT x = 0; x < kWidth; ++x) put(0, x, y, 10.0f);
+    put(1, 0, 0, 1.0f);
+    put(1, 1, 0, 2.0f);
+    put(1, 0, 1, 3.0f);
+    put(1, 1, 1, 4.0f);
+    put(2, 0, 0, 20.0f);
+    upload->Unmap(0, nullptr);
+
+    D3D12_RESOURCE_DESC output_desc = upload_desc;
+    output_desc.Width = 16;
+    output_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    ComPtr<ID3D12Resource> output;
+    if (FAILED(device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &output_desc,
+                                               D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&output))))
+        return false;
+    D3D12_HEAP_PROPERTIES readback_heap{};
+    readback_heap.Type = D3D12_HEAP_TYPE_READBACK;
+    output_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    ComPtr<ID3D12Resource> readback;
+    if (FAILED(device->CreateCommittedResource(&readback_heap, D3D12_HEAP_FLAG_NONE, &output_desc,
+                                               D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&readback))))
+        return false;
+
+    D3D12_DESCRIPTOR_HEAP_DESC heap_desc{};
+    heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    heap_desc.NumDescriptors = 2;
+    heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    ComPtr<ID3D12DescriptorHeap> resources;
+    if (FAILED(device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&resources)))) return false;
+    const UINT step = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu = resources->GetCPUDescriptorHandleForHeapStart();
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+    srv.Format = DXGI_FORMAT_R32_FLOAT;
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Texture2D.MipLevels = kMips;
+    device->CreateShaderResourceView(texture.Get(), &srv, cpu);
+    cpu.ptr += step;
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+    uav.Format = DXGI_FORMAT_R32_TYPELESS;
+    uav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    uav.Buffer.NumElements = 4;
+    uav.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+    device->CreateUnorderedAccessView(output.Get(), nullptr, &uav, cpu);
+
+    D3D12_RESOURCE_DESC constants_desc = upload_desc;
+    constants_desc.Width = 256;
+    ComPtr<ID3D12Resource> constants;
+    if (FAILED(device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &constants_desc,
+                                               D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&constants))))
+        return false;
+    if (FAILED(constants->Map(0, nullptr, &mapped))) return false;
+    auto* words = static_cast<std::uint32_t*>(mapped);
+    std::fill(words, words + 64, 0u);
+    words[0] = float_bits(u);
+    words[1] = float_bits(v);
+    words[2] = float_bits(lod);
+    constants->Unmap(0, nullptr);
+
+    ComPtr<ID3D12CommandQueue> queue;
+    D3D12_COMMAND_QUEUE_DESC queue_desc{};
+    if (FAILED(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)))) return false;
+    ComPtr<ID3D12CommandAllocator> allocator;
+    if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))))
+        return false;
+    ComPtr<ID3D12GraphicsCommandList> list;
+    if (FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr,
+                                         IID_PPV_ARGS(&list))))
+        return false;
+    for (UINT mip = 0; mip < kMips; ++mip) {
+        D3D12_TEXTURE_COPY_LOCATION destination{};
+        destination.pResource = texture.Get();
+        destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        destination.SubresourceIndex = mip;
+        D3D12_TEXTURE_COPY_LOCATION source{};
+        source.pResource = upload.Get();
+        source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        source.PlacedFootprint = footprints[mip];
+        list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+    }
+    D3D12_RESOURCE_BARRIER to_sample{};
+    to_sample.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    to_sample.Transition.pResource = texture.Get();
+    to_sample.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    to_sample.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    to_sample.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    D3D12_RESOURCE_BARRIER to_uav = to_sample;
+    to_uav.Transition.pResource = output.Get();
+    to_uav.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    to_uav.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    const D3D12_RESOURCE_BARRIER ready[] = {to_sample, to_uav};
+    list->ResourceBarrier(2, ready);
+    ID3D12DescriptorHeap* heaps[] = {resources.Get()};
+    list->SetDescriptorHeaps(1, heaps);
+    list->SetComputeRootSignature(root.Get());
+    list->SetPipelineState(state.Get());
+    list->SetComputeRootConstantBufferView(0, constants->GetGPUVirtualAddress());
+    list->Dispatch(1, 1, 1);
+    D3D12_RESOURCE_BARRIER to_copy = to_uav;
+    to_copy.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    to_copy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    list->ResourceBarrier(1, &to_copy);
+    list->CopyResource(readback.Get(), output.Get());
+    if (FAILED(list->Close())) return false;
+    ID3D12CommandList* lists[] = {list.Get()};
+    queue->ExecuteCommandLists(1, lists);
+    ComPtr<ID3D12Fence> fence;
+    if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)))) return false;
+    if (FAILED(queue->Signal(fence.Get(), 1))) return false;
+    if (fence->GetCompletedValue() < 1) {
+        HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (event == nullptr) return false;
+        const HRESULT waited = fence->SetEventOnCompletion(1, event);
+        if (SUCCEEDED(waited)) WaitForSingleObject(event, 10000);
+        CloseHandle(event);
+        if (FAILED(waited) || fence->GetCompletedValue() < 1) return false;
+    }
+    if (FAILED(readback->Map(0, nullptr, &mapped))) return false;
+    std::memcpy(out->data(), mapped, sizeof *out);
+    readback->Unmap(0, nullptr);
+    return true;
+}
+
+
 }  // namespace
 
 TEST(shader_fixtures_translate_and_validate) {
@@ -183,7 +418,8 @@ TEST(shader_fixtures_translate_and_validate) {
             fixture.name == kImageShapeOnly || fixture.name == kImageHeapShape ||
             fixture.name == kImageHeapShapeLoop ||
             fixture.name == kBufferHeapStride || fixture.name == kSamplerLodData ||
-            fixture.name == kSpilledComputeRoot)
+            fixture.name == kSpilledComputeRoot || fixture.name == kImageGather4Lod ||
+            fixture.name == kImageGather4LodBorder)
             continue;
         bool translated = true;
         Lowered lowered;
@@ -838,4 +1074,61 @@ TEST(shader_fixtures_translate_scalar_reads_of_image_addresses) {
                    std::string_view::npos;
     }
     CHECK(rejected);
+}
+
+TEST(shader_fixtures_gather_four_texels_at_a_level) {
+    const Fixture* lod = find_fixture(kImageGather4Lod);
+    const Fixture* border = find_fixture(kImageGather4LodBorder);
+    CHECK(lod != nullptr && border != nullptr);
+    if (lod == nullptr || border == nullptr) return;
+
+    constexpr std::uint8_t kSamplerUserData = 6;
+    constexpr std::uint8_t kSamplerSlot = 2;
+    UsedResource texture = used_uav(kTableUserData, kTableSlot);
+    texture.kind.kind = ResourceType::Kind::Srv;
+    texture.dwords = 8;
+    UsedResource output = used_uav(kTableUserData, kTableSlot);
+    output.table_offset_dwords = kSecondDescriptorDword;
+    const auto lower_gather = [&](const Fixture& fixture, bool sampler) {
+        std::vector<RootParam> layout = {
+            root_param(RootType::Kind::Constants, kConstantsUserData, kConstantsSlot),
+            root_param(RootType::Kind::Table, kTableUserData, kTableSlot),
+        };
+        std::uint32_t users = kUserSgprs;
+        if (sampler) {
+            layout.push_back(root_param(RootType::Kind::SamplerHeap, kSamplerUserData, kSamplerSlot));
+            users = kSamplerUserData + 1;
+        }
+        return lower_compute(fixture.words, kFixtureVgprs, layout, {texture, output}, users << kUserSgprShift,
+                             {1, 1, 1});
+    };
+    bool translated = true;
+    Lowered heap;
+    Lowered edged;
+    try {
+        heap = lower_gather(*lod, true);
+        edged = lower_gather(*border, false);
+    } catch (const std::exception& error) {
+        std::printf("gather fixture did not translate: %s\n", error.what());
+        translated = false;
+    }
+    CHECK(translated);
+    if (!translated) return;
+    check_dxil(heap.dxil, lod->name);
+    check_dxil(edged.dxil, border->name);
+
+
+    std::array<std::uint32_t, 4> center{};
+    std::array<std::uint32_t, 4> edge{};
+    const bool center_ran = gather_on_warp("heap", heap.dxil, heap.samplers, 0.5f, 0.5f, 1.0f, &center);
+    const bool edge_ran = gather_on_warp("border", edged.dxil, edged.samplers, 0.0f, 0.0f, 1.0f, &edge);
+    if (!center_ran || !edge_ran) {
+        std::printf("  skipped: no WARP device\n");
+        return;
+    }
+    const std::array<std::uint32_t, 4> center_expected{float_bits(3.0f), float_bits(4.0f), float_bits(2.0f),
+                                                      float_bits(1.0f)};
+    const std::array<std::uint32_t, 4> edge_expected{0u, float_bits(1.0f), 0u, 0u};
+    CHECK(center == center_expected);
+    CHECK(edge == edge_expected);
 }
