@@ -799,6 +799,9 @@ struct PlacedTexture {
 
 std::map<std::pair<std::uint64_t, std::array<std::uint32_t, 14>>, PlacedTexture> g_placed;
 std::uint64_t g_placed_swept_frame = 0;
+std::vector<Object*> g_placed_replaced;
+std::atomic<std::uint64_t> g_placed_replaced_count{0};
+std::atomic<std::uint64_t> g_placed_slots_cleared{0};
 
 }  // namespace
 
@@ -998,6 +1001,24 @@ void HostHeap::keep(std::uint32_t index, Microsoft::WRL::ComPtr<ID3D12Resource> 
         window_generation_[index].store(stamp, std::memory_order_relaxed);
     }
     if (previous && previous.Get() != kept(index).Get()) retire_replaced(std::move(previous));
+}
+
+std::uint32_t HostHeap::clear_showing(const std::unordered_set<const ID3D12Resource*>& gone) {
+    if (sampler_ || gone.empty()) return 0;
+    std::vector<std::uint32_t> showing;
+    {
+        std::lock_guard<std::mutex> lock(kept_mutex_);
+        const std::size_t slots = std::min<std::size_t>(count_, kept_.size());
+        for (std::size_t index = 0; index < slots; ++index)
+            if (kept_[index] && gone.contains(kept_[index].Get())) showing.push_back(static_cast<std::uint32_t>(index));
+    }
+    for (const std::uint32_t index : showing) {
+        std::lock_guard<std::mutex> lock(stripe(index));
+        made_[index] = 0;
+        if (index < quick_.size()) quick_[index].store(0, std::memory_order_release);
+        make_null(index);
+    }
+    return static_cast<std::uint32_t>(showing.size());
 }
 
 Microsoft::WRL::ComPtr<ID3D12Resource> HostHeap::kept(std::uint32_t index) {
@@ -1671,6 +1692,17 @@ std::optional<descriptor::View> placed_texture(const descriptor::View& view) {
     {
         std::lock_guard<std::mutex> lock(g_placed_mutex);
         const auto [at, fresh] = g_placed.try_emplace(key, PlacedTexture{out, frame::current_frame()});
+        if (fresh) {
+            auto other = g_placed.lower_bound(std::make_pair(address, std::array<std::uint32_t, 14>{}));
+            while (other != g_placed.end() && other->first.first == address) {
+                if (other == at) {
+                    ++other;
+                    continue;
+                }
+                g_placed_replaced.push_back(other->second.object);
+                other = g_placed.erase(other);
+            }
+        }
         if (!fresh) {
             resource::release_resource(out);
             out = at->second.object;
@@ -1688,13 +1720,20 @@ std::size_t placed_texture_count() {
     return g_placed.size();
 }
 
+PlacedStats placed_stats() {
+    return PlacedStats{g_placed_replaced_count.load(std::memory_order_relaxed),
+                       g_placed_slots_cleared.load(std::memory_order_relaxed)};
+}
+
 std::size_t expire_placed_textures() {
     const std::uint64_t now = frame::current_frame();
     std::vector<Object*> idle;
+    std::vector<Object*> replaced;
     {
         std::lock_guard<std::mutex> lock(g_placed_mutex);
         if (g_placed_swept_frame == now) return 0;
         g_placed_swept_frame = now;
+        replaced.swap(g_placed_replaced);
         for (auto it = g_placed.begin(); it != g_placed.end();) {
             ID3D12Resource* shown = texture::host_texture(it->second.object);
             if (now - it->second.used_frame < kPlacedIdleFrames ||
@@ -1706,8 +1745,24 @@ std::size_t expire_placed_textures() {
             it = g_placed.erase(it);
         }
     }
+    if (!replaced.empty()) {
+        std::unordered_set<const ID3D12Resource*> gone;
+        for (Object* object : replaced)
+            if (ID3D12Resource* shown = texture::host_texture(object)) gone.insert(shown);
+        std::vector<std::shared_ptr<HeapEntry>> heaps;
+        {
+            std::shared_lock<std::shared_mutex> lock(g_heaps_mutex);
+            heaps = g_heaps;
+        }
+        std::uint64_t cleared = 0;
+        for (const std::shared_ptr<HeapEntry>& entry : heaps)
+            if (entry && entry->host) cleared += entry->host->clear_showing(gone);
+        g_placed_replaced_count.fetch_add(replaced.size(), std::memory_order_relaxed);
+        g_placed_slots_cleared.fetch_add(cleared, std::memory_order_relaxed);
+        for (Object* object : replaced) resource::release_resource(object);
+    }
     for (Object* object : idle) resource::release_resource(object);
-    return idle.size();
+    return idle.size() + replaced.size();
 }
 
 void note_shader_heap(std::uint64_t start, std::uint64_t bytes, std::uint64_t step, bool sampler) {

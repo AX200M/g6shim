@@ -198,11 +198,13 @@ void log_host_memory() {
         text += part;
     }
     const resource::TextureObjects objects = resource::texture_objects();
+    const descriptor_host::PlacedStats placed = descriptor_host::placed_stats();
     G6SHIM_INFO("d3d12_xs: host textures %zu with %llu MiB (title textures: %lld committed, %lld placed, %lld at "
-                "an address)%s",
+                "an address; %llu replaced at their address, %llu slots cleared)%s",
                 textures.size(), static_cast<unsigned long long>(total >> 20),
                 static_cast<long long>(objects.committed), static_cast<long long>(objects.placed),
-                static_cast<long long>(objects.at_address), text.c_str());
+                static_cast<long long>(objects.at_address), static_cast<unsigned long long>(placed.replaced),
+                static_cast<unsigned long long>(placed.slots_cleared), text.c_str());
 }
 
 void Meter::frame(HWND hwnd) {

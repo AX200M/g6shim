@@ -29,8 +29,14 @@ constexpr std::size_t kClearWords = 5;
 constexpr std::uint64_t kFnvOffset = 1469598103934665603ull;
 constexpr std::uint64_t kFnvPrime = 1099511628211ull;
 
-std::mutex g_staging_mutex;
-std::unordered_map<std::uintptr_t, std::shared_ptr<Staging>> g_staging;
+struct Uploaded {
+    std::size_t start = 0;
+    std::size_t bytes = 0;
+    std::uint64_t stamp = 0;
+};
+
+std::mutex g_uploaded_mutex;
+std::unordered_map<std::uintptr_t, Uploaded> g_uploaded;
 
 struct NotedRange {
     std::weak_ptr<later::HostTexture> owner;
@@ -191,8 +197,8 @@ void forget(Object* object) {
     }
     const auto key = reinterpret_cast<std::uintptr_t>(object);
     {
-        std::lock_guard<std::mutex> lock(g_staging_mutex);
-        g_staging.erase(key);
+        std::lock_guard<std::mutex> lock(g_uploaded_mutex);
+        g_uploaded.erase(key);
     }
     {
         std::lock_guard<std::mutex> lock(g_written_mutex);
@@ -242,7 +248,7 @@ std::uint64_t Staging::refresh_now() {
     const std::size_t size = static_cast<std::size_t>(layout_.size);
     const std::size_t start = reinterpret_cast<std::size_t>(memory_);
     std::lock_guard<std::mutex> lock(last_mutex_);
-    if (const auto pages = watch::writes(start, start + size, false)) {
+    if (const auto pages = watch::writes(start, start + size, true)) {
         if (last_.asked != 0) {
             const bool unchanged = std::all_of(pages->written.begin(), pages->written.end(),
                                                [this](const auto& page) { return page.second <= last_.asked; });
@@ -283,12 +289,6 @@ void Staging::detile(std::span<const std::uint8_t> tiled) {
 
 std::optional<std::shared_ptr<Staging>> staging(Object* object, ID3D12Resource* texture) {
     if (object == nullptr || texture == nullptr) return std::nullopt;
-    const auto key = reinterpret_cast<std::uintptr_t>(object);
-    {
-        std::lock_guard<std::mutex> lock(g_staging_mutex);
-        const auto found = g_staging.find(key);
-        if (found != g_staging.end()) return found->second;
-    }
     const auto memory = resource::texture_memory(object);
     if (!memory) return std::nullopt;
     const auto layout_texture = resource::texture_layout(memory->second);
@@ -322,8 +322,6 @@ std::optional<std::shared_ptr<Staging>> staging(Object* object, ID3D12Resource* 
     auto made = std::make_shared<Staging>(std::move(buffer->first), buffer->second, std::move(footprints),
                                           std::move(rows), layout, static_cast<std::uint32_t>(desc.MipLevels),
                                           memory->first);
-    std::lock_guard<std::mutex> lock(g_staging_mutex);
-    g_staging.insert_or_assign(key, made);
     return made;
 }
 
@@ -335,8 +333,28 @@ void upload(host::HostList& list, Object* object, ID3D12Resource* texture) {
         if (g_written.find(key) != g_written.end()) return;
     }
     if (!list.first_use(key)) return;
+    std::optional<Uploaded> before;
+    {
+        std::lock_guard<std::mutex> lock(g_uploaded_mutex);
+        const auto found = g_uploaded.find(key);
+        if (found != g_uploaded.end()) before = found->second;
+    }
+    if (before && before->stamp != 0) {
+        const auto pages = watch::writes(before->start, before->start + before->bytes, true);
+        const bool unchanged =
+            pages && std::all_of(pages->written.begin(), pages->written.end(),
+                                 [&](const auto& page) { return page.second <= before->stamp; });
+        if (unchanged) return;
+    }
     auto staged = staging(object, texture);
     if (!staged) return;
+    {
+        const auto start = reinterpret_cast<std::size_t>((*staged)->memory());
+        const std::size_t bytes = (*staged)->memory_bytes();
+        const auto pages = watch::writes(start, start + bytes, true);
+        std::lock_guard<std::mutex> lock(g_uploaded_mutex);
+        g_uploaded.insert_or_assign(key, Uploaded{start, bytes, pages ? pages->asked : 0});
+    }
     host::ensure_state(list, object, kCopyDest);
     const auto& footprints = (*staged)->footprints();
     for (std::size_t i = 0; i < footprints.size(); ++i) {

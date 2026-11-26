@@ -18,6 +18,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <unordered_set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -58,6 +59,7 @@ public:
     bool shows_none(std::uint32_t index) const;
     std::uint64_t shown_key(std::uint32_t index) const;
     Microsoft::WRL::ComPtr<ID3D12Resource> kept(std::uint32_t index);
+    std::uint32_t clear_showing(const std::unordered_set<const ID3D12Resource*>& gone);
 
 private:
     HostHeap(Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap, std::uint64_t cpu, std::uint64_t gpu,
@@ -115,6 +117,13 @@ std::optional<descriptor::View> materialize_for_draw(Object* heap, std::uint32_t
 void release_retired_views();
 std::uint64_t retired_view_count();
 std::size_t placed_texture_count();
+
+struct PlacedStats {
+    std::uint64_t replaced = 0;
+    std::uint64_t slots_cleared = 0;
+};
+
+PlacedStats placed_stats();
 std::size_t expire_placed_textures();
 DescriptorStats take_descriptor_stats();
 

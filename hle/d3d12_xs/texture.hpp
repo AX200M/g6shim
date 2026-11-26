@@ -65,6 +65,8 @@ public:
     const std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT>& footprints() const { return footprints_; }
     const std::vector<std::uint32_t>& rows() const { return rows_; }
     const gfx10::Layout& layout() const { return layout_; }
+    const std::uint8_t* memory() const { return memory_; }
+    std::size_t memory_bytes() const { return static_cast<std::size_t>(layout_.size); }
 
 private:
     std::uint64_t refresh_now();
