@@ -332,11 +332,13 @@ Wait flag 2 makes a token when the wait times out. The token counts frames; tick
 |---|---|
 | device | one `ID3D12Device`, feature level 12_0, the default adapter or WARP with `G6SHIM_D3D_WARP` |
 | debug layer | enabled when `G6SHIM_D3D_DEBUG` is set |
-| queue | one direct queue, submissions waited for on a fence and an event |
+| queue | one direct queue; shader write-back and deferred values run only after the fence signal, the completion event and the wait all succeed |
 | render target ring | 1024 descriptors of the RTV heap |
 | depth ring | 1024 descriptors of the DSV heap |
 | swap chain | 2 buffers, flip discard, `Present(0, 0)` |
 | drawable formats | 27-32, 87, 90, 91, 23-25, 9-14; other formats are not shown |
+
+If the signal, the completion event or the wait fails, or the device has been removed, those bytes are not published. One log line names the signal HRESULT, the event HRESULT, the wait code and the device-removed reason. Host resources from that submission stay alive until a later fence completion on the same queue, or until the device is removed.
 
 ## Presentation window
 

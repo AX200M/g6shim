@@ -333,6 +333,87 @@ TEST(d3d12_xs_host_shadow_copies_back_only_what_shaders_changed) {
     shadow::unregister_buffer(kSlot, address);
 }
 
+namespace {
+
+struct FailedStep {
+    int mode = 0;
+    shadow::Shadow* shadow = nullptr;
+};
+
+struct SubmissionStepGuard {
+    explicit SubmissionStepGuard(host::SubmissionStep step, void* context) {
+        host::set_submission_step_for_test(step, context);
+    }
+    ~SubmissionStepGuard() { host::set_submission_step_for_test(nullptr, nullptr); }
+};
+
+host::SubmissionResult fail_submission(ID3D12CommandQueue*, ID3D12Fence*, std::uint64_t, HANDLE, void* context) {
+    auto* step = static_cast<FailedStep*>(context);
+    if (step != nullptr && step->shadow != nullptr) step->shadow->data()[0] = 9;
+    host::SubmissionResult result;
+    if (step == nullptr || step->mode == 1) return result;
+    result.signal = S_OK;
+    result.armed = S_OK;
+    result.wait = WAIT_TIMEOUT;
+    return result;
+}
+
+void expect_failed_submission_publishes_nothing(int mode) {
+    host::Host* gpu = test_host();
+    if (gpu == nullptr) return;
+    std::vector<std::uint8_t> title(256, 4);
+    const auto address = reinterpret_cast<std::uint64_t>(title.data());
+    const auto slot = static_cast<std::uintptr_t>(0x5160 + mode);
+    shadow::register_buffer(slot, address, title.size());
+    const auto copy = shadow::find(address, title.size());
+    CHECK(copy.has_value());
+    if (!copy) {
+        shadow::unregister_buffer(slot, address);
+        return;
+    }
+    CHECK((*copy)->update(address, title.size()) == title.size());
+    auto list = gpu->new_list();
+    CHECK(list != nullptr);
+    if (!list) {
+        shadow::unregister_buffer(slot, address);
+        return;
+    }
+    (*copy)->gpu_writes(*list, address, 16);
+    std::uint64_t destination = 0;
+    list->defer_write(reinterpret_cast<std::uint8_t*>(&destination), host::Written::of(0xAB), 8);
+    list->close();
+    FailedStep failed{mode, copy->get()};
+    {
+        const SubmissionStepGuard guard(&fail_submission, &failed);
+        gpu->execute({list.get()});
+    }
+    CHECK(title[0] == 4);
+    CHECK(destination == 0);
+    list->reset();
+    CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
+    shadow::unregister_buffer(slot, address);
+}
+
+}  // namespace
+
+TEST(d3d12_xs_host_failed_signal_publishes_nothing) { expect_failed_submission_publishes_nothing(1); }
+
+TEST(d3d12_xs_host_failed_wait_publishes_nothing) { expect_failed_submission_publishes_nothing(2); }
+
+TEST(d3d12_xs_host_completed_submission_publishes_deferred_writes) {
+    host::Host* gpu = test_host();
+    if (gpu == nullptr) return;
+    auto list = gpu->new_list();
+    CHECK(list != nullptr);
+    if (!list) return;
+    std::uint64_t destination = 0;
+    list->defer_write(reinterpret_cast<std::uint8_t*>(&destination), host::Written::of(0x11), 8);
+    list->close();
+    gpu->execute({list.get()});
+    CHECK(destination == 0x11);
+    CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
+}
+
 TEST(d3d12_xs_host_watch_reports_written_pages_to_every_asker) {
     auto* memory = static_cast<std::uint8_t*>(
         ::VirtualAlloc(nullptr, 4 * watch::kPageBytes, MEM_RESERVE | MEM_COMMIT | kWriteWatch, PAGE_READWRITE));

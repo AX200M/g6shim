@@ -231,6 +231,17 @@ std::size_t Shadow::copy_back(std::size_t address, std::size_t bytes) {
     return written;
 }
 
+void Shadow::discard_write(std::size_t address, std::size_t bytes) {
+    std::lock_guard<std::mutex> snapshot_lock(before_mutex_);
+    std::lock_guard<std::mutex> lock(pending_mutex_);
+    const auto range = std::make_pair(address, address + bytes);
+    pending_.erase(std::remove(pending_.begin(), pending_.end(), range), pending_.end());
+    if (pending_.empty() && before_) {
+        give_back(std::move(before_->second));
+        before_.reset();
+    }
+}
+
 std::size_t Shadow::update(std::size_t address, std::size_t bytes) {
     const std::size_t start = static_cast<std::size_t>(start_);
     const std::size_t end = static_cast<std::size_t>(start_ + bytes_);

@@ -211,6 +211,51 @@ void log_presentation_skipped() {
     std::call_once(logged, [] { G6SHIM_WARN("d3d12_xs: presentation skipped, no presenter"); });
 }
 
+struct SubmissionHook {
+    SubmissionStep step = nullptr;
+    void* context = nullptr;
+};
+
+std::mutex submission_hook_mutex;
+SubmissionHook submission_hook;
+
+bool submission_confirmed(const SubmissionResult& result, HRESULT removed) {
+    return SUCCEEDED(result.signal) && SUCCEEDED(result.armed) && result.wait == WAIT_OBJECT_0 &&
+           SUCCEEDED(removed);
+}
+
+SubmissionResult wait_for_submission(ID3D12CommandQueue* queue, ID3D12Fence* fence, std::uint64_t value,
+                                     HANDLE event) {
+    SubmissionResult result;
+    if (queue == nullptr || fence == nullptr || event == nullptr) return result;
+    result.signal = queue->Signal(fence, value);
+    if (FAILED(result.signal)) return result;
+    result.armed = fence->SetEventOnCompletion(value, event);
+    if (FAILED(result.armed)) return result;
+    result.wait = ::WaitForSingleObject(event, INFINITE);
+    return result;
+}
+
+SubmissionResult complete_submission(ID3D12CommandQueue* queue, ID3D12Fence* fence, std::uint64_t value,
+                                     HANDLE event) {
+    SubmissionStep step = nullptr;
+    void* context = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(submission_hook_mutex);
+        step = submission_hook.step;
+        context = submission_hook.context;
+    }
+    if (step != nullptr) return step(queue, fence, value, event, context);
+    return wait_for_submission(queue, fence, value, event);
+}
+
+void log_submission_failure(const SubmissionResult& result, HRESULT removed) {
+    G6SHIM_WARN(
+        "d3d12_xs: host submission not completed (signal 0x%08lX, event 0x%08lX, wait 0x%08lX, device 0x%08lX)",
+        static_cast<unsigned long>(result.signal), static_cast<unsigned long>(result.armed),
+        static_cast<unsigned long>(result.wait), static_cast<unsigned long>(removed));
+}
+
 }  // namespace
 
 std::uint32_t pc_state(std::uint32_t state) { return state & kPcStateMask; }
@@ -529,6 +574,12 @@ Host* Host::get() {
 
 Host* host() { return Host::get(); }
 
+void set_submission_step_for_test(SubmissionStep step, void* context) {
+    std::lock_guard<std::mutex> lock(submission_hook_mutex);
+    submission_hook.step = step;
+    submission_hook.context = context;
+}
+
 std::unique_ptr<HostList> Host::new_list() {
     if (!device_) return nullptr;
     std::unique_ptr<HostList> made(new HostList());
@@ -549,6 +600,7 @@ std::unique_ptr<HostList> Host::new_list() {
 
 void Host::execute(const std::vector<HostList*>& runs) {
     std::lock_guard<std::mutex> submitted_lock(submitted_mutex_);
+    release_retained();
     Batch batch;
     std::vector<ID3D12CommandList*> lists;
     lists.reserve(runs.size() * 2);
@@ -560,15 +612,20 @@ void Host::execute(const std::vector<HostList*>& runs) {
     batch.flush();
     ++submitted_;
     queue_->ExecuteCommandLists(static_cast<UINT>(lists.size()), lists.data());
-    const HRESULT signalled = queue_->Signal(fence_.Get(), submitted_);
-    bool waited = false;
-    if (SUCCEEDED(signalled) && SUCCEEDED(fence_->SetEventOnCompletion(submitted_, event_))) {
-        waited = ::WaitForSingleObject(event_, INFINITE) == WAIT_OBJECT_0;
-    } else {
-        G6SHIM_WARN("d3d12_xs: host submission not waited for (0x%08lX)", static_cast<unsigned long>(signalled));
+    const SubmissionResult result = complete_submission(queue_.Get(), fence_.Get(), submitted_, event_);
+    const HRESULT removed = device_->GetDeviceRemovedReason();
+    if (!submission_confirmed(result, removed)) {
+        log_submission_failure(result, removed);
+        if (FAILED(removed)) {
+            for (HostList* list : runs)
+                if (list != nullptr) list->discard_unpublished();
+            held_.clear();
+        } else {
+            retain_incomplete(runs, SUCCEEDED(result.signal));
+        }
+        log_messages();
+        return;
     }
-    if (FAILED(device_->GetDeviceRemovedReason()))
-        fail("the host GPU device was removed after a submission");
     std::vector<std::tuple<std::shared_ptr<shadow::Shadow>, std::size_t, std::size_t>> back;
     for (HostList* list : runs) {
         std::lock_guard<std::mutex> lock(list->deferred_mutex_);
@@ -587,8 +644,36 @@ void Host::execute(const std::vector<HostList*>& runs) {
         std::lock_guard<std::mutex> lock(list->deferred_mutex_);
         for (const WriteStep& write : list->deferred_.writes) write.written.write(write.destination, write.bytes);
     }
+    confirmed_ = submitted_;
+    release_retained();
     log_messages();
-    if (waited) shadow::submission_completed();
+    shadow::submission_completed();
+}
+
+void Host::release_retained() {
+    if (!device_ || FAILED(device_->GetDeviceRemovedReason())) {
+        held_.clear();
+        return;
+    }
+    const std::uint64_t done = fence_ ? fence_->GetCompletedValue() : 0;
+    held_.erase(std::remove_if(held_.begin(), held_.end(),
+                               [&](const HeldSubmission& held) {
+                                   if (held.signalled) return done >= held.enqueued;
+                                   return confirmed_ != 0 && confirmed_ >= held.enqueued;
+                               }),
+                held_.end());
+}
+
+void Host::retain_incomplete(const std::vector<HostList*>& runs, bool signalled) {
+    HeldSubmission held;
+    held.enqueued = submitted_;
+    held.signalled = signalled;
+    for (HostList* list : runs) {
+        if (list == nullptr) continue;
+        list->retain_objects(held.objects);
+        list->discard_unpublished();
+    }
+    if (!held.objects.empty()) held_.push_back(std::move(held));
 }
 
 std::optional<std::string> Host::log_messages() {
@@ -1080,6 +1165,7 @@ void HostList::reset() {
         std::lock_guard<std::mutex> lock(deferred_mutex_);
         deferred_ = Deferred{};
     }
+    if (allocator_busy_) replace_busy_allocators();
     {
         std::lock_guard<std::mutex> lock(states_mutex_);
         states_.clear();
@@ -1095,6 +1181,50 @@ void HostList::reset() {
     }
     if (FAILED(allocator_->Reset()) || FAILED(list_->Reset(allocator_.Get(), nullptr)))
         fail("a host command list did not reset");
+}
+
+void HostList::replace_busy_allocators() {
+    allocator_.Reset();
+    list_.Reset();
+    prelude_allocator_.Reset();
+    prelude_.Reset();
+    allocator_busy_ = false;
+    Host* gpu = host();
+    if (gpu == nullptr || gpu->device() == nullptr ||
+        FAILED(gpu->device()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator_))) ||
+        FAILED(gpu->device()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator_.Get(), nullptr,
+                                                 IID_PPV_ARGS(&list_))) ||
+        FAILED(gpu->device()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                      IID_PPV_ARGS(&prelude_allocator_))) ||
+        FAILED(gpu->device()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, prelude_allocator_.Get(),
+                                                 nullptr, IID_PPV_ARGS(&prelude_))) ||
+        FAILED(list_->Close()) || FAILED(prelude_->Close()))
+        fail("a host command list did not replace a busy allocator");
+}
+
+void HostList::discard_unpublished() {
+    std::lock_guard<std::mutex> lock(deferred_mutex_);
+    for (const Step& step : deferred_.copies) {
+        const auto* write = std::get_if<GpuWriteStep>(&step);
+        if (write != nullptr && write->shadow) write->shadow->discard_write(write->address, write->bytes);
+    }
+    deferred_.copies.erase(std::remove_if(deferred_.copies.begin(), deferred_.copies.end(),
+                                         [](const Step& step) { return std::holds_alternative<GpuWriteStep>(step); }),
+                           deferred_.copies.end());
+    deferred_.writes.clear();
+}
+
+void HostList::retain_objects(std::vector<Microsoft::WRL::ComPtr<IUnknown>>& objects) {
+    if (allocator_) objects.emplace_back(allocator_.Get());
+    if (list_) objects.emplace_back(list_.Get());
+    if (prelude_allocator_) objects.emplace_back(prelude_allocator_.Get());
+    if (prelude_) objects.emplace_back(prelude_.Get());
+    std::lock_guard<std::mutex> lock(deferred_mutex_);
+    for (const auto& upload : deferred_.uploads)
+        if (upload) objects.emplace_back(upload.Get());
+    for (const auto& kept : deferred_.kept)
+        if (kept) objects.emplace_back(kept.Get());
+    allocator_busy_ = true;
 }
 
 std::optional<std::pair<ID3D12Resource*, std::uint32_t>> HostList::transition(Object* object,

@@ -136,6 +136,17 @@ private:
     std::unordered_set<const void*> textures_;
 };
 
+struct SubmissionResult {
+    HRESULT signal = E_FAIL;
+    HRESULT armed = E_FAIL;
+    DWORD wait = WAIT_FAILED;
+};
+
+using SubmissionStep = SubmissionResult (*)(ID3D12CommandQueue* queue, ID3D12Fence* fence, std::uint64_t value,
+                                           HANDLE event, void* context);
+
+void set_submission_step_for_test(SubmissionStep step, void* context);
+
 class HostList;
 
 class Host {
@@ -187,6 +198,17 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Fence> fence_;
     std::mutex submitted_mutex_;
     std::uint64_t submitted_ = 0;
+    struct HeldSubmission {
+        std::uint64_t enqueued = 0;
+        bool signalled = false;
+        std::vector<Microsoft::WRL::ComPtr<IUnknown>> objects;
+    };
+
+    void release_retained();
+    void retain_incomplete(const std::vector<HostList*>& runs, bool signalled);
+
+    std::vector<HeldSubmission> held_;
+    std::uint64_t confirmed_ = 0;
     HANDLE event_ = nullptr;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtvs_;
     std::uint32_t rtv_size_ = 0;
@@ -256,6 +278,11 @@ private:
     };
 
     void run_deferred(Batch& batch);
+    void discard_unpublished();
+    void retain_objects(std::vector<Microsoft::WRL::ComPtr<IUnknown>>& objects);
+    void replace_busy_allocators();
+
+    bool allocator_busy_ = false;
     ID3D12CommandList* prelude();
 
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator_;
