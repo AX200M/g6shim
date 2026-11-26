@@ -39,8 +39,8 @@ void drop_object(Object* object) {
 }
 #define release(object) drop_object(object)
 
-Object* make_heap(std::uint32_t count) {
-    HeapBytes bytes{{descriptor::kViewsKind, count, descriptor::kShaderVisible, 0}, {}};
+Object* make_heap(std::uint32_t count, std::uint32_t kind = descriptor::kViewsKind) {
+    HeapBytes bytes{{kind, count, descriptor::kShaderVisible, 0}, {}};
     Object* heap = nullptr;
     if (descriptor::create_heap(nullptr, &bytes.desc, &descriptor::kIids[0], &heap) != S_OK) return nullptr;
     return heap;
@@ -133,6 +133,32 @@ D3D12_SHADER_RESOURCE_VIEW_DESC raw_srv(std::uint32_t first, std::uint32_t eleme
     srv.Buffer.FirstElement = first;
     srv.Buffer.NumElements = elements;
     srv.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+    return srv;
+}
+
+Object* make_texture() {
+    resource::ResourceDesc texture{};
+    texture.dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texture.width = 16;
+    texture.height = 16;
+    texture.depth_or_array_size = 1;
+    texture.mip_levels = 1;
+    texture.format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texture.sample_count = 1;
+    const resource::HeapProperties properties{1, 0, 0, 1, 1};
+    Object* image = nullptr;
+    if (resource::create_committed(nullptr, &properties, 0, &texture, 0, nullptr, &resource::kResourceIids[0],
+                                   &image) != S_OK)
+        return nullptr;
+    return image;
+}
+
+D3D12_SHADER_RESOURCE_VIEW_DESC texture_srv() {
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+    srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Texture2D.MipLevels = 1;
     return srv;
 }
 
@@ -301,31 +327,70 @@ TEST(d3d12_xs_buffer_record_rewritten_as_texture_changes_host_kind) {
     sweep(gpu, heap_object);
     descriptor_host::HostHeap* host_heap = descriptor_host::for_heap(heap_object);
     CHECK(host_heap != nullptr && host_heap->kind_at(0) == 1);
-    resource::ResourceDesc texture{};
-    texture.dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    texture.width = 16;
-    texture.height = 16;
-    texture.depth_or_array_size = 1;
-    texture.mip_levels = 1;
-    texture.format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    texture.sample_count = 1;
-    const resource::HeapProperties properties{1, 0, 0, 1, 1};
-    Object* image = nullptr;
-    CHECK(resource::create_committed(nullptr, &properties, 0, &texture, 0, nullptr, &resource::kResourceIids[0],
-                                     &image) == S_OK);
+    Object* image = make_texture();
+    CHECK(image != nullptr);
     if (image != nullptr && host_heap != nullptr) {
-        D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
-        srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srv.Texture2D.MipLevels = 1;
-        plant(*heap, 0, capture(image, srv));
+        plant(*heap, 0, capture(image, texture_srv()));
         sweep(gpu, heap_object);
         CHECK(host_heap->kind_at(0) == 2);
     }
     release(image);
     release(heap_object);
     release(buffer);
+}
+
+TEST(d3d12_xs_table_read_slot_rewritten_as_buffer_is_remade_before_submission) {
+    host::Host* gpu = host::host();
+    if (gpu == nullptr) return;
+    Object* heap_object = make_heap(2);
+    Object* buffer = make_buffer(64);
+    Object* image = make_texture();
+    CHECK(heap_object != nullptr && buffer != nullptr && image != nullptr);
+    descriptor_host::HostHeap* host_heap =
+        heap_object != nullptr ? descriptor_host::for_heap(heap_object) : nullptr;
+    if (host_heap != nullptr && buffer != nullptr && image != nullptr) {
+        auto* heap = static_cast<descriptor::Heap*>(heap_object);
+        plant(*heap, 0, capture(image, texture_srv()));
+        sweep(gpu, heap_object);
+        CHECK(host_heap->kind_at(0) == descriptor_host::kTextureSlotKind);
+        descriptor_host::note_draw_table(heap_object, 0);
+        plant(*heap, 0, capture(buffer, raw_srv(0, 1)));
+        sweep(gpu, heap_object);
+        CHECK(host_heap->kind_at(0) == descriptor_host::kBufferSlotKind);
+        plant(*heap, 1, capture(image, texture_srv()));
+        sweep(gpu, heap_object);
+        const std::uint64_t rebuilt = host_heap->rebuilds();
+        descriptor_host::note_draw_table(heap_object, 1);
+        D3D12_SHADER_RESOURCE_VIEW_DESC other = texture_srv();
+        other.Texture2D.ResourceMinLODClamp = 1.0f;
+        plant(*heap, 1, capture(image, other));
+        sweep(gpu, heap_object);
+        CHECK(host_heap->rebuilds() == rebuilt);
+    }
+    release(image);
+    release(heap_object);
+    release(buffer);
+}
+
+TEST(d3d12_xs_largest_heap_is_chosen_per_kind) {
+    host::Host* gpu = host::host();
+    if (gpu == nullptr) return;
+    constexpr std::uint32_t kMostSamplers = 2048;
+    Object* few = make_heap(16, descriptor::kSamplersKind);
+    Object* most = make_heap(kMostSamplers, descriptor::kSamplersKind);
+    Object* views = make_heap(kMostSamplers * 2);
+    CHECK(few != nullptr && most != nullptr && views != nullptr);
+    if (few != nullptr && most != nullptr && views != nullptr) {
+        CHECK(descriptor_host::for_heap(few) != nullptr);
+        CHECK(descriptor_host::for_heap(most) != nullptr);
+        CHECK(descriptor_host::for_heap(views) != nullptr);
+        CHECK(descriptor_host::largest_heap(true) == most);
+        Object* view_choice = descriptor_host::largest_heap(false);
+        CHECK(view_choice != nullptr && view_choice != few && view_choice != most);
+    }
+    release(views);
+    release(most);
+    release(few);
 }
 
 TEST(d3d12_xs_off_element_view_gets_its_own_copy) {

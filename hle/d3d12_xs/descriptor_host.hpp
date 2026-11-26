@@ -27,6 +27,8 @@ namespace g6shim::d3d12_xs::descriptor_host {
 inline constexpr std::uint32_t kPortableViews = 1'000'000;
 inline constexpr std::uint32_t kDynamicSlots = 1 << 18;
 inline constexpr std::uint32_t kMinDynamicSlots = 1 << 16;
+inline constexpr std::uint8_t kBufferSlotKind = 1;
+inline constexpr std::uint8_t kTextureSlotKind = 2;
 
 class HostHeap {
 public:
@@ -53,6 +55,7 @@ public:
     std::uint32_t stride_word(std::uint32_t index) const;
     std::uint64_t rebuilds() const;
     bool shows_none(std::uint32_t index) const;
+    std::uint64_t shown_key(std::uint32_t index) const;
     Microsoft::WRL::ComPtr<ID3D12Resource> kept(std::uint32_t index);
 
 private:
@@ -113,6 +116,7 @@ std::uint64_t retired_view_count();
 DescriptorStats take_descriptor_stats();
 
 bool view_is_buffer(const descriptor::View& view);
+bool view_shows_buffer(const descriptor::View& view);
 std::optional<std::pair<std::uint64_t, std::uint64_t>> buffer_range(const descriptor::View& view);
 std::optional<std::uint64_t> table_buffer_address(const descriptor::Heap& heap, std::uint64_t table,
                                                   std::uint32_t dword, bool constant_buffer);
@@ -149,7 +153,7 @@ struct HeapDataBinding {
 
 std::optional<HeapDataBinding> image_heap_data(Object* heap);
 std::optional<HeapDataBinding> buffer_heap_data(Object* heap, host::HostList& list);
-Object* largest_view_heap();
+Object* largest_heap(bool samplers);
 std::optional<std::uint32_t> sampler_lod_word(const descriptor::Heap& heap, std::uint32_t dword);
 std::optional<std::uint32_t> table_image_sampling_fields(const descriptor::Heap& heap, std::uint64_t table,
                                                         std::uint32_t dword);

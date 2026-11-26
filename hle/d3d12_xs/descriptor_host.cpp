@@ -59,6 +59,12 @@ std::mutex g_retire_mutex;
 std::vector<RetiredView> g_retired;
 std::uint64_t g_retire_clock = 0;
 
+std::uint64_t record_key(std::uint64_t handle) {
+    std::array<std::uint32_t, 3> record{};
+    std::memcpy(record.data(), reinterpret_cast<const void*>(static_cast<std::uintptr_t>(handle)), sizeof record);
+    return static_cast<std::uint64_t>(record[2]) << 32 | record[1];
+}
+
 void retire_replaced(Microsoft::WRL::ComPtr<ID3D12Resource> resource) {
     if (!resource) return;
     std::lock_guard<std::mutex> lock(g_retire_mutex);
@@ -789,7 +795,7 @@ HostHeap::HostHeap(Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap, std::uint6
       made_(count, 0),
       quick_(count),
       strides_(count, 0),
-      slot_kind_(count, sampler ? 2 : 1),
+      slot_kind_(count, sampler ? kTextureSlotKind : kBufferSlotKind),
       kept_(static_cast<std::size_t>(count) + dynamic),
       window_generation_(static_cast<std::size_t>(count) + dynamic),
       taken_(dynamic, false) {}
@@ -806,7 +812,7 @@ std::uint8_t HostHeap::kind_at(std::uint32_t index) const {
 }
 
 void HostHeap::note_kind(std::uint32_t index, bool buffer) {
-    if (index < slot_kind_.size()) slot_kind_[index] = buffer ? 1 : 2;
+    if (index < slot_kind_.size()) slot_kind_[index] = buffer ? kBufferSlotKind : kTextureSlotKind;
 }
 
 std::uint32_t HostHeap::stride_word(std::uint32_t index) const {
@@ -817,6 +823,10 @@ std::uint64_t HostHeap::rebuilds() const { return rebuilds_.load(std::memory_ord
 
 bool HostHeap::shows_none(std::uint32_t index) const {
     return index >= quick_.size() || quick_[index].load(std::memory_order_acquire) == 0;
+}
+
+std::uint64_t HostHeap::shown_key(std::uint32_t index) const {
+    return index < quick_.size() ? quick_[index].load(std::memory_order_acquire) : 0;
 }
 
 
@@ -1056,9 +1066,7 @@ std::optional<descriptor::View> HostHeap::mirror(std::uint32_t index, std::uint6
             G6SHIM_WARN("d3d12_xs: title descriptor slot %u past the host heap of %u", index, count_);
         return std::nullopt;
     }
-    std::array<std::uint32_t, 3> record{};
-    std::memcpy(record.data(), reinterpret_cast<const void*>(static_cast<std::uintptr_t>(handle)), sizeof record);
-    const std::uint64_t key = static_cast<std::uint64_t>(record[2]) << 32 | record[1];
+    const std::uint64_t key = record_key(handle);
     if (key != 0 && index < quick_.size() && quick_[index].load(std::memory_order_acquire) == key) {
         const std::uint64_t stamp = window_stamp(index);
         const bool current = stamp == kNoWindow || stamp == shadow::eviction_generation() + 1;
@@ -1092,12 +1100,12 @@ std::optional<descriptor::View> HostHeap::mirror(std::uint32_t index, std::uint6
         rebuilds_.fetch_add(1, std::memory_order_relaxed);
         if (later) {
             null_for(*view, cpu(index));
-            note_kind(index, true);
+            note_kind(index, view_shows_buffer(*view));
             keep(index, Microsoft::WRL::ComPtr<ID3D12Resource>());
         } else {
             std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> kept = make(*view, cpu(index));
             if (!kept && !sampler_) null_for(*view, cpu(index));
-            note_kind(index, view_is_buffer(*view));
+            note_kind(index, view_shows_buffer(*view));
             keep(index, kept ? *kept : Microsoft::WRL::ComPtr<ID3D12Resource>());
             note_materialized();
         }
@@ -1115,6 +1123,12 @@ bool view_is_buffer(const descriptor::View& view) {
     if (const auto* unordered = std::get_if<descriptor::UnorderedView>(&view))
         return resource::buffer_bytes(reinterpret_cast<Object*>(unordered->resource)) != std::nullopt;
     return false;
+}
+
+bool view_shows_buffer(const descriptor::View& view) {
+    if (const auto* placed = std::get_if<descriptor::PlacedView>(&view))
+        return placed->resource[0] == kBufferDimension;
+    return view_is_buffer(view);
 }
 
 std::optional<std::pair<std::uint64_t, std::uint64_t>> buffer_range(const descriptor::View& view) {
@@ -1766,12 +1780,12 @@ HostHeap* for_heap(Object* heap) {
     return entry->host.get();
 }
 
-Object* largest_view_heap() {
+Object* largest_heap(bool samplers) {
     std::shared_lock<std::shared_mutex> lock(g_heaps_mutex);
     Object* best = nullptr;
     std::uint32_t count = 0;
     for (const auto& entry : g_heaps) {
-        if (!entry || entry->sampler || entry->host == nullptr || entry->count <= count) continue;
+        if (!entry || entry->sampler != samplers || entry->host == nullptr || entry->count <= count) continue;
         best = entry->heap;
         count = entry->count;
     }
@@ -1892,9 +1906,27 @@ void apply_heap_data(HeapEntry& entry, std::span<const std::uint32_t> slots,
     }
 }
 
+bool shows_other_kind(const HeapEntry& entry, std::uint32_t index, const descriptor::View& view) {
+    if (entry.sampler || entry.host == nullptr) return false;
+    if (std::holds_alternative<descriptor::SamplerView>(view) ||
+        std::holds_alternative<descriptor::ConsoleSamplerView>(view))
+        return false;
+    const std::uint8_t host = entry.host->kind_at(index);
+    return host != 0 && host != (view_shows_buffer(view) ? kBufferSlotKind : kTextureSlotKind);
+}
+
+bool tabled_recently(const HeapEntry& entry, std::uint32_t index) {
+    if (index >= entry.tabled.size()) return false;
+    const std::uint32_t stamp = entry.tabled[index].load(std::memory_order_relaxed) & ~kTabledRead;
+    const std::uint32_t now = (static_cast<std::uint32_t>(frame::current_frame()) + 1) & ~kTabledRead;
+    return stamp != 0 && now - stamp <= kCopiedFrames;
+}
+
 void log_kind_mismatches(HeapEntry& entry) {
     if (!settings::enabled("G6SHIM_D3D_DRED") || entry.host == nullptr || entry.sampler) return;
     std::uint32_t mismatches = 0;
+    std::uint32_t tabled = 0;
+    std::uint32_t unchanged = 0;
     const std::uint32_t words = entry.seen.word_count();
     for (std::uint32_t word = 0; word < words; ++word) {
         std::uint64_t bits = entry.seen.peek(word);
@@ -1903,19 +1935,20 @@ void log_kind_mismatches(HeapEntry& entry) {
             const std::uint32_t index = word * 64 + bit;
             bits &= bits - 1;
             if (index >= entry.count) continue;
-            const auto view = descriptor::view(entry.start + static_cast<std::uint64_t>(index) * entry.step);
-            if (!view || std::holds_alternative<descriptor::SamplerView>(*view) ||
-                std::holds_alternative<descriptor::ConsoleSamplerView>(*view))
-                continue;
-            const std::uint8_t title = view_is_buffer(*view) ? 1 : 2;
-            const std::uint8_t host = entry.host->kind_at(index);
-            if (host != 0 && host != title) ++mismatches;
+            const std::uint64_t handle = entry.start + static_cast<std::uint64_t>(index) * entry.step;
+            const auto view = descriptor::view(handle);
+            if (!view || !shows_other_kind(entry, index, *view)) continue;
+            ++mismatches;
+            if (tabled_recently(entry, index)) ++tabled;
+            if (entry.host->shown_key(index) == record_key(handle)) ++unchanged;
         }
     }
     if (mismatches != 0)
-        G6SHIM_WARN("d3d12_xs: indexed heap %p has %u slots whose host kind differs from the title",
-                    static_cast<void*>(entry.heap), mismatches);
+        G6SHIM_WARN("d3d12_xs: indexed heap %p has %u slots whose host kind differs from the title (%u read by "
+                    "tables lately, %u with the record they were made from)",
+                    static_cast<void*>(entry.heap), mismatches, tabled, unchanged);
 }
+
 bool probe_watch(std::uint64_t start, std::uint64_t bytes) {
     if (bytes == 0) return false;
     void* page = nullptr;
@@ -1979,13 +2012,6 @@ void changed_records(std::uint8_t* last, const std::uint8_t* now, std::size_t by
         }
         offset += aligned;
     }
-}
-
-bool tabled_recently(const HeapEntry& entry, std::uint32_t index) {
-    if (index >= entry.tabled.size()) return false;
-    const std::uint32_t stamp = entry.tabled[index].load(std::memory_order_relaxed) & ~kTabledRead;
-    const std::uint32_t now = (static_cast<std::uint32_t>(frame::current_frame()) + 1) & ~kTabledRead;
-    return stamp != 0 && now - stamp <= kCopiedFrames;
 }
 
 void compare_part(HeapEntry& entry, std::size_t from, std::size_t to, std::vector<std::uint32_t>& out) {
@@ -2063,9 +2089,10 @@ void sync_records(const std::shared_ptr<HeapEntry>& entry, std::span<host::HostL
     std::vector<std::uint32_t> make;
     for (const auto& part : found) {
         for (const std::uint32_t index : part) {
-            if (tabled_recently(*entry, index)) continue;
             const std::uint64_t handle = entry->start + static_cast<std::uint64_t>(index) * entry->step;
-            if (!descriptor::view(handle) && entry->host->shows_none(index)) continue;
+            const auto view = descriptor::view(handle);
+            if (tabled_recently(*entry, index) && !(view && shows_other_kind(*entry, index, *view))) continue;
+            if (!view && entry->host->shows_none(index)) continue;
             entry->seen.mark(index);
             make.push_back(index);
         }
