@@ -7,6 +7,8 @@
 
 #include <g6shim/log.hpp>
 
+#include <array>
+#include <atomic>
 #include <algorithm>
 #include <bit>
 #include <cstring>
@@ -228,6 +230,8 @@ std::array<const void*, 32> make_resource_functions_impl();
 
 using Backing = std::variant<Memory, PlacedBacking, std::uint8_t*>;
 
+std::array<std::atomic<std::int64_t>, std::variant_size_v<Backing>> g_texture_objects{};
+
 struct Resource : Object {
     Resource(const ResourceDesc& description, const HeapProperties& properties, std::uint32_t properties_flags,
              Backing backing_store, std::shared_ptr<later::HostTexture> host_copy)
@@ -236,9 +240,12 @@ struct Resource : Object {
           heap(properties),
           heap_flags(properties_flags),
           backing(std::move(backing_store)),
-          host(std::move(host_copy)) {}
+          host(std::move(host_copy)) {
+        if (host) g_texture_objects[backing.index()].fetch_add(1, std::memory_order_relaxed);
+    }
 
     ~Resource() {
+        if (host) g_texture_objects[backing.index()].fetch_sub(1, std::memory_order_relaxed);
         if (auto* placed = std::get_if<PlacedBacking>(&backing)) release_heap(placed->heap);
         descriptor::forget(this);
         later::texture_forget(this);
@@ -754,6 +761,14 @@ std::optional<std::uint32_t> view_format(Object* object) {
 }
 
 bool host_resource(Object* object) { return object != nullptr && resource_of(object)->host != nullptr; }
+
+TextureObjects texture_objects() {
+    TextureObjects counts;
+    counts.committed = g_texture_objects[0].load(std::memory_order_relaxed);
+    counts.placed = g_texture_objects[1].load(std::memory_order_relaxed);
+    counts.at_address = g_texture_objects[2].load(std::memory_order_relaxed);
+    return counts;
+}
 
 std::shared_ptr<later::HostTexture> host_copy(Object* object) {
     if (object == nullptr) return nullptr;

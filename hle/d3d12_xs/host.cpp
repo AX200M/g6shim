@@ -154,6 +154,57 @@ struct Meter {
 
 IntervalTiming take_interval_timing();
 
+void log_host_memory() {
+    Host* gpu = host();
+    if (gpu == nullptr) return;
+    Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
+    Microsoft::WRL::ComPtr<IDXGIAdapter3> adapter;
+    if (FAILED(::CreateDXGIFactory2(0, IID_PPV_ARGS(&factory))) ||
+        FAILED(factory->EnumAdapterByLuid(gpu->device()->GetAdapterLuid(), IID_PPV_ARGS(&adapter))))
+        return;
+    DXGI_QUERY_VIDEO_MEMORY_INFO local{};
+    DXGI_QUERY_VIDEO_MEMORY_INFO shared{};
+    if (FAILED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local)) ||
+        FAILED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &shared)))
+        return;
+    const shadow::BufferStats buffers = shadow::buffer_stats();
+    G6SHIM_INFO("d3d12_xs: host memory local %llu of %llu MiB, shared %llu MiB, title buffers %zu with %llu MiB "
+                "(%zu large with %llu MiB), %zu placed textures, %llu retired objects",
+                static_cast<unsigned long long>(local.CurrentUsage >> 20),
+                static_cast<unsigned long long>(local.Budget >> 20),
+                static_cast<unsigned long long>(shared.CurrentUsage >> 20), buffers.buffers,
+                static_cast<unsigned long long>(buffers.bytes >> 20), buffers.large,
+                static_cast<unsigned long long>(buffers.large_bytes >> 20), descriptor_host::placed_texture_count(),
+                static_cast<unsigned long long>(retired_count_for_test()));
+    constexpr std::size_t kGroupsShown = 8;
+    std::map<std::string, std::pair<std::uint64_t, std::uint64_t>> groups;
+    std::uint64_t total = 0;
+    const std::vector<texture::GpuRange> textures = texture::live_textures();
+    for (const texture::GpuRange& range : textures) {
+        auto& group = groups[range.name];
+        ++group.first;
+        group.second += range.bytes;
+        total += range.bytes;
+    }
+    std::vector<std::pair<std::string, std::pair<std::uint64_t, std::uint64_t>>> ordered(groups.begin(), groups.end());
+    std::sort(ordered.begin(), ordered.end(),
+              [](const auto& a, const auto& b) { return a.second.second > b.second.second; });
+    std::string text;
+    for (std::size_t index = 0; index < ordered.size() && index < kGroupsShown; ++index) {
+        char part[160] = {};
+        std::snprintf(part, sizeof part, "; %llu of [%s] %llu MiB",
+                      static_cast<unsigned long long>(ordered[index].second.first), ordered[index].first.c_str(),
+                      static_cast<unsigned long long>(ordered[index].second.second >> 20));
+        text += part;
+    }
+    const resource::TextureObjects objects = resource::texture_objects();
+    G6SHIM_INFO("d3d12_xs: host textures %zu with %llu MiB (title textures: %lld committed, %lld placed, %lld at "
+                "an address)%s",
+                textures.size(), static_cast<unsigned long long>(total >> 20),
+                static_cast<long long>(objects.committed), static_cast<long long>(objects.placed),
+                static_cast<long long>(objects.at_address), text.c_str());
+}
+
 void Meter::frame(HWND hwnd) {
     ++frames;
     const auto now = std::chrono::steady_clock::now();
@@ -182,6 +233,7 @@ void Meter::frame(HWND hwnd) {
                         interval.execute_call.milliseconds, interval.execute_max_ms, interval.wait.milliseconds,
                         interval.wait_max_ms, interval.copy_back.milliseconds, interval.copy_back_max_ms,
                         static_cast<unsigned long long>(interval.copy_back.bytes), interval.gpu.milliseconds);
+            log_host_memory();
         } else {
             G6SHIM_INFO("d3d12_xs: %.1f fps, %.1f ms/frame, loose title memory %zu windows %llu MiB, %llu evicted, "
                         "descriptors marked %llu materialized %llu skipped %llu, "

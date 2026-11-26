@@ -48,7 +48,7 @@ void remember_range(const std::shared_ptr<later::HostTexture>& owner, ID3D12Reso
     const D3D12_RESOURCE_DESC desc = texture->GetDesc();
     const D3D12_RESOURCE_ALLOCATION_INFO info = device->GetResourceAllocationInfo(0, 1, &desc);
     const std::uint64_t gpu = texture->GetGPUVirtualAddress();
-    if (gpu == 0 || info.SizeInBytes == 0 || info.SizeInBytes == UINT64_MAX) return;
+    if (info.SizeInBytes == 0 || info.SizeInBytes == UINT64_MAX) return;
     std::lock_guard<std::mutex> lock(g_ranges_mutex);
     g_ranges.erase(std::remove_if(g_ranges.begin(), g_ranges.end(),
                                   [](const NotedRange& noted) { return noted.owner.expired(); }),
@@ -139,6 +139,16 @@ std::shared_ptr<later::HostTexture> create_host_texture(const resource::Resource
                        gpu->device());
     }
     return host_texture;
+}
+
+std::vector<GpuRange> live_textures() {
+    std::lock_guard<std::mutex> lock(g_ranges_mutex);
+    std::vector<GpuRange> textures;
+    for (const NotedRange& noted : g_ranges) {
+        if (noted.owner.expired() || noted.bytes == 0) continue;
+        textures.push_back(GpuRange{noted.gpu, noted.bytes, noted.name});
+    }
+    return textures;
 }
 
 std::vector<GpuRange> live_ranges() {

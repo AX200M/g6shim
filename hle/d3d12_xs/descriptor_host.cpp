@@ -3,6 +3,7 @@
 #include "descriptor_host.hpp"
 
 #include "frame.hpp"
+#include "watch.hpp"
 #include "sampler.hpp"
 #include "shadow.hpp"
 #include "texture.hpp"
@@ -73,6 +74,7 @@ std::uint64_t record_key(std::uint64_t handle) {
 
 void retire_replaced(Microsoft::WRL::ComPtr<ID3D12Resource> resource) {
     if (!resource) return;
+    host::retire(Microsoft::WRL::ComPtr<IUnknown>(resource.Get()));
     std::lock_guard<std::mutex> lock(g_retire_mutex);
     g_retired.push_back(RetiredView{std::move(resource), g_retire_clock + 2});
 }
@@ -199,6 +201,9 @@ struct HeapEntry {
     std::vector<std::atomic<std::uint32_t>> tabled;
     bool watch_probed = false;
     bool watch_usable = false;
+    std::mutex guard_mutex;
+    bool guard_usable = true;
+    std::uint64_t guard_seen = 0;
 };
 
 std::shared_mutex g_heaps_mutex;
@@ -784,7 +789,15 @@ std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> make(const descriptor::Vie
 }
 
 std::mutex g_placed_mutex;
-std::map<std::pair<std::uint64_t, std::array<std::uint32_t, 14>>, Object*> g_placed;
+constexpr std::uint64_t kPlacedIdleFrames = 8;
+
+struct PlacedTexture {
+    Object* object = nullptr;
+    std::uint64_t used_frame = 0;
+};
+
+std::map<std::pair<std::uint64_t, std::array<std::uint32_t, 14>>, PlacedTexture> g_placed;
+std::uint64_t g_placed_swept_frame = 0;
 
 }  // namespace
 
@@ -1638,7 +1651,8 @@ std::optional<descriptor::View> placed_texture(const descriptor::View& view) {
         std::lock_guard<std::mutex> lock(g_placed_mutex);
         const auto found = g_placed.find(key);
         if (found != g_placed.end()) {
-            Object* object = found->second;
+            found->second.used_frame = frame::current_frame();
+            Object* object = found->second.object;
             if (!resource::host_resource(object)) return std::nullopt;
             std::array<std::uint32_t, 10> words{};
             std::copy_n(placed->desc.begin(), 10, words.begin());
@@ -1653,12 +1667,42 @@ std::optional<descriptor::View> placed_texture(const descriptor::View& view) {
         return std::nullopt;
     {
         std::lock_guard<std::mutex> lock(g_placed_mutex);
-        g_placed.insert_or_assign(key, out);
+        const auto [at, fresh] = g_placed.try_emplace(key, PlacedTexture{out, frame::current_frame()});
+        if (!fresh) {
+            release(out);
+            out = at->second.object;
+            at->second.used_frame = frame::current_frame();
+        }
     }
     if (!resource::host_resource(out)) return std::nullopt;
     std::array<std::uint32_t, 10> words{};
     std::copy_n(placed->desc.begin(), 10, words.begin());
     return descriptor::View{descriptor::ShaderView{reinterpret_cast<std::size_t>(out), words}};
+}
+
+std::size_t placed_texture_count() {
+    std::lock_guard<std::mutex> lock(g_placed_mutex);
+    return g_placed.size();
+}
+
+std::size_t expire_placed_textures() {
+    const std::uint64_t now = frame::current_frame();
+    std::vector<Object*> idle;
+    {
+        std::lock_guard<std::mutex> lock(g_placed_mutex);
+        if (g_placed_swept_frame == now) return 0;
+        g_placed_swept_frame = now;
+        for (auto it = g_placed.begin(); it != g_placed.end();) {
+            if (now - it->second.used_frame < kPlacedIdleFrames) {
+                ++it;
+                continue;
+            }
+            idle.push_back(it->second.object);
+            it = g_placed.erase(it);
+        }
+    }
+    for (Object* object : idle) release(object);
+    return idle.size();
 }
 
 void note_shader_heap(std::uint64_t start, std::uint64_t bytes, std::uint64_t step, bool sampler) {
@@ -2140,11 +2184,43 @@ void compare_part(HeapEntry& entry, std::size_t from, std::size_t to, std::vecto
     const std::size_t available = to - record_from;
     const std::size_t count_bytes = std::min(static_cast<std::size_t>((last - first) * step), available - available % step);
     if (count_bytes < step) return;
-    std::vector<std::uint8_t> page(count_bytes);
-    if (!host::read_into(reinterpret_cast<const std::uint8_t*>(record_from), page)) return;
+    thread_local std::vector<std::uint8_t> page;
+    page.resize(count_bytes);
+    if (!host::read_into(reinterpret_cast<const std::uint8_t*>(record_from),
+                         std::span<std::uint8_t>(page.data(), count_bytes)))
+        return;
     const std::size_t copied_at = static_cast<std::size_t>(first) * static_cast<std::size_t>(step);
     changed_records(entry.copied.data() + copied_at, page.data(), count_bytes, static_cast<std::size_t>(step),
                     static_cast<std::uint32_t>(first), out);
+}
+
+std::optional<std::vector<std::pair<std::size_t, std::size_t>>> guarded_ranges(HeapEntry& entry) {
+    std::lock_guard<std::mutex> lock(entry.guard_mutex);
+    if (!entry.guard_usable) return std::nullopt;
+    const auto start = static_cast<std::size_t>(entry.start);
+    const auto end = static_cast<std::size_t>(entry.end);
+    const auto pages = watch::writes(start, end, true);
+    if (!pages) {
+        entry.guard_usable = false;
+        return std::nullopt;
+    }
+    std::vector<std::pair<std::size_t, std::size_t>> ranges;
+    if (entry.guard_seen == 0) {
+        ranges.emplace_back(start, end);
+    } else {
+        for (const auto& [page, stamp] : pages->written) {
+            if (stamp <= entry.guard_seen) continue;
+            const std::size_t from = std::max(page * watch::kPageBytes, start);
+            const std::size_t to = std::min((page + 1) * watch::kPageBytes, end);
+            if (from >= to) continue;
+            if (!ranges.empty() && ranges.back().second == from)
+                ranges.back().second = to;
+            else
+                ranges.emplace_back(from, to);
+        }
+    }
+    entry.guard_seen = pages->asked;
+    return ranges;
 }
 
 void sync_records(const std::shared_ptr<HeapEntry>& entry, std::span<host::HostList* const> lists) {
@@ -2156,6 +2232,8 @@ void sync_records(const std::shared_ptr<HeapEntry>& entry, std::span<host::HostL
     std::vector<std::pair<std::size_t, std::size_t>> ranges;
     if (entry->watch_usable)
         ranges = take_watch(entry->start, entry->end);
+    else if (auto guarded = guarded_ranges(*entry))
+        ranges = std::move(*guarded);
     else
         ranges.emplace_back(static_cast<std::size_t>(entry->start), static_cast<std::size_t>(entry->end));
     if (ranges.empty()) return;
@@ -2238,6 +2316,7 @@ bool lazy_descriptors() {
 void refresh_descriptor_settings() { g_lazy.store(-1, std::memory_order_relaxed); }
 
 void sweep_before_submission(std::span<host::HostList* const> lists) {
+    expire_placed_textures();
     std::vector<Object*> wanted;
     for (host::HostList* const list : lists) {
         if (list == nullptr) continue;

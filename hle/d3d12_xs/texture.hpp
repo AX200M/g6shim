@@ -108,6 +108,7 @@ struct GpuRange {
 };
 
 std::vector<GpuRange> live_ranges();
+std::vector<GpuRange> live_textures();
 bool depth_unordered_direct(std::uint32_t format, std::uint32_t samples);
 void attach_depth_uav(later::HostTexture& host, const resource::ResourceDesc& host_desc, bool direct,
                       const void* clear);
