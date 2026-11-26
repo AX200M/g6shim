@@ -237,8 +237,11 @@ const std::array<std::uint8_t, 16>& build_fingerprint() {
             const std::uint64_t now = ::GetTickCount64();
             for (std::size_t i = 0; i < 8; ++i) bytes.push_back(static_cast<std::uint8_t>(now >> (8 * i)));
         }
-        const std::uint32_t limit = g6shim::shader::emit::loop_limit();
-        for (std::size_t i = 0; i < 4; ++i) bytes.push_back(static_cast<std::uint8_t>(limit >> (8 * i)));
+        const std::array<std::uint32_t, 4> limits{
+            g6shim::shader::emit::loop_limit(), g6shim::shader::emit::kPixelLoopLimit,
+            g6shim::shader::emit::kMeshLoopLimit, g6shim::shader::emit::kComputeLoopLimit};
+        for (const std::uint32_t limit : limits)
+            for (std::size_t i = 0; i < 4; ++i) bytes.push_back(static_cast<std::uint8_t>(limit >> (8 * i)));
         return g6shim::shader::emit::hash(bytes);
     }();
     return fingerprint;

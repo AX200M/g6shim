@@ -156,6 +156,13 @@ std::uint32_t parse_loop_limit(std::optional<std::string_view> value) {
 
 std::uint32_t loop_limit() { return kLoopLimit; }
 
+std::uint32_t stage_loop_limit(std::uint32_t named, bool pixel, bool mesh, bool has_threads) {
+    if (named != kLoopLimit) return named;
+    if (pixel) return kPixelLoopLimit;
+    if (mesh || !has_threads) return kMeshLoopLimit;
+    return kComputeLoopLimit;
+}
+
 HostShader translate(std::span<const std::uint8_t> container) {
     const Container parsed = Container::parse(container);
     const Part* part = parsed.part(kDxil);

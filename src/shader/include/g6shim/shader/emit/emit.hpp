@@ -104,9 +104,13 @@ struct HostShader {
 };
 
 inline constexpr std::uint32_t kLoopLimit = 1u << 20;
+inline constexpr std::uint32_t kPixelLoopLimit = 128;
+inline constexpr std::uint32_t kMeshLoopLimit = 256;
+inline constexpr std::uint32_t kComputeLoopLimit = 4096;
 
 std::uint32_t parse_loop_limit(std::optional<std::string_view> value);
 std::uint32_t loop_limit();
+std::uint32_t stage_loop_limit(std::uint32_t named, bool pixel, bool mesh, bool has_threads);
 
 HostShader translate(std::span<const std::uint8_t> container);
 

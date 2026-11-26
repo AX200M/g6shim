@@ -2169,7 +2169,7 @@ V Lower::count_iteration(std::size_t to, std::uint8_t p) {
     const V phi = counters_.at(to).first;
     const V one = s_.m.i32(1);
     const V next = s_.m.bin(c, Bin::Add, phi, one);
-    const V limit = s_.m.i32(loop_limit());
+    const V limit = s_.m.i32(stage_loop_limit(loop_limit(), s_.pixel, s_.mesh.has_value(), s_.threads.has_value()));
     counters_.at(to).second.emplace_back(next, c);
     return s_.m.cmp(c, p, next, limit);
 }

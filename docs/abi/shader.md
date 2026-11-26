@@ -69,6 +69,10 @@ A table or heap parameter holds the 32-bit heap address in its first dword, with
 
 One compute layout reserves four hardware user SGPRs and starts logical root data at word 16. Fixed scalar loads through the pointer copied from `s0` and the low eight bits of `s1` read declared logical words starting at `16 + byte_offset / 4`. The translator binds those words through the ordinary root constants and descriptor paths. Undeclared words and direct reads of a spilled table's high address word remain unsupported. [Public description of user data spilling](https://releases.llvm.org/16.0.0/docs/AMDGPUUsage.html#spill-table)
 
+## Loop limits
+
+A back edge counts iterations per lane and per entry. The lane leaves when the count reaches the stage limit: 128 in a pixel shader, 256 in a mesh shader or any stage with no thread count (vertex and geometry), and 4096 in compute. The count is compared as unsigned and less-than, so the emitted constant is that limit. `parse_loop_limit` still accepts a decimal or `0x` hex override of at least 1 and falls back to 2^20 when the text is missing or unusable. No setting wires that override; when `loop_limit` stays 2^20 the stage table above is what the translator emits. The shader-cache fingerprint includes the override and the three stage limits, so a change of any of them misses the cache.
+
 ## Geometry stage
 
 A geometry program is a merged export/geometry stage on local-data-share rings, not a primitive shader. It is wave64. It does not use `exp`.

@@ -475,6 +475,148 @@ TEST(the_loop_limit_switch_parses_or_falls_back) {
     }
 }
 
+struct BitCursor {
+    const std::vector<std::uint32_t>* words = nullptr;
+    std::size_t index = 0;
+    std::size_t end = 0;
+    std::uint64_t current = 0;
+    int have = 0;
+
+    std::uint32_t take(int width) {
+        while (have < width && index < words->size()) {
+            current |= static_cast<std::uint64_t>((*words)[index++]) << have;
+            have += 32;
+        }
+        const std::uint32_t value = static_cast<std::uint32_t>(current & ((std::uint64_t{1} << width) - 1));
+        current >>= width;
+        have -= width;
+        return value;
+    }
+
+    std::uint64_t vbr(int width) {
+        std::uint64_t value = 0;
+        int shift = 0;
+        const std::uint32_t high = 1u << (width - 1);
+        for (;;) {
+            const std::uint32_t chunk = take(width);
+            value |= static_cast<std::uint64_t>(chunk & (high - 1)) << shift;
+            if ((chunk & high) == 0) return value;
+            shift += width - 1;
+        }
+    }
+
+    void align() {
+        current = 0;
+        have = 0;
+    }
+};
+
+bool dxil_has_i32(const std::vector<std::uint8_t>& dxil, std::int32_t want) {
+    std::size_t at = 0;
+    for (; at + 4 <= dxil.size(); ++at) {
+        if (dxil[at] == 'B' && dxil[at + 1] == 'C' && dxil[at + 2] == 0xC0 && dxil[at + 3] == 0xDE) break;
+    }
+    if (at + 4 > dxil.size()) return false;
+    at += 4;
+    std::vector<std::uint32_t> words;
+    for (; at + 4 <= dxil.size(); at += 4) {
+        words.push_back(static_cast<std::uint32_t>(dxil[at]) | static_cast<std::uint32_t>(dxil[at + 1]) << 8 |
+                        static_cast<std::uint32_t>(dxil[at + 2]) << 16 |
+                        static_cast<std::uint32_t>(dxil[at + 3]) << 24);
+    }
+    BitCursor cursor{&words};
+    bool hit = false;
+    const auto search = [&](auto&& self, int width, bool constants) -> void {
+        if (hit) return;
+        for (;;) {
+            if (cursor.index >= words.size() && cursor.have < width) return;
+            const std::uint32_t abbrev = cursor.take(width);
+            if (abbrev == 0) {
+                cursor.align();
+                return;
+            }
+            if (abbrev == 1) {
+                const std::uint64_t id = cursor.vbr(8);
+                const std::uint64_t next = cursor.vbr(4);
+                cursor.align();
+                if (cursor.index < words.size()) ++cursor.index;
+                self(self, next == 0 ? 2 : static_cast<int>(next), constants || id == 11);
+                continue;
+            }
+            if (abbrev != 3) return;
+            const std::uint64_t code = cursor.vbr(6);
+            const std::uint64_t count = cursor.vbr(6);
+            std::uint64_t operand = 0;
+            for (std::uint64_t n = 0; n < count; ++n) {
+                const std::uint64_t value = cursor.vbr(6);
+                if (n == 0) operand = value;
+            }
+            if (!constants || code != 4 || count != 1) continue;
+            const std::uint64_t magnitude = operand >> 1;
+            const std::int64_t decoded = (operand & 1) == 0 ? static_cast<std::int64_t>(magnitude)
+                                                            : -static_cast<std::int64_t>(magnitude);
+            if (decoded == want) hit = true;
+        }
+    };
+    search(search, 2, false);
+    return hit;
+}
+
+Lowered lower_unbounded(HwStage stage) {
+    const std::vector<std::uint32_t> words{0xBE80'0381u, 0x8000'8100u, 0xBF85'FFFEu, 0xBF81'0000u};
+    NativeProgram native;
+    native.stage = stage;
+    native.wave64 = false;
+    native.vgprs = 4;
+    native.code = bytes_of(words);
+    if (stage == HwStage::Cs) {
+        ComputeIo io;
+        io.threads = {1, 1, 1};
+        native.io = io;
+    } else if (stage == HwStage::Ms) {
+        MeshIo io;
+        io.threads = 32;
+        io.max_vertices = 32;
+        io.max_primitives = 32;
+        io.topology = 2;
+        native.io = io;
+    } else if (stage == HwStage::Ps) {
+        native.io = PsIo{};
+    } else {
+        native.io = VsIo{};
+    }
+    return lower_native(native);
+}
+
+TEST(an_unbounded_loop_emits_the_stage_limit) {
+    CHECK(stage_loop_limit(kLoopLimit, true, false, false) == kPixelLoopLimit);
+    CHECK(stage_loop_limit(kLoopLimit, false, true, true) == kMeshLoopLimit);
+    CHECK(stage_loop_limit(kLoopLimit, false, false, false) == kMeshLoopLimit);
+    CHECK(stage_loop_limit(kLoopLimit, false, false, true) == kComputeLoopLimit);
+    CHECK(stage_loop_limit(32, true, false, true) == 32);
+    const std::array<std::pair<HwStage, std::uint32_t>, 4> cases{{
+        {HwStage::Cs, kComputeLoopLimit},
+        {HwStage::Ps, kPixelLoopLimit},
+        {HwStage::Ms, kMeshLoopLimit},
+        {HwStage::Vs, kMeshLoopLimit},
+    }};
+    for (const auto& [stage, limit] : cases) {
+        bool translated = true;
+        Lowered lowered;
+        try {
+            lowered = lower_unbounded(stage);
+        } catch (const std::exception& error) {
+            std::printf("unbounded loop stage %u did not translate: %s\n", static_cast<unsigned>(stage),
+                        error.what());
+            translated = false;
+        }
+        CHECK(translated);
+        if (!translated) continue;
+        CHECK(dxil_has_i32(lowered.dxil, static_cast<std::int32_t>(limit)));
+        CHECK(!dxil_has_i32(lowered.dxil, static_cast<std::int32_t>(kLoopLimit)));
+    }
+}
+
 TEST(an_exec_high_write_does_not_overflow_the_stack) {
     NativeProgram native;
     native.stage = HwStage::Cs;
