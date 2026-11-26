@@ -90,6 +90,26 @@ void log_span(const char* which, const std::optional<GpuSpan>& span) {
                  static_cast<unsigned long long>(span->gpu), static_cast<unsigned long long>(span->bytes));
 }
 
+void log_image_base(std::uint64_t address, std::span<const GpuSpan> images) {
+    constexpr unsigned kImageBaseShift = 8;
+    if (images.empty() || address >> (64 - kImageBaseShift) != 0) return;
+    const std::uint64_t base = address << kImageBaseShift;
+    const NearestSpans nearest = nearest_spans(base, images);
+    if (nearest.containing) {
+        G6SHIM_ERROR("d3d12_xs: the fault address read as an image base word, 0x%llX, lies inside %s %llx+%llx",
+                     static_cast<unsigned long long>(base), nearest.containing->label.c_str(),
+                     static_cast<unsigned long long>(nearest.containing->gpu),
+                     static_cast<unsigned long long>(nearest.containing->bytes));
+        return;
+    }
+    if (!nearest.below) return;
+    G6SHIM_ERROR("d3d12_xs: the fault address read as an image base word, 0x%llX, is 0x%llX past %s %llx+%llx",
+                 static_cast<unsigned long long>(base),
+                 static_cast<unsigned long long>(base - nearest.below->gpu - nearest.below->bytes),
+                 nearest.below->label.c_str(), static_cast<unsigned long long>(nearest.below->gpu),
+                 static_cast<unsigned long long>(nearest.below->bytes));
+}
+
 void log_nearest(std::uint64_t address) {
     G6SHIM_ERROR("d3d12_xs: nearest search for 0x%llX", static_cast<unsigned long long>(address));
     std::vector<GpuSpan> spans;
@@ -100,8 +120,10 @@ void log_nearest(std::uint64_t address) {
         spans.push_back(GpuSpan{range.gpu, range.bytes, range.label});
     for (const card::GpuRange& range : card::live_ranges())
         spans.push_back(GpuSpan{range.gpu, range.bytes, "card buffer"});
+    std::vector<GpuSpan> images;
     for (const texture::GpuRange& range : texture::live_ranges())
-        spans.push_back(GpuSpan{range.gpu, range.bytes, range.name});
+        images.push_back(GpuSpan{range.gpu, range.bytes, range.name});
+    spans.insert(spans.end(), images.begin(), images.end());
     std::vector<descriptor_host::ShaderHeapRange> heaps;
     descriptor_host::collect_shader_heaps(heaps);
     for (const descriptor_host::ShaderHeapRange& heap : heaps)
@@ -114,6 +136,7 @@ void log_nearest(std::uint64_t address) {
                      static_cast<unsigned long long>(nearest.containing->bytes));
     log_span("below", nearest.below);
     log_span("above", nearest.above);
+    log_image_base(address, images);
     const std::string heap_text = descriptor_host::near_heaps(address);
     if (heap_text.empty())
         G6SHIM_ERROR("d3d12_xs: descriptor heaps: none tracked");
