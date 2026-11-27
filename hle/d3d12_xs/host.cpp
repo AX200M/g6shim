@@ -1062,7 +1062,8 @@ void record_submission_timing(SubmissionTiming sample) { note_submission_timing(
 IntervalTiming take_submission_interval() { return take_interval_timing(); }
 
 void Host::execute(const std::vector<HostList*>& runs) {
-    const bool async = completion_thread_enabled() && !submission_hook_installed();
+    const bool async =
+        submits_asynchronously(completion_thread_enabled(), submission_hook_installed(), inplace::enabled());
     if (!async) wait_idle();
     Object* bound = submitting_queue();
     begin_queue_submission(nullptr);

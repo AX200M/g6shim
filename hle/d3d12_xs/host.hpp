@@ -204,6 +204,9 @@ struct FlightInput {
 };
 
 bool completion_thread_enabled();
+constexpr bool submits_asynchronously(bool completion_thread, bool hook_installed, bool in_place) {
+    return completion_thread && !hook_installed && !in_place;
+}
 void begin_queue_submission(Object* queue);
 Object* submitting_queue();
 void wait_for_writes(const void* address, std::size_t bytes);

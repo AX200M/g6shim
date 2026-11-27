@@ -208,6 +208,13 @@ TEST(d3d12_xs_inplace_buffer_offsets_count_from_the_placed_buffer) {
     ::VirtualFree(memory, 0, MEM_RELEASE);
 }
 
+TEST(d3d12_xs_inplace_waits_for_every_submission) {
+    CHECK(host::submits_asynchronously(true, false, false));
+    CHECK(!host::submits_asynchronously(true, false, true));
+    CHECK(!host::submits_asynchronously(true, true, false));
+    CHECK(!host::submits_asynchronously(false, false, false));
+}
+
 TEST(d3d12_xs_inplace_turns_down_memory_it_cannot_open) {
     host::Host* gpu = inplace_host();
     if (gpu == nullptr || gpu->device() == nullptr) return;
