@@ -41,3 +41,7 @@
   Closes when: copy-back writes single bytes where the title changed the dword's other bytes.
 - Bytes copy-back writes into title memory show as title writes at the next refresh and are uploaded again.
   Closes when: pages written only by copy-back are left out of the next refresh.
+- With `G6SHIM_AMBIENT` set, the diffuse light of programs a local settings file names is raised to an estimate from the frame (or a constant), shaded in creases from depth, and the light the air scatters is capped; the console's traced light is not reproduced.
+  Closes when: the title's own ray-traced light is right on the host and the stand-in is no longer needed.
+- The stand-in's view of the camera (near plane 0.1, tan of half the vertical field 0.45 unless the settings file says otherwise) is assumed, not read from the title.
+  Closes when: the camera is read from the title's constants.

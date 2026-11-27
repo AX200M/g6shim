@@ -10,6 +10,12 @@ g6shim_add_compute_dxil(g_depth_copy_vs "${CMAKE_CURRENT_SOURCE_DIR}/depth_copy.
 g6shim_add_compute_dxil(g_depth_copy_ps "${CMAKE_CURRENT_SOURCE_DIR}/depth_copy.hlsl" copy_depth_ps ps_6_0)
 g6shim_add_compute_dxil(g_depth_copy_stencil_ps "${CMAKE_CURRENT_SOURCE_DIR}/depth_copy.hlsl" copy_stencil_ps ps_6_0)
 g6shim_add_compute_dxil(g_depth_copy_stencil_bit_ps "${CMAKE_CURRENT_SOURCE_DIR}/depth_copy.hlsl" copy_stencil_bit_ps ps_6_0)
+g6shim_add_compute_dxil(g_ambient_keep "${CMAKE_CURRENT_SOURCE_DIR}/ambient_keep.hlsl" keep)
+g6shim_add_compute_dxil(g_ambient_mean "${CMAKE_CURRENT_SOURCE_DIR}/ambient_keep.hlsl" mean)
+g6shim_add_compute_dxil(g_ambient_place "${CMAKE_CURRENT_SOURCE_DIR}/ambient_gather.hlsl" place)
+g6shim_add_compute_dxil(g_ambient_gather "${CMAKE_CURRENT_SOURCE_DIR}/ambient_gather.hlsl" gather)
+g6shim_add_compute_dxil(g_ambient_raise "${CMAKE_CURRENT_SOURCE_DIR}/ambient_raise.hlsl" raise)
+g6shim_add_compute_dxil(g_ambient_air "${CMAKE_CURRENT_SOURCE_DIR}/ambient_air.hlsl" clear_air)
 g6shim_add_hle_module(hle_d3d12_xs
     DLL "d3d12_xs.dll"
     DEF "${CMAKE_CURRENT_SOURCE_DIR}/d3d12_xs.def"
@@ -24,3 +30,6 @@ g6shim_target_compute_dxil(hle_d3d12_xs g_depth_copy_vs)
 g6shim_target_compute_dxil(hle_d3d12_xs g_depth_copy_ps)
 g6shim_target_compute_dxil(hle_d3d12_xs g_depth_copy_stencil_ps)
 g6shim_target_compute_dxil(hle_d3d12_xs g_depth_copy_stencil_bit_ps)
+foreach(pass keep mean place gather raise air)
+  g6shim_target_compute_dxil(hle_d3d12_xs g_ambient_${pass})
+endforeach()

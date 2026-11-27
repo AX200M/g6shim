@@ -101,6 +101,7 @@ private:
                                                                std::span<const g6shim::shader::UsedResource> used,
                                                                bool compute);
     void finish_depth_uav(host::HostList& list);
+    void stand_in_light(host::HostList& list, const pipeline_host::HostPipeline& pipeline);
     void mark(host::HostList& list, bool compute) const;
 
     std::uintptr_t pipeline_ = 0;

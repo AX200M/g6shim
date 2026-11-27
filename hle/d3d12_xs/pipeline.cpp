@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "pipeline.hpp"
 
+#include "ambient.hpp"
 #include "frame.hpp"
 #include "pipeline_bridge.hpp"
 #include "pipeline_library.hpp"
@@ -162,6 +163,7 @@ const Translated* Shader::translated() const {
             return;
         }
         done.host = std::move(*host);
+        done.ambient = ambient::role_of(container);
         G6SHIM_INFO("d3d12_xs: shader translated (%s %s, %zu user data, %zu samplers)", stage.c_str(), hash.c_str(),
                     done.host.user_data.size(), done.host.samplers.size());
         translated_ = std::move(done);

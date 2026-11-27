@@ -126,6 +126,8 @@ add_executable(g6shim_tests
   unit/d3d12_xs_indirect_test.cpp
   unit/d3d12_xs_draw_test.cpp
   unit/d3d12_xs_depth_uav_test.cpp
+  unit/d3d12_xs_ambient_test.cpp
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/ambient.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/console.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor_host.cpp"
@@ -238,6 +240,15 @@ g6shim_target_compute_dxil(g6shim_tests g_depth_copy_ps)
 g6shim_target_compute_dxil(g6shim_tests g_depth_copy_stencil_ps)
 g6shim_target_compute_dxil(g6shim_tests g_depth_copy_stencil_bit_ps)
 g6shim_target_compute_dxil(g6shim_tests g_depth_uav_write)
+g6shim_add_compute_dxil(g_ambient_keep "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/ambient_keep.hlsl" keep)
+g6shim_add_compute_dxil(g_ambient_mean "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/ambient_keep.hlsl" mean)
+g6shim_add_compute_dxil(g_ambient_place "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/ambient_gather.hlsl" place)
+g6shim_add_compute_dxil(g_ambient_gather "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/ambient_gather.hlsl" gather)
+g6shim_add_compute_dxil(g_ambient_raise "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/ambient_raise.hlsl" raise)
+g6shim_add_compute_dxil(g_ambient_air "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/ambient_air.hlsl" clear_air)
+foreach(pass keep mean place gather raise air)
+  g6shim_target_compute_dxil(g6shim_tests g_ambient_${pass})
+endforeach()
 g6shim_target_compute_dxil(g6shim_tests g_depth_equal_vs)
 g6shim_target_compute_dxil(g6shim_tests g_depth_equal_ps)
 add_test(NAME unit COMMAND g6shim_tests)

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "draw.hpp"
 
+#include "ambient.hpp"
 #include "descriptor_host.hpp"
 #include "frame.hpp"
 #include "host.hpp"
@@ -905,7 +906,71 @@ void State::dispatch(host::HostList& list, std::uint32_t x, std::uint32_t y, std
     mark(list, true);
     list.list()->Dispatch(x, y, z);
     g_dispatched.fetch_add(1, std::memory_order_relaxed);
+    stand_in_light(list, *pipeline);
     finish_depth_uav(list);
+}
+
+void State::stand_in_light(host::HostList& list, const pipeline_host::HostPipeline& pipeline) {
+    if (!ambient::on() || pipeline.stages.empty()) return;
+    const Translated* translated = pipeline.stages.front().translated();
+    if (translated == nullptr || !translated->ambient) return;
+    const ambient::Role role = *translated->ambient;
+    const ambient::RoleSetting* setting = ambient::setting(role);
+    if (setting == nullptr) return;
+    const auto title_view = [&](ambient::Place place) -> std::optional<std::pair<std::uint64_t, descriptor::View>> {
+        const auto& all = roots(true);
+        if (place.slot >= all.size() || all[place.slot].kind != Root::Kind::kTable) return std::nullopt;
+        const std::uint64_t handle = all[place.slot].value + static_cast<std::uint64_t>(place.offset_dwords) * 4;
+        const auto view = descriptor::view(handle);
+        if (!view) return std::nullopt;
+        return std::make_pair(handle, *view);
+    };
+    const auto refuse = [](const char* why) {
+        static std::atomic<std::uint32_t> said{0};
+        if (said.fetch_add(1, std::memory_order_relaxed) < 8)
+            G6SHIM_WARN("d3d12_xs: no stand-in for the indirect light: %s", why);
+    };
+    const auto image = title_view(setting->image);
+    const auto depth = setting->depth ? title_view(*setting->depth) : std::nullopt;
+    if (!image || (setting->depth && !depth)) return refuse("its views are not where the settings say");
+    const descriptor::Heap* heap = heap_of(image->first);
+    descriptor_host::HostHeap* host_heap =
+        heap == nullptr ? nullptr : descriptor_host::for_heap(const_cast<descriptor::Heap*>(heap));
+    if (host_heap == nullptr) return refuse("no host view heap");
+    const auto first = host_heap->dynamic(2);
+    if (!first) return refuse("no dynamic view slots");
+    dynamic_.emplace_back(const_cast<descriptor::Heap*>(heap), *first, 2);
+    const std::uint32_t depth_slot = *first;
+    const std::uint32_t image_slot = *first + 1;
+    if (depth)
+        host_heap->make_at(depth_slot, depth->second);
+    else
+        host_heap->make_null(depth_slot);
+    host_heap->make_at(image_slot, image->second);
+    const Microsoft::WRL::ComPtr<ID3D12Resource> image_resource = host_heap->kept(image_slot);
+    const Microsoft::WRL::ComPtr<ID3D12Resource> depth_resource =
+        depth ? host_heap->kept(depth_slot) : Microsoft::WRL::ComPtr<ID3D12Resource>();
+    if (!image_resource || (depth && !depth_resource)) return refuse("its textures have no host copy");
+    list.keep(image_resource.Get());
+    if (depth_resource) list.keep(depth_resource.Get());
+    const D3D12_RESOURCE_DESC image_desc = image_resource->GetDesc();
+    const D3D12_RESOURCE_DESC depth_desc =
+        depth_resource ? depth_resource->GetDesc() : D3D12_RESOURCE_DESC{};
+    if (!ambient::image_fits(role, image_desc, depth_resource ? &depth_desc : nullptr))
+        return refuse("its image is not the kind the settings name");
+    const auto gpu = [&](std::uint32_t slot) {
+        return D3D12_GPU_DESCRIPTOR_HANDLE{host_heap->gpu_start() + static_cast<std::uint64_t>(slot) * host_heap->step()};
+    };
+    ambient::Views views;
+    views.image = gpu(image_slot);
+    views.depth = gpu(depth_slot);
+    views.width = static_cast<std::uint32_t>(image_desc.Width);
+    views.height = image_desc.Height;
+    views.slices = image_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? image_desc.DepthOrArraySize : 1u;
+    if (ambient::after(list, role, views)) {
+        host_pipeline_ = nullptr;
+        host_roots_[1] = nullptr;
+    }
 }
 
 void State::finish_depth_uav(host::HostList& list) {

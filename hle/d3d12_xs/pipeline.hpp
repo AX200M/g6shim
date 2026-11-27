@@ -25,9 +25,14 @@ namespace make {
 struct Pending;
 }
 
+namespace ambient {
+enum class Role : std::uint8_t;
+}
+
 struct Translated {
     g6shim::shader::emit::HostShader host;
     std::vector<g6shim::shader::UsedResource> used;
+    std::optional<ambient::Role> ambient;
 };
 
 struct Shader {
