@@ -1182,6 +1182,13 @@ host::HostList* host_list(Object* object) {
     return title_list(object)->host.get();
 }
 
+void forget_host_bindings(Object* object) {
+    if (object == nullptr) return;
+    List* list_object = title_list(object);
+    std::lock_guard<std::mutex> lock(list_object->state_mutex);
+    list_object->state.forget_host_bindings();
+}
+
 AccelerationMemory acceleration_memory() {
     std::lock_guard<std::mutex> lock(g_arena_mutex);
     AccelerationMemory memory;

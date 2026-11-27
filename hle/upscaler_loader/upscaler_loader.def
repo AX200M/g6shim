@@ -1,0 +1,7 @@
+LIBRARY "amd_fidelityfx_loader_xbox.dll"
+EXPORTS
+    ffxConfigure=g6shim_ffxConfigure
+    ffxCreateContext=g6shim_ffxCreateContext
+    ffxDestroyContext=g6shim_ffxDestroyContext
+    ffxDispatch=g6shim_ffxDispatch
+    ffxQuery=g6shim_ffxQuery

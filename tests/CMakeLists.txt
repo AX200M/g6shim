@@ -104,6 +104,7 @@ add_executable(g6shim_tests
   unit/d3d12_xs_resource_test.cpp
   unit/d3d12_xs_sampler_test.cpp
   unit/d3d12_xs_host_test.cpp
+  unit/upscaler_loader_test.cpp
   unit/d3d12_xs_descriptor_lazy_test.cpp
   unit/d3d12_xs_descriptor_records_test.cpp
   unit/d3d12_xs_completion_test.cpp
@@ -186,7 +187,8 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/acphal/xma_voices.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xcrdapi/bcpack.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xcrdapi/dstorage.cpp"
-  "${PROJECT_SOURCE_DIR}/hle/g6shim_advapi32/registry.cpp")
+  "${PROJECT_SOURCE_DIR}/hle/g6shim_advapi32/registry.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/upscaler_loader/translate.cpp")
 target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim_shader g6shim::winrt Opus::opus d3d12 dxgi d3dcompiler onecore PowrProf)
 target_link_options(g6shim_tests PRIVATE "/EXPORT:__XMemAllocationHooks__,DATA" "/EXPORT:g6shim_xmem_map_alias")
 foreach(forwarder IN ITEMS hle_g6shim_file hle_g6shim_file2 hle_g6shim_crtfs hle_g6shim_kernel32

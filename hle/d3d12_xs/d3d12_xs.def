@@ -6,3 +6,4 @@ EXPORTS
     D3D12SerializeVersionedRootSignature=g6shim_D3D12SerializeVersionedRootSignature
     D3D12XboxCreateDevice=g6shim_D3D12XboxCreateDevice
     IID_ID3D12Device=g6shim_IID_ID3D12Device DATA
+    g6shim_d3d12_xs_upscaler_bridge=g6shim_d3d12_xs_upscaler_bridge
