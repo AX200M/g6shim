@@ -362,8 +362,8 @@ std::optional<HostShader> decode_entry(std::span<const std::uint8_t> bytes) {
     if (!root_srvs) return std::nullopt;
     shader.root_srvs = *root_srvs;
     const auto descriptor_words = reader.word();
-    constexpr std::uint32_t kAllWords =
-        g6shim::shader::emit::kViewWords | g6shim::shader::emit::kSamplerWords | g6shim::shader::emit::kFlatTable;
+    constexpr std::uint32_t kAllWords = g6shim::shader::emit::kViewWords | g6shim::shader::emit::kSamplerWords |
+                                        g6shim::shader::emit::kFlatTable | g6shim::shader::emit::kFlatWrites;
     if (!descriptor_words || *descriptor_words > kAllWords) return std::nullopt;
     shader.descriptor_words = static_cast<std::uint8_t>(*descriptor_words);
     if (!reader.bytes.empty()) return std::nullopt;

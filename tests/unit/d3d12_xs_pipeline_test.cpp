@@ -210,7 +210,7 @@ emit::HostShader sample_shader() {
     shader.static_samplers.push_back(emit::StaticSampler::from_words({0x400, 0xC0'0000, 0x18F0'0000, 0}));
     shader.root_cbvs = {2};
     shader.root_srvs = {0, 3};
-    shader.descriptor_words = emit::kViewWords | emit::kSamplerWords | emit::kFlatTable;
+    shader.descriptor_words = emit::kViewWords | emit::kSamplerWords | emit::kFlatTable | emit::kFlatWrites;
     return shader;
 }
 
