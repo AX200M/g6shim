@@ -5,6 +5,7 @@
 #include <crtdbg.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -22,6 +23,7 @@
 #include <system_error>
 #include <vector>
 
+#include "g6shim/shader/emit/container.hpp"
 #include "g6shim/shader/scan.hpp"
 
 namespace fs = std::filesystem;
@@ -42,10 +44,24 @@ void usage() {
         "  --prepare <dll>       fill the shader cache of that d3d12_xs.dll (the one the game\n"
         "                        runs) with every shader found, so the game does not translate them\n"
         "  --cache <dir>         the cache folder for --prepare (as G6SHIM_CACHE_DIR in the game)\n"
+        "  --failures <file>     write each shader that does not translate as one line: its hash\n"
+        "                        as d3d12_xs logs it, its stage and why\n"
         "  -v                    list files and the first failure per reason\n";
 }
 
 using PrepareShader = int (*)(const std::uint8_t* container, std::size_t bytes);
+
+std::string logged_hash(std::span<const std::uint8_t> container) {
+    constexpr char kDigits[] = "0123456789abcdef";
+    constexpr std::size_t kLoggedBytes = 8;
+    const std::array<std::uint8_t, 16> digest = g6shim::shader::emit::hash(container);
+    std::string out;
+    for (std::size_t i = 0; i < kLoggedBytes; ++i) {
+        out.push_back(kDigits[digest[i] >> 4]);
+        out.push_back(kDigits[digest[i] & 0x0F]);
+    }
+    return out;
+}
 
 std::optional<fs::path> repository_root(fs::path start) {
     std::error_code ec;
@@ -271,6 +287,7 @@ int main(int argc, char** argv) {
     std::optional<fs::path> out_dir;
     std::optional<fs::path> prepare_dll;
     std::optional<fs::path> cache_dir;
+    std::optional<fs::path> failures_path;
     std::optional<std::string> title_id;
     bool verbose = false;
 
@@ -313,6 +330,12 @@ int main(int argc, char** argv) {
                 return 2;
             }
             cache_dir = fs::path(argv[++i]);
+        } else if (argument == "--failures") {
+            if (i + 1 >= argc) {
+                std::cerr << "g6shim-shader: --failures needs an output file\n";
+                return 2;
+            }
+            failures_path = fs::path(argv[++i]);
         } else if (argument == "-v") {
             verbose = true;
         } else if (!argument.empty() && argument[0] == '-') {
@@ -354,6 +377,18 @@ int main(int argc, char** argv) {
             std::cerr << "g6shim-shader: skipped " << failure.path.string() << ": " << failure.error << "\n";
 
         g6shim::shader::ShaderScanner scanner;
+        std::ofstream failures_out;
+        if (failures_path) {
+            failures_out.open(*failures_path, std::ios::trunc);
+            if (!failures_out) {
+                std::cerr << "g6shim-shader: cannot write " << failures_path->string() << "\n";
+                return 2;
+            }
+            scanner.set_failure_reporter(
+                [&failures_out](std::span<const std::uint8_t> container, std::string_view stage, std::string_view why) {
+                    failures_out << logged_hash(container) << ' ' << stage << ' ' << why << '\n';
+                });
+        }
         std::atomic<std::uint64_t> prepared{0};
         std::atomic<std::uint64_t> refused{0};
         if (prepare_dll) {

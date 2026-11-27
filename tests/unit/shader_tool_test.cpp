@@ -488,6 +488,28 @@ TEST(shader_tool_reads_the_stage_with_placeholder_bitcode) {
     CHECK(totals.failures.find("instruction") == totals.failures.end());
 }
 
+TEST(shader_tool_reports_each_shader_that_does_not_translate) {
+    const std::vector<std::uint8_t> refused = dxbc({{kDxil, header_only_part(0)}});
+    const std::vector<std::uint8_t> code{0x00, 0x00, 0x80, 0xBF, 0x00, 0x00, 0x81, 0xBF};
+    const std::vector<std::uint8_t> translated = dxbc({{kDxil, native_part(1, HwStage::Vs, code)}});
+    std::vector<std::uint8_t> file = refused;
+    file.insert(file.end(), translated.begin(), translated.end());
+    ShaderScanner scanner;
+    std::vector<std::pair<std::string, std::string>> reported;
+    std::size_t reported_bytes = 0;
+    scanner.set_failure_reporter([&](std::span<const std::uint8_t> container, std::string_view stage,
+                                     std::string_view why) {
+        reported.emplace_back(std::string(stage), std::string(why));
+        reported_bytes = container.size();
+    });
+    scanner.add_file(file);
+    CHECK(reported.size() == 1);
+    if (reported.size() != 1) return;
+    CHECK(reported[0].first == "ps");
+    CHECK(reported[0].second == "no native program");
+    CHECK(reported_bytes == refused.size());
+}
+
 TEST(shader_tool_requires_a_native_program) {
     const std::vector<std::uint8_t> container = dxbc({{kDxil, header_only_part(0)}});
     ShaderScanner scanner;

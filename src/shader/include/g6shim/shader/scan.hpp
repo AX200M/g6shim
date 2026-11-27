@@ -78,6 +78,10 @@ public:
     using ContainerVisitor = std::function<void(std::span<const std::uint8_t> container)>;
     void set_container_visitor(ContainerVisitor visitor) { visitor_ = std::move(visitor); }
 
+    using FailureReporter =
+        std::function<void(std::span<const std::uint8_t> container, std::string_view stage, std::string_view why)>;
+    void set_failure_reporter(FailureReporter reporter) { reporter_ = std::move(reporter); }
+
 private:
     struct Key {
         std::uint64_t first = 0;
@@ -98,6 +102,7 @@ private:
     ShaderTotals totals_;
     TranslatedWriter writer_;
     ContainerVisitor visitor_;
+    FailureReporter reporter_;
 };
 
 }  // namespace g6shim::shader

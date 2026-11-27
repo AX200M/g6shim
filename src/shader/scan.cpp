@@ -399,7 +399,13 @@ FileCounts ShaderScanner::add_file(std::span<const std::uint8_t> file) {
         }
     }
 
-    for (const Outcome& outcome : outcomes) {
+    for (std::size_t index = 0; index < outcomes.size(); ++index) {
+        const Outcome& outcome = outcomes[index];
+        if (!outcome.translated && reporter_) {
+            const std::string& why =
+                outcome.translation_failures.empty() ? outcome.message : outcome.translation_failures.front().message;
+            reporter_(std::span<const std::uint8_t>(fresh[index]), outcome.stage, why);
+        }
         StageCounts& stage = totals_.stages[outcome.stage];
         ++stage.total;
         if (outcome.translated) {
