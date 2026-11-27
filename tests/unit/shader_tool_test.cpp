@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -557,4 +558,25 @@ TEST(shader_tool_hands_translated_containers_to_the_writer) {
     }));
     CHECK(dxil.size() > 4);
     CHECK(std::equal(dxil.begin(), dxil.begin() + 4, std::array<std::uint8_t, 4>{'D', 'X', 'B', 'C'}.begin()));
+}
+
+TEST(shader_tool_visits_each_unique_container_once) {
+    const std::vector<std::uint8_t> first = dxbc({{kSfi0, {1, 2, 3, 4}}});
+    const std::vector<std::uint8_t> second = dxbc({{kSfi0, {5, 6, 7, 8}}});
+    std::vector<std::uint8_t> file = first;
+    file.insert(file.end(), second.begin(), second.end());
+    file.insert(file.end(), first.begin(), first.end());
+
+    ShaderScanner scanner;
+    std::mutex visited_mutex;
+    std::vector<std::vector<std::uint8_t>> visited;
+    scanner.set_container_visitor([&](std::span<const std::uint8_t> container) {
+        const std::lock_guard<std::mutex> lock(visited_mutex);
+        visited.emplace_back(container.begin(), container.end());
+    });
+    scanner.add_file(file);
+    scanner.add_file(second);
+    CHECK(visited.size() == 2);
+    CHECK(std::count(visited.begin(), visited.end(), first) == 1);
+    CHECK(std::count(visited.begin(), visited.end(), second) == 1);
 }

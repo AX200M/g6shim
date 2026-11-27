@@ -75,6 +75,9 @@ public:
 
     void set_translated_writer(TranslatedWriter writer) { writer_ = std::move(writer); }
 
+    using ContainerVisitor = std::function<void(std::span<const std::uint8_t> container)>;
+    void set_container_visitor(ContainerVisitor visitor) { visitor_ = std::move(visitor); }
+
 private:
     struct Key {
         std::uint64_t first = 0;
@@ -94,6 +97,7 @@ private:
     std::unordered_set<Key, KeyHash> seen_;
     ShaderTotals totals_;
     TranslatedWriter writer_;
+    ContainerVisitor visitor_;
 };
 
 }  // namespace g6shim::shader

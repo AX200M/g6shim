@@ -375,8 +375,12 @@ FileCounts ShaderScanner::add_file(std::span<const std::uint8_t> file) {
     for (const StoredShaderContainer& container : stored_shader_containers(file)) take(container.bytes);
 
     std::vector<Outcome> outcomes(fresh.size());
+    const auto visit = [this](const std::vector<std::uint8_t>& bytes) {
+        if (visitor_) visitor_(std::span<const std::uint8_t>(bytes));
+    };
     if (fresh.size() == 1) {
         outcomes[0] = analyze(fresh[0], hashes[0], writer_);
+        visit(fresh[0]);
     } else if (!fresh.empty()) {
         const unsigned cores = std::max(1u, std::thread::hardware_concurrency());
         const unsigned workers = static_cast<unsigned>(std::min<std::size_t>(cores, fresh.size()));
@@ -389,6 +393,7 @@ FileCounts ShaderScanner::add_file(std::span<const std::uint8_t> file) {
                     const std::size_t job = next.fetch_add(1);
                     if (job >= fresh.size()) break;
                     outcomes[job] = analyze(fresh[job], hashes[job], writer_);
+                    visit(fresh[job]);
                 }
             });
         }

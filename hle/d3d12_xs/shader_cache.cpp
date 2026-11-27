@@ -443,3 +443,8 @@ std::pair<std::uint64_t, std::uint64_t> counts() {
 }
 
 }  // namespace g6shim::d3d12_xs::shader_cache
+
+extern "C" int g6shim_d3d12_xs_prepare_shader(const std::uint8_t* container, std::size_t bytes) {
+    if (container == nullptr || bytes == 0) return 0;
+    return g6shim::d3d12_xs::shader_cache::host_shader(std::span<const std::uint8_t>(container, bytes)) ? 1 : 0;
+}

@@ -5,6 +5,7 @@
 #include <crtdbg.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -38,8 +39,13 @@ void usage() {
         "  --json <out.json>     write the unique per-stage counts as JSON\n"
         "  --title-id <8 hex>    title ID to put in the JSON\n"
         "  --out <dir>           write each translated PC container as <hash>.dxil\n"
+        "  --prepare <dll>       fill the shader cache of that d3d12_xs.dll (the one the game\n"
+        "                        runs) with every shader found, so the game does not translate them\n"
+        "  --cache <dir>         the cache folder for --prepare (as G6SHIM_CACHE_DIR in the game)\n"
         "  -v                    list files and the first failure per reason\n";
 }
+
+using PrepareShader = int (*)(const std::uint8_t* container, std::size_t bytes);
 
 std::optional<fs::path> repository_root(fs::path start) {
     std::error_code ec;
@@ -263,6 +269,8 @@ int main(int argc, char** argv) {
     std::vector<fs::path> inputs;
     std::optional<fs::path> json_path;
     std::optional<fs::path> out_dir;
+    std::optional<fs::path> prepare_dll;
+    std::optional<fs::path> cache_dir;
     std::optional<std::string> title_id;
     bool verbose = false;
 
@@ -293,6 +301,18 @@ int main(int argc, char** argv) {
                 return 2;
             }
             out_dir = fs::path(argv[++i]);
+        } else if (argument == "--prepare") {
+            if (i + 1 >= argc) {
+                std::cerr << "g6shim-shader: --prepare needs the d3d12_xs.dll the game runs\n";
+                return 2;
+            }
+            prepare_dll = fs::path(argv[++i]);
+        } else if (argument == "--cache") {
+            if (i + 1 >= argc) {
+                std::cerr << "g6shim-shader: --cache needs a folder\n";
+                return 2;
+            }
+            cache_dir = fs::path(argv[++i]);
         } else if (argument == "-v") {
             verbose = true;
         } else if (!argument.empty() && argument[0] == '-') {
@@ -334,6 +354,28 @@ int main(int argc, char** argv) {
             std::cerr << "g6shim-shader: skipped " << failure.path.string() << ": " << failure.error << "\n";
 
         g6shim::shader::ShaderScanner scanner;
+        std::atomic<std::uint64_t> prepared{0};
+        std::atomic<std::uint64_t> refused{0};
+        if (prepare_dll) {
+            if (cache_dir) ::SetEnvironmentVariableW(L"G6SHIM_CACHE_DIR", fs::absolute(*cache_dir).c_str());
+            const fs::path library = fs::absolute(*prepare_dll);
+            HMODULE module = ::LoadLibraryExW(library.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+            const auto prepare =
+                module == nullptr
+                    ? nullptr
+                    : reinterpret_cast<PrepareShader>(::GetProcAddress(module, "g6shim_d3d12_xs_prepare_shader"));
+            if (prepare == nullptr) {
+                std::cerr << "g6shim-shader: " << library.string() << " does not prepare shaders (error "
+                          << ::GetLastError() << ")\n";
+                return 2;
+            }
+            scanner.set_container_visitor([prepare, &prepared, &refused](std::span<const std::uint8_t> container) {
+                if (prepare(container.data(), container.size()) != 0)
+                    prepared.fetch_add(1, std::memory_order_relaxed);
+                else
+                    refused.fetch_add(1, std::memory_order_relaxed);
+            });
+        }
         std::mutex output_mutex;
         std::string first_output_error;
         std::uint64_t output_failures = 0;
@@ -374,6 +416,9 @@ int main(int argc, char** argv) {
 
         const g6shim::shader::ShaderTotals& totals = scanner.totals();
         print_totals(totals, verbose);
+        if (prepare_dll)
+            std::cout << "  prepared " << prepared.load() << " shader(s) in the cache, " << refused.load()
+                      << " refused\n";
 
         if (json_path && !write_json(*json_path, title_id, totals)) {
             std::cerr << "g6shim-shader: cannot write " << json_path->string() << "\n";

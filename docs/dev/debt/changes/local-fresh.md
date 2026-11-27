@@ -15,3 +15,5 @@
 
 - Chained extensions on upscale dispatches, allocation callbacks and console-only create descriptors are dropped.
   Closes when: a title is seen passing one that changes the result.
+- `g6shim-shader --prepare` fills only the translated-shader cache; host pipelines are still built during the run.
+  Closes when: the prepare step also builds the title's pipelines from a recorded list.
