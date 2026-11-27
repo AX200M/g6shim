@@ -71,6 +71,7 @@ void load() {
     int minor = 0;
     int patch = 0;
     g_api->get_version(&major, &minor, &patch);
+    g_api->unload_crash_handler();
     g_api->set_option_u32(kOptionSoftMemoryLimit, kSoftMemoryLimitMegabytes);
     g_api->set_focus_keys(nullptr, 0);
     g_api->mask_overlay_bits(0, 0);
