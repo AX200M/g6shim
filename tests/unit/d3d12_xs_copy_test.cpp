@@ -154,6 +154,21 @@ TEST(d3d12_xs_ram_band_rises_at_once_and_falls_with_margin) {
     CHECK(shadow::ram_band(shadow::RamBand::kWatch, calm) == shadow::RamBand::kCalm);
 }
 
+TEST(d3d12_xs_put_changed_keeps_a_dword_the_title_changed_after_the_read) {
+    alignas(16) std::array<std::uint8_t, 64> memory{};
+    std::vector<std::uint8_t> was(64, 1);
+    std::vector<std::uint8_t> now = was;
+    now[8] = 2;
+    now[20] = 3;
+    std::memcpy(memory.data(), was.data(), 64);
+    memory[9] = 0xEE;
+    const std::size_t written = shadow::put_changed(memory.data(), was.data(), now.data(), 64);
+    CHECK(written == 4);
+    CHECK(memory[8] == 1);
+    CHECK(memory[9] == 0xEE);
+    CHECK(memory[20] == 3);
+}
+
 TEST(d3d12_xs_changed_span_finds_the_first_and_last_difference) {
     std::vector<std::uint8_t> a(1000, 7);
     std::vector<std::uint8_t> b = a;

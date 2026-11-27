@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "device.hpp"
+#include "inplace.hpp"
 #include "later.hpp"
 #include "resource.hpp"
 #include "root.hpp"
@@ -52,6 +53,7 @@ bool install_page_mapper() {
     }
     g_map_alias = exports.map_alias;
     resource::use_page_mapper(&map_title_alias);
+    if (exports.find_stretch) inplace::use_stretch_finder(exports.find_stretch);
     G6SHIM_INFO("d3d12_xs: page mappings come from xmem.dll");
     return true;
 }

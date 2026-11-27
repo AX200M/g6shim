@@ -9,6 +9,7 @@ EXPORTS
     XMemFreePhysicalPages=g6shim_XMemFreePhysicalPages
     XMemMapPhysicalPages=g6shim_XMemMapPhysicalPages
     XMemMapPhysicalPagesScatter=g6shim_XMemMapPhysicalPagesScatter
+    g6shim_xmem_find_stretch=g6shim_xmem_find_stretch
     g6shim_xmem_map_alias=g6shim_xmem_map_alias
     XMemVirtualAlloc=g6shim_XMemVirtualAlloc
     XMemVirtualQuery=g6shim_XMemVirtualQuery

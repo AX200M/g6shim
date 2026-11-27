@@ -37,8 +37,12 @@
 
 ## add Functional
 
-- Copy-back writes what shaders changed in whole dwords; a title thread writing another byte of the same dword while the GPU ran loses that byte.
-  Closes when: copy-back writes single bytes where the title changed the dword's other bytes.
+- Copy-back writes what shaders changed a dword at a time with a compare-exchange; where the title changed the dword after copy-back read it, the title's dword stays and the shader's bytes in it are lost.
+  Closes when: copy-back merges such a dword byte by byte under the compare-exchange.
+- With `G6SHIM_INPLACE=1`, title memory placed in place is pinned: while a window or title buffer is in place, the title's `VirtualFree` and `VirtualProtect` of its pages fail (logged by kernelx).
+  Closes when: placed memory is let go before the title frees or protects it.
+- In place, what the card writes is not seen by other host copies of the same title memory (write watching does not see the card's writes), and views of ours opened over view memory are never unmapped.
+  Closes when: every host copy over placed memory is in place too, and views are unmapped once their heap is gone.
 - Bytes copy-back writes into title memory show as title writes at the next refresh and are uploaded again.
   Closes when: pages written only by copy-back are left out of the next refresh.
 - With `G6SHIM_AMBIENT` set, the diffuse light of programs a local settings file names is raised to an estimate from the frame (or a constant), shaded in creases from depth, and the light the air scatters is capped; the console's traced light is not reproduced.

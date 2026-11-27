@@ -76,6 +76,7 @@ void descriptor_release_dynamic(Object* heap, std::uint32_t first, std::uint32_t
 
 void title_memory_remapped(const void* at, std::size_t bytes) {
     watch::title_memory_remapped(reinterpret_cast<std::uintptr_t>(at), bytes);
+    shadow::title_memory_changed(reinterpret_cast<std::uint64_t>(at), bytes);
 }
 
 }  // namespace g6shim::d3d12_xs::later

@@ -9,6 +9,7 @@
 
 #include <windows.h>
 
+#include <intrin.h>
 #include <psapi.h>
 
 #include <algorithm>
@@ -82,11 +83,73 @@ std::atomic<std::uint64_t> g_generation{0};
 std::atomic<std::uint64_t> g_buffers_generation{1};
 std::atomic<std::uint64_t> g_evicted{0};
 std::atomic<std::uint64_t> g_loose_budget{kLooseBudgetBytes};
+std::atomic<std::uint64_t> g_upload_fresh{0};
+std::atomic<std::uint64_t> g_upload_title{0};
+std::atomic<std::uint64_t> g_upload_echo{0};
+std::atomic<std::uint64_t> g_upload_unwatched{0};
 std::atomic<std::uint64_t> g_back_nanoseconds{0};
 std::atomic<std::uint64_t> g_back_ranges{0};
 std::atomic<std::uint64_t> g_back_compared{0};
 std::atomic<std::uint64_t> g_back_read{0};
 std::atomic<std::uint64_t> g_back_written{0};
+
+std::shared_ptr<Shadow> placed_shadow(host::Host* gpu_host, std::uint64_t start, std::uint64_t bytes, bool window) {
+    if (!inplace::enabled()) return nullptr;
+    std::shared_ptr<inplace::Region> region = inplace::place(gpu_host->device(), start, bytes, window);
+    if (!region) return nullptr;
+    auto shadow = std::make_shared<Shadow>(region->buffer_ref(), reinterpret_cast<std::uint8_t*>(start),
+                                           region->gpu(start), start, bytes);
+    shadow->place_in(std::move(region));
+    return shadow;
+}
+
+bool overlaps(std::uint64_t a, std::uint64_t a_end, std::uint64_t b, std::uint64_t b_end) {
+    return a < b_end && b < a_end;
+}
+
+std::atomic<bool> g_changes_pending{false};
+
+void let_go_changed() {
+    if (!g_changes_pending.exchange(false, std::memory_order_acq_rel)) return;
+    const auto changed = inplace::take_changed();
+    if (changed.empty()) return;
+    std::vector<std::shared_ptr<Shadow>> gone;
+    {
+        std::lock_guard<std::mutex> lock(g_loose_mutex);
+        for (auto it = g_loose.begin(); it != g_loose.end();) {
+            const std::shared_ptr<Shadow>& window = it->second;
+            const bool hit = window && window->in_place() &&
+                             std::any_of(changed.begin(), changed.end(), [&](const auto& range) {
+                                 return overlaps(window->start(), window->start() + window->bytes(), range.first,
+                                                 range.second);
+                             });
+            if (!hit) {
+                ++it;
+                continue;
+            }
+            g_loose_buffers.erase(window->buffer());
+            gone.push_back(window);
+            it = g_loose.erase(it);
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_buffers_mutex);
+        for (auto& [key, entry] : g_buffers) {
+            if (!entry.shadow || !entry.shadow->in_place()) continue;
+            const bool hit = std::any_of(changed.begin(), changed.end(), [&](const auto& range) {
+                return overlaps(key.first, entry.end, range.first, range.second);
+            });
+            if (!hit) continue;
+            gone.push_back(std::move(entry.shadow));
+            entry.shadow.reset();
+        }
+    }
+    if (gone.empty()) return;
+    inplace::note_let_go(gone.size());
+    g_generation.fetch_add(1, std::memory_order_release);
+    g_buffers_generation.fetch_add(1, std::memory_order_relaxed);
+    for (std::shared_ptr<Shadow>& shadow : gone) host::retire(std::move(shadow));
+}
 
 std::optional<std::shared_ptr<Shadow>> loose(std::uint64_t address, std::uint64_t end) {
     const std::uint64_t start = address & ~(kWindowBytes - 1);
@@ -102,13 +165,16 @@ std::optional<std::shared_ptr<Shadow>> loose(std::uint64_t address, std::uint64_
     }
     host::Host* gpu_host = host::host();
     if (gpu_host == nullptr) return std::nullopt;
-    auto buffer = gpu_host->shared_buffer(bytes);
-    if (!buffer) return std::nullopt;
-    host::name(buffer->first.Get(), "title memory");
-    const std::uint64_t gpu = buffer->first->GetGPUVirtualAddress();
-    G6SHIM_TRACE("d3d12_xs: loose title memory %llx+%llx copied to the host",
-                 static_cast<unsigned long long>(start), static_cast<unsigned long long>(bytes));
-    auto shadow = std::make_shared<Shadow>(std::move(buffer->first), buffer->second, gpu, start, bytes);
+    std::shared_ptr<Shadow> shadow = placed_shadow(gpu_host, start, bytes, true);
+    if (!shadow) {
+        auto buffer = gpu_host->shared_buffer(bytes);
+        if (!buffer) return std::nullopt;
+        host::name(buffer->first.Get(), "title memory");
+        const std::uint64_t gpu = buffer->first->GetGPUVirtualAddress();
+        G6SHIM_TRACE("d3d12_xs: loose title memory %llx+%llx copied to the host",
+                     static_cast<unsigned long long>(start), static_cast<unsigned long long>(bytes));
+        shadow = std::make_shared<Shadow>(std::move(buffer->first), buffer->second, gpu, start, bytes);
+    }
     std::lock_guard<std::mutex> lock(g_loose_mutex);
     const auto [at, inserted] = g_loose.try_emplace({start, bytes}, shadow);
     at->second->used(g_submission.load(std::memory_order_relaxed));
@@ -150,11 +216,13 @@ std::uint64_t Shadow::left(std::uint64_t address) const {
 }
 
 void Shadow::refresh(host::HostList& list, std::uint64_t address, std::uint64_t bytes) {
+    if (in_place_) return;
     const std::uint64_t len = std::min(bytes, left(address));
     list.defer_refresh(shared_from_this(), static_cast<std::size_t>(address), static_cast<std::size_t>(len));
 }
 
 void Shadow::gpu_writes(host::HostList& list, std::uint64_t address, std::uint64_t bytes) {
+    if (in_place_) return;
     const std::uint64_t len = std::min(bytes, left(address));
     list.defer_gpu_write(shared_from_this(), static_cast<std::size_t>(address), static_cast<std::size_t>(len));
 }
@@ -170,6 +238,7 @@ std::pair<std::size_t, std::size_t> Shadow::inside(std::size_t address, std::siz
 }
 
 std::size_t Shadow::writing(std::size_t address, std::size_t bytes) {
+    if (in_place_) return 0;
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
         pending_.emplace_back(address, address + bytes);
@@ -308,40 +377,57 @@ std::optional<std::pair<std::size_t, std::size_t>> changed_span(const std::uint8
     return std::make_pair(first, end);
 }
 
+namespace {
+
+enum class Exchange : std::uint8_t { kWritten, kTitleChanged, kFault };
+
+Exchange exchange_dword(std::uint8_t* at, std::uint32_t was, std::uint32_t now) {
+    __try {
+        const long seen = _InterlockedCompareExchange(reinterpret_cast<volatile long*>(at), static_cast<long>(now),
+                                                      static_cast<long>(was));
+        return static_cast<std::uint32_t>(seen) == was ? Exchange::kWritten : Exchange::kTitleChanged;
+    } __except (::GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER
+                                                                   : EXCEPTION_CONTINUE_SEARCH) {
+        return Exchange::kFault;
+    }
+}
+
+}  // namespace
+
 std::size_t put_changed(std::uint8_t* destination, const std::uint8_t* was, const std::uint8_t* now,
                         std::size_t bytes) {
     constexpr std::size_t kDword = 4;
     constexpr std::size_t kBlock = 32;
     const auto base = reinterpret_cast<std::uintptr_t>(destination);
     std::size_t written = 0;
-    std::size_t run = 0;
-    bool open = false;
-    const auto flush = [&](std::size_t end) {
-        if (!open) return;
-        host::write_mapped(destination + run, now + run, end - run);
-        written += end - run;
-        open = false;
-    };
     std::size_t at = 0;
     while (at < bytes) {
         const bool aligned = (base + at) % kDword == 0;
         if (aligned && at + kBlock <= bytes && std::memcmp(was + at, now + at, kBlock) == 0) {
-            flush(at);
             at += kBlock;
             continue;
         }
         const std::size_t unit = std::min(kDword - (base + at) % kDword, bytes - at);
         if (std::memcmp(was + at, now + at, unit) != 0) {
-            if (!open) {
-                run = at;
-                open = true;
+            if (unit == kDword) {
+                std::uint32_t was_word = 0;
+                std::uint32_t now_word = 0;
+                std::memcpy(&was_word, was + at, kDword);
+                std::memcpy(&now_word, now + at, kDword);
+                const Exchange done = exchange_dword(destination + at, was_word, now_word);
+                if (done == Exchange::kWritten) {
+                    written += kDword;
+                } else if (done == Exchange::kFault) {
+                    host::write_mapped(destination + at, now + at, kDword);
+                    written += kDword;
+                }
+            } else {
+                host::write_mapped(destination + at, now + at, unit);
+                written += unit;
             }
-        } else {
-            flush(at);
         }
         at += unit;
     }
-    flush(bytes);
     return written;
 }
 
@@ -389,6 +475,15 @@ void note_copy_back_stats(const CopyBackStats& stats) {
     g_back_written.fetch_add(stats.written, std::memory_order_relaxed);
 }
 
+UploadStats take_upload_stats() {
+    UploadStats stats;
+    stats.fresh = g_upload_fresh.exchange(0, std::memory_order_relaxed);
+    stats.title = g_upload_title.exchange(0, std::memory_order_relaxed);
+    stats.echo = g_upload_echo.exchange(0, std::memory_order_relaxed);
+    stats.unwatched = g_upload_unwatched.exchange(0, std::memory_order_relaxed);
+    return stats;
+}
+
 CopyBackStats take_copy_back_stats() {
     CopyBackStats stats;
     stats.nanoseconds = g_back_nanoseconds.exchange(0, std::memory_order_relaxed);
@@ -432,6 +527,7 @@ bool merge_written(std::uint8_t* title, std::uint8_t* host, const std::uint8_t* 
 
 BackCounts Shadow::merge_back(std::size_t address, std::size_t bytes) {
     BackCounts counts;
+    if (in_place_) return counts;
     std::lock_guard<std::mutex> snapshot_lock(before_mutex_);
     const auto [from, to] = inside(address, bytes);
     counts.compared = to > from ? to - from : 0;
@@ -462,6 +558,10 @@ BackCounts Shadow::merge_back(std::size_t address, std::size_t bytes) {
                     if (merge_written(title.data(), data_ + lo, old + span->first, len)) {
                         watch::writing(start + lo, len);
                         counts.written += put_changed(target, was.data(), title.data(), len);
+                        std::lock_guard<std::mutex> lock(echo_mutex_);
+                        for (std::size_t page = (start + lo) / watch::kPageBytes;
+                             page <= (start + lo + len - 1) / watch::kPageBytes; ++page)
+                            echo_.insert(page);
                     }
                 }
             }
@@ -501,6 +601,7 @@ void Shadow::discard_write(std::size_t address, std::size_t bytes) {
 }
 
 std::size_t Shadow::update(std::size_t address, std::size_t bytes) {
+    if (in_place_) return 0;
     host::wait_for_writes(reinterpret_cast<const void*>(address), bytes);
     const std::size_t start = static_cast<std::size_t>(start_);
     const std::size_t end = static_cast<std::size_t>(start_ + bytes_);
@@ -537,6 +638,7 @@ std::size_t Shadow::update_free(std::size_t from, std::size_t to) {
         }
         watched_.store(kNotWatched, std::memory_order_relaxed);
     }
+    g_upload_unwatched.fetch_add(to - from, std::memory_order_relaxed);
     copy_range(from, to);
     return to - from;
 }
@@ -558,6 +660,15 @@ std::size_t Shadow::copy_stale(std::size_t from, std::size_t to, std::uint64_t n
         }
         std::uint64_t& at = copied_[page - base];
         if (at == 0 || write > at) {
+            const std::size_t page_bytes =
+                std::min((page + 1) * watch::kPageBytes, to) - std::max(page * watch::kPageBytes, from);
+            bool echoed = false;
+            {
+                std::lock_guard<std::mutex> echo_lock(echo_mutex_);
+                echoed = echo_.erase(page) != 0;
+            }
+            std::atomic<std::uint64_t>& bucket = at == 0 ? g_upload_fresh : echoed ? g_upload_echo : g_upload_title;
+            bucket.fetch_add(page_bytes, std::memory_order_relaxed);
             if (std::max(page * watch::kPageBytes, static_cast<std::size_t>(start_)) >= from &&
                 std::min((page + 1) * watch::kPageBytes, static_cast<std::size_t>(start_ + bytes_)) <= to)
                 at = now;
@@ -601,7 +712,14 @@ void unregister_buffer(std::uintptr_t resource, std::uint64_t start) {
     if (dropped) host::retire(std::move(dropped));
 }
 
+void title_memory_changed(std::uint64_t at, std::uint64_t bytes) {
+    if (!inplace::enabled()) return;
+    inplace::title_memory_changed(at, bytes);
+    g_changes_pending.store(true, std::memory_order_release);
+}
+
 std::optional<std::shared_ptr<Shadow>> find(std::uint64_t address, std::uint64_t bytes) {
+    let_go_changed();
     const std::uint64_t wanted = std::max(bytes, std::uint64_t{1});
     if (address > std::numeric_limits<std::uint64_t>::max() - wanted) return std::nullopt;
     const std::uint64_t end = address + wanted;
@@ -626,7 +744,9 @@ std::optional<std::shared_ptr<Shadow>> find(std::uint64_t address, std::uint64_t
             const std::uint64_t len = entry.end - key.first;
             host::Host* gpu_host = host::host();
             if (gpu_host == nullptr) return std::nullopt;
-            if (auto side = card::Side::try_create(gpu_host->device(), len)) {
+            if (auto placed = placed_shadow(gpu_host, key.first, len, false)) {
+                entry.shadow = std::move(placed);
+            } else if (auto side = card::Side::try_create(gpu_host->device(), len)) {
                 entry.shadow = std::make_shared<Shadow>(side->buffer(), side->staging(), side->gpu(), key.first, len);
                 entry.shadow->bind_card(std::move(side));
             } else {
@@ -796,6 +916,7 @@ RamBand band_now(std::uint64_t submission) {
 }  // namespace
 
 void submission_completed() {
+    let_go_changed();
     const std::uint64_t now = g_submission.fetch_add(1, std::memory_order_relaxed) + 1;
     const auto band = static_cast<std::size_t>(band_now(now));
     const std::uint64_t idle = kBandIdleSubmissions[band];
@@ -807,11 +928,11 @@ void submission_completed() {
         const bool flying = host::submission_in_flight();
         std::uint64_t held = 0;
         for (const auto& [key, window] : g_loose)
-            if (window) held += window->bytes();
+            if (window && !window->in_place()) held += window->bytes();
         const bool over_budget = held > budget;
         for (auto it = g_loose.begin(); over_budget && it != g_loose.end();) {
             const std::shared_ptr<Shadow>& window = it->second;
-            if (!window || window.use_count() != 1 || now - window->last_used() <= idle ||
+            if (!window || window->in_place() || window.use_count() != 1 || now - window->last_used() <= idle ||
                 (flying && host::references(window->buffer()) > 1)) {
                 ++it;
                 continue;

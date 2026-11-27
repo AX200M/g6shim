@@ -127,7 +127,9 @@ add_executable(g6shim_tests
   unit/d3d12_xs_draw_test.cpp
   unit/d3d12_xs_depth_uav_test.cpp
   unit/d3d12_xs_ambient_test.cpp
+  unit/d3d12_xs_inplace_test.cpp
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/ambient.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/inplace.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/console.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor_host.cpp"

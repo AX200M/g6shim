@@ -7,6 +7,7 @@
 #include "card.hpp"
 #include "descriptor_host.hpp"
 #include "gpu_capture.hpp"
+#include "inplace.hpp"
 #include "queue.hpp"
 #include "removal.hpp"
 #include "resource.hpp"
@@ -276,6 +277,28 @@ void Meter::frame(HWND hwnd) {
                         static_cast<unsigned long long>(back.compared >> 20),
                         static_cast<unsigned long long>(back.read >> 10),
                         static_cast<unsigned long long>(back.written >> 10));
+            const shadow::UploadStats uploads = shadow::take_upload_stats();
+            G6SHIM_INFO("d3d12_xs: title memory uploaded %llu MiB to new copies, %llu MiB the title wrote, %llu MiB "
+                        "copy-back wrote, %llu MiB unwatched",
+                        static_cast<unsigned long long>(uploads.fresh >> 20),
+                        static_cast<unsigned long long>(uploads.title >> 20),
+                        static_cast<unsigned long long>(uploads.echo >> 20),
+                        static_cast<unsigned long long>(uploads.unwatched >> 20));
+            if (inplace::enabled()) {
+                const inplace::Stats placed = inplace::stats();
+                G6SHIM_INFO("d3d12_xs: title memory in place: %llu windows %llu MiB, %llu title buffers %llu MiB; "
+                            "turned down: %llu not committed private or view memory, %llu not one stretch of a "
+                            "section, %llu refused by the host, %llu over budget; %llu let go after remaps",
+                            static_cast<unsigned long long>(placed.windows),
+                            static_cast<unsigned long long>(placed.window_bytes >> 20),
+                            static_cast<unsigned long long>(placed.buffers),
+                            static_cast<unsigned long long>(placed.buffer_bytes >> 20),
+                            static_cast<unsigned long long>(placed.not_one_kind),
+                            static_cast<unsigned long long>(placed.not_one_stretch),
+                            static_cast<unsigned long long>(placed.refused),
+                            static_cast<unsigned long long>(placed.over_budget),
+                            static_cast<unsigned long long>(placed.let_go));
+            }
             log_host_memory();
         } else {
             G6SHIM_INFO("d3d12_xs: %.1f fps, %.1f ms/frame, loose title memory %zu windows %llu MiB, %llu evicted, "

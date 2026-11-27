@@ -3,6 +3,7 @@
 #pragma once
 
 #include "host.hpp"
+#include "inplace.hpp"
 
 #include <windows.h>
 
@@ -16,6 +17,7 @@
 #include <span>
 #include <string>
 #include <tuple>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -77,6 +79,8 @@ public:
     bool on_card() const { return card_ != nullptr; }
     std::size_t fetched_pieces() const;
     void bind_card(std::shared_ptr<g6shim::d3d12_xs::card::Side> side);
+    void place_in(std::shared_ptr<inplace::Region> region) { in_place_ = std::move(region); }
+    bool in_place() const { return in_place_ != nullptr; }
     void arm_card(std::size_t address, std::size_t bytes);
     void used(std::uint64_t submission) { last_used_.store(submission, std::memory_order_relaxed); }
     std::uint64_t last_used() const { return last_used_.load(std::memory_order_relaxed); }
@@ -111,8 +115,11 @@ private:
     std::vector<std::pair<std::size_t, std::size_t>> pending_;
     std::mutex before_mutex_;
     std::map<std::size_t, std::vector<std::uint8_t>> before_;
+    std::mutex echo_mutex_;
+    std::unordered_set<std::size_t> echo_;
     std::atomic<std::uint64_t> last_used_{0};
     std::shared_ptr<g6shim::d3d12_xs::card::Side> card_;
+    std::shared_ptr<inplace::Region> in_place_;
 };
 
 struct HostRange {
@@ -129,7 +136,17 @@ std::size_t put_changed(std::uint8_t* destination, const std::uint8_t* was, cons
 using WriteRange = std::tuple<std::shared_ptr<Shadow>, std::size_t, std::size_t>;
 void copy_back_all(std::span<const WriteRange> writes, CopyBackStats* stats);
 CopyBackStats take_copy_back_stats();
+
+struct UploadStats {
+    std::uint64_t fresh = 0;
+    std::uint64_t title = 0;
+    std::uint64_t echo = 0;
+    std::uint64_t unwatched = 0;
+};
+
+UploadStats take_upload_stats();
 void note_copy_back_stats(const CopyBackStats& stats);
+void title_memory_changed(std::uint64_t at, std::uint64_t bytes);
 void register_buffer(std::uintptr_t resource, std::uint64_t start, std::uint64_t bytes);
 void unregister_buffer(std::uintptr_t resource, std::uint64_t start);
 std::optional<std::shared_ptr<Shadow>> find(std::uint64_t address, std::uint64_t bytes);
