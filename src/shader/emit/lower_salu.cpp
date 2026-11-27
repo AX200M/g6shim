@@ -653,7 +653,7 @@ void Lower::smem(const IrInst& inst, Site site) {
     }
     const V h = handle(site, src, false, {13, static_cast<std::uint32_t>(kCodeCbvSize)});
     std::optional<std::uint32_t> constant;
-    if (addr.kind == V::Kind::Const && is_null(fields->soffset) && !extra) constant = total;
+    if (addr.kind == V::Kind::Const && is_null(fields->soffset) && !extra && !root_cbv_slot(h)) constant = total;
     std::map<std::uint32_t, V> rows;
     for (std::uint32_t k = 0; k < count; ++k) {
         V x;
@@ -1070,23 +1070,42 @@ void Lower::code_smem(const IrInst& inst, Address a) {
     }
 }
 
+std::optional<std::uint8_t> Lower::root_cbv_slot(const V& handle) const {
+    for (const auto& [slot, root_handle] : s_.root_cbvs)
+        if (root_handle.kind == handle.kind && root_handle.index == handle.index) return slot;
+    return std::nullopt;
+}
+
 V Lower::cbuffer_dword(V h, V a) {
+    const auto load = [this, h, a] {
+        const std::size_t c = cur_;
+        const V four = s_.m.i32(4);
+        const V ri = s_.m.bin(c, Bin::LShr, a, four);
+        const V r = s_.op(c, "cbufferLoadLegacy.i32", Attr::ReadOnly, s_.t.cbuf_ret, 59, {h, ri});
+        const V two = s_.m.i32(2);
+        const V three = s_.m.i32(3);
+        V comp = s_.m.bin(c, Bin::LShr, a, two);
+        comp = s_.m.bin(c, Bin::And, comp, three);
+        V x = s_.m.extract(c, r, 0);
+        for (std::uint32_t j = 1; j < 4; ++j) {
+            const V e = s_.m.extract(c, r, j);
+            const V jc = s_.m.i32(j);
+            const V is = s_.m.cmp(c, pred::kEq, comp, jc);
+            x = s_.m.select(c, is, e, x);
+        }
+        return x;
+    };
+    const std::optional<std::uint8_t> slot = root_cbv_slot(h);
+    if (!slot) return load();
     const std::size_t c = cur_;
-    const V four = s_.m.i32(4);
-    const V ri = s_.m.bin(c, Bin::LShr, a, four);
-    const V r = s_.op(c, "cbufferLoadLegacy.i32", Attr::ReadOnly, s_.t.cbuf_ret, 59, {h, ri});
-    const V two = s_.m.i32(2);
-    const V three = s_.m.i32(3);
-    V comp = s_.m.bin(c, Bin::LShr, a, two);
-    comp = s_.m.bin(c, Bin::And, comp, three);
-    V x = s_.m.extract(c, r, 0);
-    for (std::uint32_t j = 1; j < 4; ++j) {
-        const V e = s_.m.extract(c, r, j);
-        const V jc = s_.m.i32(j);
-        const V is = s_.m.cmp(c, pred::kEq, comp, jc);
-        x = s_.m.select(c, is, e, x);
-    }
-    return x;
+    const V size = root_view_bytes(*slot);
+    const V end = s_.m.bin(c, Bin::Add, a, s_.m.i32(4));
+    const V no_wrap = s_.m.cmp(c, pred::kIuge, end, a);
+    const V inside = s_.m.cmp(c, pred::kIule, end, size);
+    const V fits = s_.m.bin(c, Bin::And, no_wrap, inside);
+    const auto bounds = begin_guarded(fits);
+    const std::vector<V> safe = end_guarded(bounds, {{load(), s_.m.i32(0)}});
+    return safe[0];
 }
 
 std::pair<std::uint32_t, std::optional<V>> Lower::built_offset(const Source& src) {

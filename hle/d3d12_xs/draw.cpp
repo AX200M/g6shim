@@ -73,24 +73,24 @@ std::uint64_t descriptor_hash(std::uint64_t table, std::uint32_t count) {
     return hash;
 }
 
-std::optional<std::shared_ptr<shadow::Shadow>> root_window(std::uint64_t address, bool srv) {
+std::optional<std::shared_ptr<shadow::Shadow>> root_window(std::uint64_t address) {
     auto found = shadow::find(address, 1);
     if (!found) return std::nullopt;
-    if (srv && (*found)->left(address) < kSrvViewBytes && shadow::live_loose((*found)->buffer())) {
+    if ((*found)->left(address) < kSrvViewBytes && shadow::live_loose((*found)->buffer())) {
         const auto wider = shadow::find(address, kSrvViewBytes);
-        if (wider) found = wider;
+        if (wider && (*wider)->left(address) > (*found)->left(address)) found = wider;
     }
     return found;
 }
 
 std::uint32_t root_view_bytes(std::uint64_t address) {
-    const auto found = root_window(address, true);
+    const auto found = root_window(address);
     if (!found) return 0;
     return static_cast<std::uint32_t>(std::min((*found)->left(address), kSrvReadBytes));
 }
 
 std::optional<std::uint64_t> root_view(host::HostList& list, std::uint64_t address, bool srv) {
-    const auto found = root_window(address, srv);
+    const auto found = root_window(address);
     if (!found) return std::nullopt;
     const auto& shadow = *found;
     const std::uint64_t length = std::min(shadow->left(address), srv ? kSrvReadBytes : kCbvViewBytes);

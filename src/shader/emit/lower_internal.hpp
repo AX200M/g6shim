@@ -220,6 +220,7 @@ private:
     void fill_masked_descriptor_phis();
     Val user_dword(std::uint32_t index);
     void code_smem(const IrInst& inst, Address a);
+    std::optional<std::uint8_t> root_cbv_slot(const V& handle) const;
     V cbuffer_dword(V h, V a);
     std::vector<V> format_load(V h, V off, std::uint8_t format, std::uint32_t channels);
     bool indexed_by_resource_heap(const Source& src) const;
