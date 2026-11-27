@@ -72,7 +72,6 @@ void load() {
     int patch = 0;
     g_api->get_version(&major, &minor, &patch);
     g_api->set_option_u32(kOptionSoftMemoryLimit, kSoftMemoryLimitMegabytes);
-    g_api->set_capture_keys(nullptr, 0);
     g_api->set_focus_keys(nullptr, 0);
     g_api->mask_overlay_bits(0, 0);
     std::error_code error;
