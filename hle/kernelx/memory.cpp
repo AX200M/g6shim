@@ -5,6 +5,8 @@
 #include <g6shim/log.hpp>
 
 #include <malloc.h>
+#include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <cstring>
 #include <set>
@@ -28,7 +30,33 @@ void log_once(DWORD type, DWORD protect) {
                     protect & ~kPcProtections);
 }
 
+constexpr std::uint64_t kLoggedInFull = 16;
+
+void log_refused(const char* call, const void* address, SIZE_T size, DWORD error) {
+    static std::atomic<std::uint64_t> seen{0};
+    const std::uint64_t n = seen.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n <= kLoggedInFull || (n & (n - 1)) == 0)
+        G6SHIM_WARN("%s(%p, 0x%zX) failed: error %lu (%llu so far)", call, address, size, error,
+                    static_cast<unsigned long long>(n));
+}
+
 }  // namespace
+
+extern "C" BOOL WINAPI g6shim_VirtualFree(LPVOID address, SIZE_T size, DWORD type) {
+    if (VirtualFree(address, size, type)) return TRUE;
+    const DWORD error = GetLastError();
+    log_refused("VirtualFree", address, size, error);
+    SetLastError(error);
+    return FALSE;
+}
+
+extern "C" BOOL WINAPI g6shim_VirtualProtect(LPVOID address, SIZE_T size, DWORD protect, PDWORD old) {
+    if (VirtualProtect(address, size, protect, old)) return TRUE;
+    const DWORD error = GetLastError();
+    log_refused("VirtualProtect", address, size, error);
+    SetLastError(error);
+    return FALSE;
+}
 
 extern "C" LPVOID WINAPI g6shim_VirtualAlloc(LPVOID address, SIZE_T size, DWORD type, DWORD protect) {
     if (void* p = VirtualAlloc(address, size, type, protect)) return p;
