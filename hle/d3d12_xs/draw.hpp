@@ -17,7 +17,12 @@
 #include <optional>
 #include <span>
 #include <tuple>
+#include <utility>
 #include <vector>
+
+namespace g6shim::d3d12_xs::descriptor_host {
+class HostHeap;
+}  // namespace g6shim::d3d12_xs::descriptor_host
 
 namespace g6shim::shader::emit {
 struct UserData;
@@ -85,6 +90,8 @@ private:
     std::uint32_t user_value(bool compute, std::uint8_t slot, g6shim::shader::RootType root,
                              std::uint32_t dword) const;
     const descriptor::Heap* heap_of(std::uint64_t handle) const;
+    std::optional<std::pair<Object*, descriptor_host::HostHeap*>> view_heap() const;
+    std::optional<D3D12_GPU_DESCRIPTOR_HANDLE> words_table(host::HostList& list, bool sampler);
     std::optional<std::uint32_t> descriptor_value(host::HostList& list, bool compute,
                                                    const g6shim::shader::emit::UserData& data) const;
     bool rectangles(host::HostList& list, std::uint32_t count, std::uint32_t first);
@@ -112,6 +119,7 @@ private:
     std::array<Object*, 2> host_heaps_{nullptr, nullptr};
     std::map<std::pair<std::uint64_t, std::uint64_t>, std::uint32_t> fresh_tables_;
     std::vector<std::tuple<Object*, std::uint32_t, std::uint32_t>> dynamic_;
+    std::map<std::pair<const void*, std::uint64_t>, std::uint32_t> words_tables_;
     std::uint64_t tables_generation_ = 0;
     bool table_failed_ = false;
 };

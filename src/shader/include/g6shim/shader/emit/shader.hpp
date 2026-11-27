@@ -18,6 +18,9 @@ namespace g6shim::shader::emit {
 inline constexpr std::uint32_t kUserDataSpace = 0;
 inline constexpr std::uint32_t kSamplerSpace = 0;
 inline constexpr std::uint32_t kRootCbvSpace = 1;
+inline constexpr std::uint32_t kDescriptorWordsSpace = 2;
+inline constexpr std::uint8_t kViewWordsRegister = 0;
+inline constexpr std::uint8_t kSamplerWordsRegister = 1;
 
 namespace feature {
 
@@ -60,6 +63,7 @@ struct Shader {
     std::uint64_t cmp_samplers = 0;
     std::vector<std::pair<std::uint8_t, V>> root_cbvs;
     std::vector<std::pair<std::uint8_t, V>> root_srvs;
+    std::vector<std::pair<std::uint8_t, V>> words_srvs;
     std::uint64_t flags = 0;
     std::uint32_t nonuniform_handles = 0;
     std::optional<std::array<std::uint32_t, 3>> threads;
@@ -74,6 +78,7 @@ struct Shader {
     V op(std::size_t block, const std::string& name, Attr attr, Ty ret, std::uint32_t opcode,
          const std::vector<V>& args);
     V user_data_handle();
+    V descriptor_words_handle(bool sampler);
     V root_cbv_handle(std::uint8_t slot);
     V root_srv_handle(std::uint8_t slot);
     V sampler_handle(std::size_t block, std::uint32_t n);
@@ -86,6 +91,7 @@ struct Shader {
 
 private:
     void fix_user_data_size(std::uint32_t size);
+    V words_handle(std::uint8_t reg);
     std::optional<Md> signature_md(std::vector<SigElement> elements);
 
     std::optional<V> lds_;

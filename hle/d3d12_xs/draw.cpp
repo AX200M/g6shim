@@ -20,8 +20,10 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace g6shim::d3d12_xs::draw {
@@ -240,6 +242,7 @@ State::~State() { release_dynamic(); }
 void State::release_dynamic() {
     for (const auto& [heap, first, count] : dynamic_) later::descriptor_release_dynamic(heap, first, count);
     dynamic_.clear();
+    words_tables_.clear();
 }
 
 void State::reset(Object* pipeline) {
@@ -404,6 +407,48 @@ std::uint32_t State::user_value(bool compute, std::uint8_t slot, RootKind root,
         G6SHIM_WARN("d3d12_xs: a shader reads a root argument the title did not set");
     });
     return 0;
+}
+
+std::optional<std::pair<Object*, descriptor_host::HostHeap*>> State::view_heap() const {
+    Object* heap = heaps_[0];
+    descriptor_host::HostHeap* host_heap = heap != nullptr ? descriptor_host::for_heap(heap) : nullptr;
+    if (host_heap != nullptr && !host_heap->samplers()) return std::make_pair(heap, host_heap);
+    static std::once_flag once;
+    std::call_once(once, [] {
+        G6SHIM_WARN("d3d12_xs: a shader reads descriptor words or runtime addresses without a view heap; "
+                    "the draw is dropped");
+    });
+    return std::nullopt;
+}
+
+std::optional<D3D12_GPU_DESCRIPTOR_HANDLE> State::words_table(host::HostList& list, bool sampler) {
+    const auto heaps = view_heap();
+    if (!heaps) return std::nullopt;
+    auto [heap, host_heap] = *heaps;
+    descriptor_host::HostHeap* source = host_heap;
+    if (sampler) source = heaps_[1] != nullptr ? descriptor_host::for_heap(heaps_[1]) : nullptr;
+    if (source == nullptr || source->console_words() == nullptr) {
+        static std::once_flag once;
+        std::call_once(once, [] {
+            G6SHIM_WARN("d3d12_xs: a shader reads descriptors as data without their heap; the draw is dropped");
+        });
+        return std::nullopt;
+    }
+    ID3D12Resource* words = source->console_words();
+    list.keep(words);
+    const auto key = std::make_pair(static_cast<const void*>(host_heap), words->GetGPUVirtualAddress());
+    std::uint32_t slot = 0;
+    if (const auto known = words_tables_.find(key); known != words_tables_.end()) {
+        slot = known->second;
+    } else {
+        const auto first = host_heap->dynamic(1);
+        if (!first) return std::nullopt;
+        slot = *first;
+        dynamic_.emplace_back(heap, slot, 1);
+        words_tables_.emplace(key, slot);
+        host_heap->raw_at(slot, Microsoft::WRL::ComPtr<ID3D12Resource>(words), 0, source->console_words_bytes());
+    }
+    return D3D12_GPU_DESCRIPTOR_HANDLE{host_heap->gpu_start() + static_cast<std::uint64_t>(slot) * host_heap->step()};
 }
 
 const descriptor::Heap* State::heap_of(std::uint64_t handle) const {
@@ -636,6 +681,14 @@ bool State::bind(host::HostList& list, const pipeline_host::HostPipeline& pipeli
                 commands->SetComputeRoot32BitConstants(parameter, dwords, values.data(), 0);
             else
                 commands->SetGraphicsRoot32BitConstants(parameter, dwords, values.data(), 0);
+        }
+        for (const auto& [bit, parameter] : stage.descriptor_words) {
+            const auto table = words_table(list, bit == g6shim::shader::emit::kSamplerWords);
+            if (!table) return false;
+            if (compute)
+                commands->SetComputeRootDescriptorTable(parameter, *table);
+            else
+                commands->SetGraphicsRootDescriptorTable(parameter, *table);
         }
         for (int srv = 0; srv < 2; ++srv) {
             const auto& views = srv == 0 ? stage.root_cbvs : stage.root_srvs;

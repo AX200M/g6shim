@@ -44,6 +44,14 @@ The test lowers each program as a wave32 compute shader with 8 VGPRs, five user 
 
 `spilled_compute_root.s` reads one descriptor table pointer and two constant words from a fixed scalar load. The test verifies the logical root indices and rejects the same pointer pattern with a different hardware user-register count.
 
+`spilled_root_join.s` is `spilled_compute_root.s` with a branch that replaces the spilled constant with 7 on one path, so a spilled root word meets a computed value at a join before it is stored.
+
+`descriptor_word_as_data.s` stores the format word of the output UAV's own descriptor through that UAV. No root constant explains the word, so it is read from the console descriptor words; the execution test binds words for a three-slot heap and checks the stored word.
+
+`descriptor_register_reuse.s` loads an image descriptor into `s[8:15]` and uses it, then on one branch overwrites `s13` with a constant. After the join it converts the low byte of `s13` to float and stores it. The join carries 0 for the descriptor word, which the translator cannot read as data.
+`flat_address_store.s` loads a dword through a 64-bit address held in root constants and stores it plus 5 one dword further. The test runs it against a hand-built table of one 64-byte allocation: inside it, at its last dword (the store falls outside and is dropped), below it (the load misses and reads 0) and far from it.
+`code_table_lane.s` reads a dword of a table placed after `s_endpgm` through `s_getpc_b64` plus a per-lane offset and `v_readfirstlane_b32`, an address no root parameter explains, so the load goes through the runtime-address path and its code-table branch.
+
 `image_shape_only.s` reads the split width bits and starting mip of an image descriptor without using it in an image instruction. It also joins the two masked width words with a constant bit alignment. The negative cases ask for an unavailable bit or use a variable alignment that needs both full words.
 
 `image_heap_shape.s` reads the split width and starting mip through an index computed from a root constant. A scalar move preserves which bits can be read from the selected view. The fixture rejects a shift that needs an unavailable bit and omits the metadata binding when the result is unused.

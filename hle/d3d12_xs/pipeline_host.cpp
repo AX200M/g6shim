@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <deque>
 #include <exception>
 #include <mutex>
 #include <optional>
@@ -374,6 +375,7 @@ std::optional<HostPipeline> HostPipeline::make(const std::vector<std::shared_ptr
         if (entry.first->translated() == nullptr) return std::nullopt;
 
     std::vector<D3D12_ROOT_PARAMETER1> parameters;
+    std::deque<D3D12_DESCRIPTOR_RANGE1> ranges;
     std::vector<D3D12_STATIC_SAMPLER_DESC> samplers;
     std::vector<Stage> bound;
     for (const auto& [shader, visibility] : chosen) {
@@ -409,6 +411,26 @@ std::optional<HostPipeline> HostPipeline::make(const std::vector<std::shared_ptr
             parameter.Descriptor.ShaderRegister = slot;
             parameter.Descriptor.RegisterSpace = g6shim::shader::emit::kRootCbvSpace;
             parameter.Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE;
+            parameter.ShaderVisibility = visibility;
+            parameters.push_back(parameter);
+        }
+        using g6shim::shader::emit::kSamplerWords;
+        using g6shim::shader::emit::kViewWords;
+        for (const std::uint8_t bit : {kViewWords, kSamplerWords}) {
+            if ((host_shader.descriptor_words & bit) == 0) continue;
+            stage.descriptor_words.emplace_back(bit, static_cast<std::uint32_t>(parameters.size()));
+            D3D12_DESCRIPTOR_RANGE1& range = ranges.emplace_back();
+            range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+            range.NumDescriptors = 1;
+            range.BaseShaderRegister = bit == kSamplerWords ? g6shim::shader::emit::kSamplerWordsRegister
+                                                            : g6shim::shader::emit::kViewWordsRegister;
+            range.RegisterSpace = g6shim::shader::emit::kDescriptorWordsSpace;
+            range.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE | D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE;
+            range.OffsetInDescriptorsFromTableStart = 0;
+            D3D12_ROOT_PARAMETER1 parameter{};
+            parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+            parameter.DescriptorTable.NumDescriptorRanges = 1;
+            parameter.DescriptorTable.pDescriptorRanges = &range;
             parameter.ShaderVisibility = visibility;
             parameters.push_back(parameter);
         }

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <optional>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -27,7 +28,7 @@ constexpr std::uint32_t kImageBaseMipWord = 3;
 constexpr std::uint32_t kSamplerDescriptorBytes = 16;
 constexpr std::uint32_t kSamplerLodWord = 1;
 constexpr std::uint32_t kImageWord5ReservedMask = 0xff00'0000;
-constexpr Why kDescriptorData = "a descriptor's address or format read as data";
+constexpr Why kDescriptorData = kDescriptorWordAsData;
 constexpr Why kStandaloneDescriptorData = "a descriptor read only as data";
 
 std::optional<std::uint32_t> operand_constant(const Operand& value) {
@@ -695,6 +696,85 @@ bool Lower::defer_descriptor_address(Value value, const Source& src, const UsedR
 }
 
 void Lower::descriptor_data(const IrInst& inst, Site site) {
+    try {
+        rebuilt_descriptor_data(inst, site);
+    } catch (const WhyError&) {
+        if (!read_as_data(inst) || !descriptor_words_data(inst, site, std::nullopt)) throw;
+    }
+}
+
+const std::unordered_set<Value, ValueHash>& Lower::data_reads() const {
+    if (!data_reads_) {
+        std::unordered_set<Value, ValueHash> reads;
+        for (const IrBlock& block : x_->p->blocks) {
+            for (const Phi& phi : block.phis)
+                for (const Value arg : phi.args) reads.insert(arg);
+            for (const IrInst& reader : block.insts) {
+                if (!std::holds_alternative<SopFields>(reader.fields) && !std::holds_alternative<Valu>(reader.fields))
+                    continue;
+                for (const auto& entry : reader.reads) reads.insert(entry.second);
+            }
+        }
+        data_reads_ = std::move(reads);
+    }
+    return *data_reads_;
+}
+
+bool Lower::value_read(Value value) const { return data_reads().contains(value); }
+
+bool Lower::read_as_data(const IrInst& inst) const {
+    const std::unordered_set<Value, ValueHash>& reads = data_reads();
+    for (const auto& entry : inst.writes)
+        if (reads.contains(entry.second)) return true;
+    return false;
+}
+
+bool Lower::descriptor_words_data(const IrInst& inst, Site site, std::optional<std::uint32_t> only) {
+    const auto tracked = scalar_.find(site);
+    if (tracked == scalar_.end()) return false;
+    const Address a = tracked->second;
+    if (a.param >= x_->native->layout.size()) return false;
+    const RootParam rp = x_->native->layout[a.param];
+    bool sampler = rp.root.kind == RootType::Kind::SamplerHeap;
+    if (rp.root.kind == RootType::Kind::Table) {
+        for (const UsedResource& used : x_->native->used)
+            if (used.user_data == rp.user_data && used.kind.kind == ResourceType::Kind::Sampler) sampler = true;
+    } else if (rp.root.kind != RootType::Kind::ResourceHeap && !sampler) {
+        return false;
+    }
+    const auto* fields = std::get_if<SmemFields>(&inst.fields);
+    if (fields == nullptr || !fields->data) return false;
+    const auto* data = std::get_if<ScalarOperand>(&*fields->data);
+    const auto* base = std::get_if<ScalarOperand>(&fields->base);
+    if (data == nullptr || base == nullptr) return false;
+    std::string_view rest;
+    if (!strip(inst.name(), "s_load_dword", &rest)) return false;
+    const std::optional<std::uint32_t> found_count = dword_count(rest);
+    const std::optional<Value> read = inst.read(Reg::s(base->code));
+    if (!found_count || !read) return false;
+    const std::size_t c = cur_;
+    V addr;
+    try {
+        addr = heap_pointer(*read) ? s_.m.i32(0) : i32_of(*read);
+        addr = s_.m.bin(c, Bin::Add, addr, s_.m.i32(static_cast<std::uint32_t>(fields->offset)));
+        const auto* soffset = std::get_if<ScalarOperand>(&fields->soffset);
+        if (!(soffset != nullptr && soffset->code == kNull))
+            addr = s_.m.bin(c, Bin::Add, addr, operand(inst, fields->soffset));
+    } catch (const WhyError&) {
+        return false;
+    }
+    const V h = s_.descriptor_words_handle(sampler);
+    for (std::uint32_t k = 0; k < *found_count; ++k) {
+        if (only && *only != k) continue;
+        const V at = s_.m.bin(c, Bin::Add, addr, s_.m.i32(4 * k));
+        const V r = s_.op(c, "rawBufferLoad.f32", Attr::ReadOnly, s_.t.res_ret, 139,
+                          {h, at, s_.m.undef(s_.t.i32), s_.m.i8(1), s_.m.i32(4)});
+        write(inst, Reg::s(static_cast<std::uint8_t>(data->code + k)), as_int(s_.m.extract(c, r, 0)), std::nullopt);
+    }
+    return true;
+}
+
+void Lower::rebuilt_descriptor_data(const IrInst& inst, Site site) {
     const auto* fields = std::get_if<SmemFields>(&inst.fields);
     if (fields == nullptr || !fields->data) fail("a scalar memory read as data");
     const auto* data = std::get_if<ScalarOperand>(&*fields->data);
@@ -890,6 +970,9 @@ void Lower::descriptor_data(const IrInst& inst, Site site) {
             if (typed && (rel == 1 || rel == 3) && defer_descriptor_address(
                     *v, src, *used, rel == 1 ? SourceKind::TypedBufferHighWord : SourceKind::TypedBufferFormatWord))
                 continue;
+            if (!descriptor_addresses_.contains(*v) && !descriptor_zero_bits_.contains(*v) && value_read(*v) &&
+                descriptor_words_data(inst, site, k))
+                continue;
             vals_[*v] = Val::missing(kDescriptorData);
         }
     }
@@ -942,7 +1025,7 @@ void Lower::standalone_descriptor_data(const IrInst& inst, Site site, std::uint8
             const UserData data{0, root.slot, root.root, descriptor_dword, *source};
             descriptor_addresses_[*value] = data;
             if (data.known_bits() != UINT32_MAX) vals_[*value] = Val::missing(kDescriptorData);
-        } else {
+        } else if (!value_read(*value) || !descriptor_words_data(inst, site, k)) {
             vals_[*value] = Val::missing(kStandaloneDescriptorData);
         }
     }

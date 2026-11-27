@@ -264,6 +264,7 @@ HostShader emit(const Container& container, const NativeProgram& native, const P
     }
     out.root_cbvs = std::move(lowered.root_cbvs);
     out.root_srvs = std::move(lowered.root_srvs);
+    out.descriptor_words = lowered.descriptor_words;
     return out;
 }
 

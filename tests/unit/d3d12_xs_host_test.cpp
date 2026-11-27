@@ -4,6 +4,7 @@
 
 #include "d3d12_xs/descriptor.hpp"
 #include "d3d12_xs/descriptor_host.hpp"
+#include "d3d12_xs/descriptor_words.hpp"
 #include "d3d12_xs/host.hpp"
 #include "d3d12_xs/removal.hpp"
 #include "d3d12_xs/resource.hpp"
@@ -226,6 +227,68 @@ TEST(d3d12_xs_host_descriptor_heap_mirrors_a_buffer_view) {
         const auto view = host_heap->mirror(0, handle, true);
         CHECK(view.has_value());
         CHECK(view && std::holds_alternative<descriptor::ShaderView>(*view));
+    }
+    CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
+    CHECK(slot<std::uint32_t (*)(Object*)>(buffer, 0x10)(buffer) == 0);
+    CHECK(slot<std::uint32_t (*)(Object*)>(heap, 0x10)(heap) == 0);
+}
+
+TEST(d3d12_xs_host_console_words_hold_the_view_shape) {
+    const auto buffer = descriptor_words::buffer(0x0000'1234'5678'9ABCull, 4096, 336);
+    CHECK(buffer[0] == 0x5678'9ABCu);
+    CHECK((buffer[1] & 0xFFFF) == 0x1234);
+    CHECK((buffer[1] >> 16 & 0x3FFF) == 336);
+    CHECK(buffer[2] == 4096);
+    CHECK((buffer[3] & 0xFFF) == 0xFAC);
+    descriptor_words::ImageShape shape;
+    shape.type = descriptor_words::ImageType::k2DArray;
+    shape.width = 1920;
+    shape.height = 1080;
+    shape.depth = 6;
+    shape.levels = 11;
+    const auto image = descriptor_words::image(shape, 0x0000'AB12'3456'7800ull);
+    const std::uint32_t width = (image[1] >> 30) | (image[2] & 0x3FFF) << 2;
+    CHECK(width + 1 == 1920);
+    CHECK((image[2] >> 14 & 0x3FFF) + 1 == 1080);
+    CHECK((image[3] >> 16 & 0xF) + 1 == 11);
+    CHECK(image[3] >> 28 == 13);
+    CHECK(image[4] + 1 == 6);
+    CHECK(image[0] == 0x1234'5678u);
+    CHECK((image[1] & 0xFF) == 0xAB);
+    constexpr std::uint64_t kConstantAddress = 0x0000'0002'0000'0100ull;
+    constexpr std::uint32_t kConstantBytes = 256;
+    const auto constant = descriptor_host::console_words_of(descriptor::ConstantView{kConstantAddress, kConstantBytes});
+    CHECK(constant == descriptor_words::buffer(kConstantAddress, kConstantBytes, 0));
+}
+
+TEST(d3d12_xs_host_descriptor_heap_writes_the_console_words_of_a_mirrored_view) {
+    host::Host* gpu = test_host();
+    if (gpu == nullptr) return;
+    constexpr std::uint32_t kElements = 64;
+    const ExtendedHeap extended{{0, 4, 1, 0}, {0, 0}};
+    Object* heap = nullptr;
+    CHECK(descriptor::create_heap(nullptr, &extended.desc, &descriptor::kIids[0], &heap) == S_OK);
+    Object* buffer = create_buffer(1024);
+    const auto start = static_cast<descriptor::Heap*>(heap)->start;
+    const std::array<std::uint32_t, 10> words{42, 1, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, 0, 0, 0, kElements,
+                                              0, 0, 0};
+    descriptor::create_srv(nullptr, buffer, words.data(), start);
+    descriptor_host::HostHeap* host_heap = descriptor_host::for_heap(heap);
+    CHECK(host_heap != nullptr);
+    if (host_heap != nullptr) {
+        CHECK(host_heap->console_words() != nullptr);
+        CHECK(host_heap->console_words_bytes() == 4 * descriptor_words::kViewSlotBytes);
+        CHECK(host_heap->mirror(0, start, true).has_value());
+        const auto bytes = resource::buffer_bytes(buffer);
+        CHECK(bytes.has_value());
+        void* mapped = nullptr;
+        if (bytes && host_heap->console_words() != nullptr &&
+            SUCCEEDED(host_heap->console_words()->Map(0, nullptr, &mapped))) {
+            descriptor_words::Words written{};
+            std::memcpy(written.data(), mapped, sizeof written);
+            host_heap->console_words()->Unmap(0, nullptr);
+            CHECK(written == descriptor_words::buffer(reinterpret_cast<std::uint64_t>(bytes->first), kElements, 0));
+        }
     }
     CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
     CHECK(slot<std::uint32_t (*)(Object*)>(buffer, 0x10)(buffer) == 0);

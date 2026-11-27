@@ -385,6 +385,15 @@ If the signal, the completion event or the wait fails, or the device has been re
 | null fill | one null slot, doubled by descriptor copies to a 65536-slot block |
 | null depth, unordered views | texture 1D, 1D array, 2D, 2D array according to the title's dimension, WSize `UINT_MAX` for 3D |
 
+## Console descriptor words
+
+| Piece | Meaning |
+|---|---|
+| buffer | a CPU-visible host buffer beside each shader-visible heap, one console slot per title slot: 32 bytes for views, 16 for samplers; dynamic slots have none and read 0 |
+| filled | when a title slot is mirrored (on the write, or at the lazy sweep before a submission): buffer views as a buffer resource (address, stride, record count, identity swizzle), texture views as an image resource (address, width, height, depth or layers, last mip, type) from the title's resource description; an empty slot is zeroed |
+| shaders | a descriptor loaded through a table or heap whose word is read as data, and that no root constant explains, reads that word from these buffers: raw views in register space 2, register 0 for views and 1 for samplers, each a descriptor table of one slot in the bound view heap |
+| reused register | a word joined at a phi with data, which the translator cannot express, joins as 0 |
+
 ## Title memory copies
 
 | Piece | Bytes |

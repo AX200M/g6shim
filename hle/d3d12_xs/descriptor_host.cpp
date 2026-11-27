@@ -977,6 +977,12 @@ std::unique_ptr<HostHeap> HostHeap::create(bool sampler, std::uint32_t count) {
     const std::uint32_t step = gpu->device()->GetDescriptorHandleIncrementSize(kind);
     register_range(address, static_cast<std::uint64_t>(count + dynamic) * step, step, sampler);
     std::unique_ptr<HostHeap> made(new HostHeap(std::move(heap), cpu, address, step, count, dynamic, sampler));
+    if (auto words = gpu->shared_buffer(made->console_words_bytes())) {
+        host::name(words->first.Get(), "console descriptor words");
+        std::memset(words->second, 0, static_cast<std::size_t>(made->console_words_bytes()));
+        made->words_ = std::move(words->first);
+        made->words_data_ = words->second;
+    }
     if (!made->fill_null(kind, count + dynamic))
         G6SHIM_WARN("d3d12_xs: host descriptor heap not made null");
     made->place_nulls();
@@ -1150,6 +1156,132 @@ void HostHeap::constant_at(std::uint32_t index, std::uint64_t gpu, std::uint32_t
     device->device()->CreateConstantBufferView(&desc, cpu(index));
 }
 
+void HostHeap::raw_at(std::uint32_t index, Microsoft::WRL::ComPtr<ID3D12Resource> buffer, std::uint64_t offset,
+                      std::uint64_t bytes) {
+    host::Host* device = host::host();
+    if (device == nullptr || buffer == nullptr) return;
+    if (raw_view_elements(bytes) == 0) {
+        null_buffer_view(cpu(index));
+        keep(index, Microsoft::WRL::ComPtr<ID3D12Resource>());
+        return;
+    }
+    D3D12_SHADER_RESOURCE_VIEW_DESC desc{};
+    desc.Format = DXGI_FORMAT_R32_TYPELESS;
+    desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    desc.Buffer.FirstElement = offset / kRawElementBytes;
+    desc.Buffer.NumElements = static_cast<UINT>(raw_view_elements(bytes));
+    desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+    device->device()->CreateShaderResourceView(buffer.Get(), &desc, cpu(index));
+    keep(index, std::move(buffer));
+}
+
+std::uint32_t HostHeap::console_slot_bytes() const {
+    return sampler_ ? descriptor_words::kSamplerSlotBytes : descriptor_words::kViewSlotBytes;
+}
+
+std::uint64_t HostHeap::console_words_bytes() const {
+    return static_cast<std::uint64_t>(std::max<std::uint32_t>(count_, 1)) * console_slot_bytes();
+}
+
+void HostHeap::write_console_words(std::uint32_t index, const std::optional<descriptor::View>& view) {
+    if (words_data_ == nullptr || index >= count_) return;
+    const descriptor_words::Words words = view ? console_words_of(*view) : descriptor_words::Words{};
+    std::memcpy(words_data_ + static_cast<std::size_t>(index) * console_slot_bytes(), words.data(),
+                std::min<std::size_t>(sizeof words, console_slot_bytes()));
+}
+
+std::uint64_t raw_view_elements(std::uint64_t bytes) {
+    return std::min<std::uint64_t>(bytes / kRawElementBytes, kMaxRawViewElements);
+}
+
+namespace {
+
+descriptor_words::Words buffer_view_words(std::uint64_t base, const std::array<std::uint32_t, 10>& words,
+                                          bool unordered) {
+    std::uint64_t first = 0;
+    std::uint32_t count = 0;
+    std::uint32_t stride = 0;
+    bool raw = false;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    if (unordered) {
+        const D3D12_UNORDERED_ACCESS_VIEW_DESC desc = uav_desc(words);
+        first = desc.Buffer.FirstElement;
+        count = desc.Buffer.NumElements;
+        stride = desc.Buffer.StructureByteStride;
+        raw = (static_cast<std::uint32_t>(desc.Buffer.Flags) & D3D12_BUFFER_UAV_FLAG_RAW) != 0;
+        format = desc.Format;
+    } else {
+        const D3D12_SHADER_RESOURCE_VIEW_DESC desc = srv_desc(words);
+        first = desc.Buffer.FirstElement;
+        count = desc.Buffer.NumElements;
+        stride = desc.Buffer.StructureByteStride;
+        raw = (static_cast<std::uint32_t>(desc.Buffer.Flags) & D3D12_BUFFER_SRV_FLAG_RAW) != 0;
+        format = desc.Format;
+    }
+    const auto element = resource::element(static_cast<std::uint32_t>(format));
+    const std::uint64_t element_bytes = stride > 0 ? stride : raw ? kRawElementBytes : element ? element->first : 0;
+    const std::uint32_t records = raw ? count * kRawElementBytes : count;
+    return descriptor_words::buffer(base + first * element_bytes, records, stride);
+}
+
+bool cube_view(const std::optional<std::array<std::uint32_t, 10>>& words) {
+    if (!words) return false;
+    const D3D12_SRV_DIMENSION dimension = srv_desc(*words).ViewDimension;
+    return dimension == D3D12_SRV_DIMENSION_TEXTURECUBE || dimension == D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
+}
+
+descriptor_words::Words image_view_words(const resource::ResourceDesc& desc, std::uint64_t address, bool cube) {
+    using descriptor_words::ImageType;
+    constexpr std::uint32_t kTexture1d = 2;
+    descriptor_words::ImageShape shape;
+    shape.width = static_cast<std::uint32_t>(desc.width);
+    shape.height = desc.height;
+    shape.depth = desc.depth_or_array_size;
+    shape.levels = resource::mip_count(desc);
+    const bool array = desc.dimension != resource::kTexture3d && desc.depth_or_array_size > 1;
+    if (desc.dimension == kTexture1d)
+        shape.type = array ? ImageType::k1DArray : ImageType::k1D;
+    else if (desc.dimension == resource::kTexture3d)
+        shape.type = ImageType::k3D;
+    else
+        shape.type = array ? ImageType::k2DArray : ImageType::k2D;
+    if (cube) shape.type = ImageType::kCube;
+    return descriptor_words::image(shape, address);
+}
+
+descriptor_words::Words resource_view_words(std::size_t resource,
+                                            const std::optional<std::array<std::uint32_t, 10>>& words, bool unordered) {
+    Object* object = reinterpret_cast<Object*>(resource);
+    if (const auto memory = resource::texture_memory(object))
+        return image_view_words(memory->second, reinterpret_cast<std::uint64_t>(memory->first),
+                                !unordered && cube_view(words));
+    const auto bytes = resource::buffer_bytes(object);
+    if (!bytes || !words) return {};
+    return buffer_view_words(reinterpret_cast<std::uint64_t>(bytes->first), *words, unordered);
+}
+
+}  // namespace
+
+descriptor_words::Words console_words_of(const descriptor::View& view) {
+    if (const auto* constant = std::get_if<descriptor::ConstantView>(&view))
+        return descriptor_words::buffer(constant->address, constant->size, 0);
+    if (const auto* shader = std::get_if<descriptor::ShaderView>(&view))
+        return resource_view_words(shader->resource, shader->desc, false);
+    if (const auto* unordered = std::get_if<descriptor::UnorderedView>(&view))
+        return resource_view_words(unordered->resource, unordered->desc, true);
+    if (const auto* placed = std::get_if<descriptor::PlacedView>(&view)) {
+        std::array<std::uint32_t, 10> words{};
+        std::copy_n(placed->desc.begin(), words.size(), words.begin());
+        const std::uint64_t address = placed_address(*placed);
+        if (placed->resource[0] == kBufferDimension) return buffer_view_words(address, words, placed->unordered);
+        resource::ResourceDesc desc{};
+        std::memcpy(&desc, placed->resource.data(), sizeof desc);
+        return image_view_words(desc, address, !placed->unordered && cube_view(words));
+    }
+    return {};
+}
+
 std::uint32_t view_stride(const descriptor::View& view) {
     std::optional<std::array<std::uint32_t, 10>> words;
     bool unordered = false;
@@ -1199,6 +1331,7 @@ std::optional<descriptor::View> HostHeap::mirror(std::uint32_t index, std::uint6
         if (index < quick_.size()) quick_[index].store(shown, std::memory_order_release);
     };
     if (!view) {
+        write_console_words(index, std::nullopt);
         if (made_[index] != 0) {
             publish(0, 0);
             make_null(index);
@@ -1211,6 +1344,7 @@ std::optional<descriptor::View> HostHeap::mirror(std::uint32_t index, std::uint6
     }
     if (made_[index] == key && window_evicted(index)) made_[index] = 0;
     if (made_[index] != key) {
+        write_console_words(index, view);
         const bool later = !for_draw && view_is_buffer(*view);
         const std::uint32_t stride = later ? 0 : view_stride(*view);
         publish(later ? 0 : key, stride);

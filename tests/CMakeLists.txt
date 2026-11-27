@@ -129,6 +129,7 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/console.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor_host.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor_words.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/device.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/draw.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/dxgi.cpp"

@@ -24,7 +24,7 @@ using g6shim::shader::RootType;
 using g6shim::shader::emit::HostShader;
 using g6shim::shader::emit::StaticSampler;
 
-constexpr std::array<std::uint8_t, 4> kMagic{'V', 'S', 'H', '2'};
+constexpr std::array<std::uint8_t, 4> kMagic{'V', 'S', 'H', '3'};
 constexpr std::array<std::uint8_t, 4> kRefusedMagic{'V', 'S', 'H', 'X'};
 constexpr std::array<HwStage, 8> kStages{HwStage::Ls, HwStage::Hs, HwStage::Es, HwStage::Gs,
                                          HwStage::Vs, HwStage::Ps, HwStage::Ms, HwStage::Cs};
@@ -279,6 +279,7 @@ std::vector<std::uint8_t> encode_entry(const HostShader& shader) {
     out.insert(out.end(), shader.root_cbvs.begin(), shader.root_cbvs.end());
     word(static_cast<std::uint32_t>(shader.root_srvs.size()));
     out.insert(out.end(), shader.root_srvs.begin(), shader.root_srvs.end());
+    word(shader.descriptor_words);
     return out;
 }
 
@@ -360,6 +361,10 @@ std::optional<HostShader> decode_entry(std::span<const std::uint8_t> bytes) {
     const auto root_srvs = reader.list();
     if (!root_srvs) return std::nullopt;
     shader.root_srvs = *root_srvs;
+    const auto descriptor_words = reader.word();
+    constexpr std::uint32_t kAllWords = g6shim::shader::emit::kViewWords | g6shim::shader::emit::kSamplerWords;
+    if (!descriptor_words || *descriptor_words > kAllWords) return std::nullopt;
+    shader.descriptor_words = static_cast<std::uint8_t>(*descriptor_words);
     if (!reader.bytes.empty()) return std::nullopt;
     return shader;
 }

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "descriptor.hpp"
+#include "descriptor_words.hpp"
 #include "host.hpp"
 #include "object.hpp"
 #include "resource.hpp"
@@ -31,6 +32,10 @@ inline constexpr std::uint32_t kLargeHeapDynamicSlots = 1 << 20;
 inline constexpr std::uint32_t kMinDynamicSlots = 1 << 16;
 inline constexpr std::uint8_t kBufferSlotKind = 1;
 inline constexpr std::uint8_t kTextureSlotKind = 2;
+inline constexpr std::uint64_t kMaxRawViewElements = std::uint64_t{1} << 27;
+
+descriptor_words::Words console_words_of(const descriptor::View& view);
+std::uint64_t raw_view_elements(std::uint64_t bytes);
 
 class HostHeap {
 public:
@@ -50,6 +55,11 @@ public:
     void make_at(std::uint32_t index, const descriptor::View& view);
     void make_null(std::uint32_t index);
     void constant_at(std::uint32_t index, std::uint64_t gpu, std::uint32_t bytes);
+    void raw_at(std::uint32_t index, Microsoft::WRL::ComPtr<ID3D12Resource> buffer, std::uint64_t offset,
+                std::uint64_t bytes);
+    ID3D12Resource* console_words() const { return words_.Get(); }
+    std::uint64_t console_words_bytes() const;
+    std::uint32_t console_slot_bytes() const;
     std::optional<descriptor::View> mirror(std::uint32_t index, std::uint64_t handle, bool for_draw);
     std::uint64_t window_stamp(std::uint32_t index) const;
     std::uint8_t kind_at(std::uint32_t index) const;
@@ -71,6 +81,7 @@ private:
     void keep(std::uint32_t index, Microsoft::WRL::ComPtr<ID3D12Resource> resource);
     bool window_evicted(std::uint32_t index);
     std::mutex& stripe(std::uint32_t index);
+    void write_console_words(std::uint32_t index, const std::optional<descriptor::View>& view);
 
     static constexpr std::uint64_t kNoWindow = 0;
     static constexpr std::uint32_t kStripes = 512;
@@ -91,6 +102,8 @@ private:
     std::mutex kept_mutex_;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> kept_;
     std::vector<std::atomic<std::uint64_t>> window_generation_;
+    Microsoft::WRL::ComPtr<ID3D12Resource> words_;
+    std::uint8_t* words_data_ = nullptr;
     std::mutex next_mutex_;
     std::uint32_t next_ = 0;
     std::vector<bool> taken_;

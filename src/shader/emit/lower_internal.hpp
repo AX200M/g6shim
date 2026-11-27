@@ -32,6 +32,8 @@ struct WhyError {
 
 [[noreturn]] inline void fail(Why why) { throw WhyError{why}; }
 
+inline constexpr Why kDescriptorWordAsData = "a descriptor's address or format read as data";
+
 struct Val {
     enum class Kind : std::uint8_t { I32, Bit, Missing };
 
@@ -121,6 +123,7 @@ private:
 
     V code_dword(V byte);
     void flat(const IrInst& inst, std::size_t b, std::size_t i);
+    bool joins_data(const IrBlock& block, const Phi& phi) const;
     void find_sections();
     void section_inst(std::size_t b, std::size_t i, std::size_t start);
     V shape(Shape shape);
@@ -203,6 +206,11 @@ private:
     V scc_in(const IrInst& inst);
     void smem(const IrInst& inst, Site site);
     void descriptor_data(const IrInst& inst, Site site);
+    void rebuilt_descriptor_data(const IrInst& inst, Site site);
+    bool descriptor_words_data(const IrInst& inst, Site site, std::optional<std::uint32_t> only);
+    bool read_as_data(const IrInst& inst) const;
+    bool value_read(Value value) const;
+    const std::unordered_set<Value, ValueHash>& data_reads() const;
     void standalone_descriptor_data(const IrInst& inst, Site site, std::uint8_t code, std::uint32_t count);
     bool defer_descriptor_address(Value value, const Source& src, const UsedResource& used,
                                   UserData::Source source);
@@ -297,6 +305,7 @@ private:
     std::vector<ImageHeapRead> image_heap_reads_;
     std::unordered_map<Value, ImageHeapWord, ValueHash> image_heap_words_;
     std::optional<bool> image_heap_allowed_;
+    mutable std::optional<std::unordered_set<Value, ValueHash>> data_reads_;
     std::unordered_map<Value, std::uint32_t, ValueHash> descriptor_zero_bits_;
     std::map<DescriptorMask, V> masked_descriptor_phis_;
     std::vector<std::tuple<Value, std::uint32_t, V>> pending_descriptor_phis_;

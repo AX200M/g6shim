@@ -31,6 +31,7 @@ namespace {
 constexpr float kTwoPi = 6.283185307179586476925286766559f;
 constexpr std::uint16_t kGsAllocReq = 9;
 constexpr std::uint32_t kGeometryMaxVertices = 1024;
+constexpr std::uint32_t kReusedDescriptorWord = 0;
 constexpr std::uint32_t kGeometryScalarProduct = 1024;
 constexpr std::uint32_t kTrianglePrimitive = 3;
 constexpr std::uint32_t kTriangleStrip = 5;
@@ -759,6 +760,8 @@ Lowered Lower::run() {
     for (const auto& entry : s_.root_cbvs) out.root_cbvs.push_back(entry.first);
     out.root_srvs.reserve(s_.root_srvs.size());
     for (const auto& entry : s_.root_srvs) out.root_srvs.push_back(entry.first);
+    for (const auto& entry : s_.words_srvs)
+        out.descriptor_words |= entry.first == kSamplerWordsRegister ? kSamplerWords : kViewWords;
     out.user_data = user_reads();
     out.samplers = samplers_;
     out.nonuniform_handles = s_.nonuniform_handles;
@@ -2225,7 +2228,7 @@ bool Lower::has_partial_descriptor(Value value) const {
 }
 
 V Lower::masked_descriptor_value(Value value, std::uint32_t mask) {
-    constexpr Why unknown_bits = "a descriptor's address or format read as data";
+    constexpr Why unknown_bits = kDescriptorWordAsData;
     const auto zero_bits = descriptor_zero_bits_.find(value);
     if (zero_bits != descriptor_zero_bits_.end()) {
         mask &= ~zero_bits->second;
@@ -2289,6 +2292,19 @@ void Lower::fill_masked_descriptor_phis() {
     }
 }
 
+bool Lower::joins_data(const IrBlock& block, const Phi& phi) const {
+    for (std::size_t n = 0; n < block.preds.size() && n < phi.args.size(); ++n) {
+        if (!tail_[block.preds[n]]) continue;
+        const Value arg = phi.args[n];
+        if (descriptor_addresses_.contains(arg) || descriptor_zero_bits_.contains(arg) ||
+            image_heap_words_.contains(arg) || params_.contains(arg))
+            continue;
+        const auto found = vals_.find(arg);
+        if (found != vals_.end() && found->second.kind == Val::Kind::I32) return true;
+    }
+    return false;
+}
+
 void Lower::fill_phis() {
     fill_masked_descriptor_phis();
     const Program& p = *x_->p;
@@ -2312,22 +2328,27 @@ void Lower::fill_phis() {
         const Phi& phi = p.blocks[b].phis[i];
         const bool bit = phi.reg.kind == Reg::Kind::Scc;
         const bool read = read_phis_.contains(phi.value);
+        const bool reused = !bit && joins_data(p.blocks[b], phi);
         std::vector<std::pair<V, std::size_t>> incoming;
         for (std::size_t n = 0; n < p.blocks[b].preds.size(); ++n) {
             const std::size_t q = p.blocks[b].preds[n];
             if (!tail_[q]) continue;
             const std::size_t qb = edges_.contains({q, b}) ? edges_.at({q, b}) : *tail_[q];
             const Value arg = phi.args[n];
-            if (read && !bit && descriptor_addresses_.contains(arg) && !vals_.contains(arg)) {
+            if (read && !bit && (descriptor_addresses_.contains(arg) || params_.contains(arg)) &&
+                !vals_.contains(arg)) {
                 try {
                     (void)get(arg);
                 } catch (const WhyError& error) {
-                    throw Stop::retry(phi.value, error.why);
+                    if (!reused || error.why != kDescriptorWordAsData) throw Stop::retry(phi.value, error.why);
                 }
             }
             const auto found = vals_.find(arg);
             V x;
-            if (found != vals_.end() && found->second.kind == Val::Kind::I32 && !bit) {
+            if (reused && found != vals_.end() && found->second.kind == Val::Kind::Missing &&
+                found->second.why == kDescriptorWordAsData) {
+                x = s_.m.i32(kReusedDescriptorWord);
+            } else if (found != vals_.end() && found->second.kind == Val::Kind::I32 && !bit) {
                 x = found->second.value;
             } else if (found != vals_.end() && found->second.kind == Val::Kind::Bit && bit) {
                 x = found->second.value;

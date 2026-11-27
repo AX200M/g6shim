@@ -148,6 +148,25 @@ V Shader::root_srv_handle(std::uint8_t slot) {
     return handle;
 }
 
+V Shader::descriptor_words_handle(bool sampler) {
+    return words_handle(sampler ? kSamplerWordsRegister : kViewWordsRegister);
+}
+
+V Shader::words_handle(std::uint8_t reg) {
+    for (const auto& entry_value : words_srvs)
+        if (entry_value.first == reg) return entry_value.second;
+    const V register_value = m.i32(reg);
+    const std::array<V, 4> bind = {register_value, register_value, m.i32(kDescriptorWordsSpace), m.i8(0)};
+    const V binding = m.aggregate(t.bind, bind);
+    const V non_uniform = m.boolean(false);
+    const V raw =
+        op(entry, "createHandleFromBinding", Attr::ReadNone, t.handle, 217, {binding, register_value, non_uniform});
+    const V handle = annotate(entry, raw, 11, 0);
+    flags |= feature::kRawBuffers;
+    words_srvs.emplace_back(reg, handle);
+    return handle;
+}
+
 V Shader::sampler_handle(std::size_t block, std::uint32_t n) {
     const std::array<V, 4> bind = {m.i32(n), m.i32(n), m.i32(kSamplerSpace), m.i8(3)};
     const V binding = m.aggregate(t.bind, bind);
@@ -185,7 +204,7 @@ std::vector<std::uint8_t> Shader::finish() {
         const V constant = m.i32(value);
         return m.md_value(constant);
     };
-    if (user_data > 0 || samplers > 0 || !root_cbvs.empty() || !root_srvs.empty()) {
+    if (user_data > 0 || samplers > 0 || !root_cbvs.empty() || !root_srvs.empty() || !words_srvs.empty()) {
         const Md empty = m.md_str("");
         std::optional<Md> cbvs;
         std::vector<std::optional<Md>> cbv_list;
@@ -222,27 +241,28 @@ std::vector<std::uint8_t> Shader::finish() {
         if (!cbv_list.empty()) cbvs = m.md_node(std::move(cbv_list));
 
         std::optional<Md> srvs;
-        if (!root_srvs.empty()) {
+        if (!root_srvs.empty() || !words_srvs.empty()) {
             const Ty type = m.named_struct("struct.ByteAddressBuffer", {t.i32});
             const Ty pointer = m.ptr(type);
             const V undef = m.undef(pointer);
             std::vector<std::optional<Md>> list;
-            for (std::size_t n = 0; n < root_srvs.size(); ++n) {
-                const auto& slot = root_srvs[n];
+            const auto add = [&](std::uint32_t space, std::uint8_t reg) {
                 const std::vector<std::optional<Md>> ops = {
-                    i32c(static_cast<std::uint32_t>(n)),
+                    i32c(static_cast<std::uint32_t>(list.size())),
                     m.md_value(undef),
                     empty,
-                    i32c(kRootCbvSpace),
-                    i32c(slot.first),
+                    i32c(space),
+                    i32c(reg),
                     i32c(1),
                     i32c(11),
                     i32c(0),
                     std::nullopt,
                 };
                 list.push_back(m.md_node(ops));
-                bindings.push_back(Binding{4, kRootCbvSpace, slot.first, 11});
-            }
+                bindings.push_back(Binding{4, space, reg, 11});
+            };
+            for (const auto& slot : root_srvs) add(kRootCbvSpace, slot.first);
+            for (const auto& slot : words_srvs) add(kDescriptorWordsSpace, slot.first);
             srvs = m.md_node(std::move(list));
         }
 

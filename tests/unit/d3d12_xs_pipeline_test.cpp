@@ -210,12 +210,14 @@ emit::HostShader sample_shader() {
     shader.static_samplers.push_back(emit::StaticSampler::from_words({0x400, 0xC0'0000, 0x18F0'0000, 0}));
     shader.root_cbvs = {2};
     shader.root_srvs = {0, 3};
+    shader.descriptor_words = emit::kViewWords | emit::kSamplerWords;
     return shader;
 }
 
 bool same(const emit::HostShader& a, const emit::HostShader& b) {
     return a.stage == b.stage && a.dxil == b.dxil && a.user_data == b.user_data && a.samplers == b.samplers &&
-           a.static_samplers == b.static_samplers && a.root_cbvs == b.root_cbvs && a.root_srvs == b.root_srvs;
+           a.static_samplers == b.static_samplers && a.root_cbvs == b.root_cbvs && a.root_srvs == b.root_srvs &&
+           a.descriptor_words == b.descriptor_words;
 }
 
 void walk(const std::filesystem::path& dir, std::vector<std::filesystem::path>& files) {

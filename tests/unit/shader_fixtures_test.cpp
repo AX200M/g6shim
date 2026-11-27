@@ -13,6 +13,7 @@
 #include <cstring>
 #include <exception>
 #include <iterator>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -72,6 +73,8 @@ constexpr std::string_view kSpilledComputeRoot = "spilled_compute_root";
 constexpr std::string_view kImageGather4Lod = "image_gather4_lod";
 constexpr std::string_view kImageGather4LodBorder = "image_gather4_lod_border";
 constexpr std::string_view kHeapPointerAsAddress = "heap_pointer_as_address";
+constexpr std::string_view kSpilledRootJoin = "spilled_root_join";
+constexpr std::string_view kDescriptorRegisterReuse = "descriptor_register_reuse";
 
 const Fixture* find_fixture(std::string_view name) {
     const auto found = std::find_if(std::begin(kFixtures), std::end(kFixtures),
@@ -461,7 +464,8 @@ TEST(shader_fixtures_translate_and_validate) {
             fixture.name == kRawOffsetBound ||
             fixture.name == kSamplerLodData || fixture.name == kSpilledComputeRoot ||
             fixture.name == kImageGather4Lod || fixture.name == kImageGather4LodBorder ||
-            fixture.name == kHeapPointerAsAddress || fixture.name == kHeapScalarLoad)
+            fixture.name == kHeapPointerAsAddress || fixture.name == kHeapScalarLoad ||
+            fixture.name == kSpilledRootJoin || fixture.name == kDescriptorRegisterReuse)
             continue;
         bool translated = true;
         Lowered lowered;
@@ -485,8 +489,10 @@ TEST(shader_fixtures_translate_and_validate) {
     }
 }
 
-TEST(shader_fixtures_translate_spilled_compute_root_words) {
-    const Fixture* fixture = find_fixture(kSpilledComputeRoot);
+namespace {
+
+void check_spilled_root_fixture(std::string_view name) {
+    const Fixture* fixture = find_fixture(name);
     CHECK(fixture != nullptr);
     if (fixture == nullptr) return;
     constexpr std::uint8_t kSpilledTable = 16;
@@ -523,6 +529,12 @@ TEST(shader_fixtures_translate_spilled_compute_root_words) {
     }
     CHECK(rejected);
 }
+
+}  // namespace
+
+TEST(shader_fixtures_translate_spilled_compute_root_words) { check_spilled_root_fixture(kSpilledComputeRoot); }
+
+TEST(shader_fixtures_join_a_spilled_root_word_with_a_computed_one) { check_spilled_root_fixture(kSpilledRootJoin); }
 
 namespace {
 
@@ -1451,4 +1463,233 @@ TEST(shader_fixtures_refuse_a_heap_pointer_used_as_an_address) {
                   std::string_view::npos;
     }
     CHECK(refused);
+}
+
+TEST(shader_fixtures_translate_a_descriptor_register_reused_for_data) {
+    const Fixture* fixture = find_fixture(kDescriptorRegisterReuse);
+    CHECK(fixture != nullptr);
+    if (fixture == nullptr) return;
+    UsedResource input = used_uav(kTableUserData, kTableSlot);
+    input.kind.kind = ResourceType::Kind::Srv;
+    input.dwords = 8;
+    UsedResource output = used_uav(kTableUserData, kTableSlot);
+    output.table_offset_dwords = kSecondDescriptorDword;
+    try {
+        const Lowered lowered = lower_fixture(*fixture, {input, output});
+        check_dxil(lowered.dxil, fixture->name);
+    } catch (const std::exception& error) {
+        std::printf("fixture %s did not translate: %s\n", fixture->name, error.what());
+        CHECK(false);
+    }
+}
+
+namespace {
+
+using Microsoft::WRL::ComPtr;
+
+constexpr std::uint32_t kUnrun = 0xDEADu;
+constexpr std::uint32_t kSpaceTwoSlot = 0;
+constexpr std::uint32_t kNullSlot = 1;
+constexpr std::uint32_t kMemorySlot = 2;
+constexpr std::uint32_t kRunSlots = 3;
+constexpr std::uint32_t kConsoleSlotBytes = 32;
+
+ComPtr<ID3D12Resource> plain_buffer(ID3D12Device* device, D3D12_HEAP_TYPE type, std::uint64_t bytes, bool unordered,
+                                    D3D12_RESOURCE_STATES state) {
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = type;
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    desc.Width = bytes;
+    desc.Height = 1;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    desc.Flags = unordered ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE;
+    ComPtr<ID3D12Resource> buffer;
+    if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, state, nullptr,
+                                               IID_PPV_ARGS(&buffer))))
+        return nullptr;
+    return buffer;
+}
+
+void fill(ID3D12Resource* buffer, const void* bytes, std::size_t size) {
+    void* mapped = nullptr;
+    if (FAILED(buffer->Map(0, nullptr, &mapped))) return;
+    std::memcpy(mapped, bytes, size);
+    buffer->Unmap(0, nullptr);
+}
+
+struct SpaceTwoRun {
+    std::vector<std::uint32_t> memory;
+    std::vector<std::uint32_t> table;
+    std::uint8_t table_register = 0;
+    std::array<std::uint32_t, 8> root_words{};
+    std::uint32_t table_offset = 0;
+};
+
+std::vector<std::uint32_t> run_space_two(const Lowered& lowered, const SpaceTwoRun& run) {
+    std::vector<std::uint32_t> result(run.memory.size(), kUnrun);
+    ComPtr<ID3D12Device> device;
+    if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&device)))) return result;
+    const auto bytes = static_cast<std::uint32_t>(run.memory.size() * sizeof(std::uint32_t));
+    const auto table_bytes = static_cast<std::uint32_t>(run.table.size() * sizeof(std::uint32_t));
+    const auto memory = plain_buffer(device.Get(), D3D12_HEAP_TYPE_DEFAULT, bytes, true, D3D12_RESOURCE_STATE_COMMON);
+    const auto readback =
+        plain_buffer(device.Get(), D3D12_HEAP_TYPE_READBACK, bytes, false, D3D12_RESOURCE_STATE_COPY_DEST);
+    const auto initial =
+        plain_buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, bytes, false, D3D12_RESOURCE_STATE_GENERIC_READ);
+    const auto table =
+        plain_buffer(device.Get(), D3D12_HEAP_TYPE_UPLOAD, table_bytes, false, D3D12_RESOURCE_STATE_GENERIC_READ);
+    if (!memory || !readback || !initial || !table) return result;
+    fill(initial.Get(), run.memory.data(), bytes);
+    fill(table.Get(), run.table.data(), table_bytes);
+    D3D12_DESCRIPTOR_HEAP_DESC heap_desc{};
+    heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    heap_desc.NumDescriptors = kRunSlots;
+    heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    ComPtr<ID3D12DescriptorHeap> heap;
+    if (FAILED(device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap)))) return result;
+    const UINT step = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    const auto cpu = [&](std::uint32_t slot) {
+        D3D12_CPU_DESCRIPTOR_HANDLE at = heap->GetCPUDescriptorHandleForHeapStart();
+        at.ptr += static_cast<SIZE_T>(slot) * step;
+        return at;
+    };
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+    srv.Format = DXGI_FORMAT_R32_TYPELESS;
+    srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+    srv.Buffer.NumElements = static_cast<UINT>(run.table.size());
+    device->CreateShaderResourceView(table.Get(), &srv, cpu(kSpaceTwoSlot));
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+    uav.Format = DXGI_FORMAT_R32_TYPELESS;
+    uav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    uav.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+    uav.Buffer.NumElements = 1;
+    device->CreateUnorderedAccessView(nullptr, nullptr, &uav, cpu(kNullSlot));
+    uav.Buffer.NumElements = bytes / sizeof(std::uint32_t);
+    device->CreateUnorderedAccessView(memory.Get(), nullptr, &uav, cpu(kMemorySlot));
+    std::array<std::uint32_t, 64> constants{};
+    std::uint32_t count = 0;
+    for (const UserData& field : lowered.user_data) {
+        if (field.index >= constants.size() || field.dword >= run.root_words.size()) return result;
+        count = std::max(count, field.index + 1);
+        if (field.source == UserData::Source::ViewHeapCount)
+            constants[field.index] = kRunSlots;
+        else if (field.source == UserData::Source::NullViewBase)
+            constants[field.index] = kNullSlot - static_cast<std::uint32_t>(NullView::RawUav);
+        else if (field.root.kind == RootType::Kind::Table)
+            constants[field.index] = run.table_offset;
+        else
+            constants[field.index] = run.root_words[field.dword];
+    }
+    count = std::max<std::uint32_t>((count + 3) / 4 * 4, 4);
+    D3D12_DESCRIPTOR_RANGE range{};
+    range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    range.NumDescriptors = 1;
+    range.BaseShaderRegister = run.table_register;
+    range.RegisterSpace = kDescriptorWordsSpace;
+    D3D12_ROOT_PARAMETER parameters[2]{};
+    parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    parameters[0].Constants.Num32BitValues = count;
+    parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    parameters[1].DescriptorTable.NumDescriptorRanges = 1;
+    parameters[1].DescriptorTable.pDescriptorRanges = &range;
+    D3D12_ROOT_SIGNATURE_DESC root_desc{};
+    root_desc.NumParameters = 2;
+    root_desc.pParameters = parameters;
+    root_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+    ComPtr<ID3DBlob> blob;
+    if (FAILED(D3D12SerializeRootSignature(&root_desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, nullptr))) return result;
+    ComPtr<ID3D12RootSignature> root;
+    if (FAILED(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&root))))
+        return result;
+    D3D12_COMPUTE_PIPELINE_STATE_DESC pipeline_desc{};
+    pipeline_desc.pRootSignature = root.Get();
+    pipeline_desc.CS = {lowered.dxil.data(), lowered.dxil.size()};
+    ComPtr<ID3D12PipelineState> pipeline;
+    if (FAILED(device->CreateComputePipelineState(&pipeline_desc, IID_PPV_ARGS(&pipeline)))) return result;
+    D3D12_COMMAND_QUEUE_DESC queue_desc{};
+    queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    ComPtr<ID3D12CommandQueue> queue;
+    ComPtr<ID3D12CommandAllocator> allocator;
+    ComPtr<ID3D12GraphicsCommandList> list;
+    ComPtr<ID3D12Fence> fence;
+    if (FAILED(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue))) ||
+        FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))) ||
+        FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr,
+                                         IID_PPV_ARGS(&list))) ||
+        FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
+        return result;
+    const auto barrier = [&](D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
+        D3D12_RESOURCE_BARRIER transition{};
+        transition.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        transition.Transition.pResource = memory.Get();
+        transition.Transition.StateBefore = before;
+        transition.Transition.StateAfter = after;
+        transition.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        list->ResourceBarrier(1, &transition);
+    };
+    barrier(D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+    list->CopyBufferRegion(memory.Get(), 0, initial.Get(), 0, bytes);
+    barrier(D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    ID3D12DescriptorHeap* heaps[] = {heap.Get()};
+    list->SetDescriptorHeaps(1, heaps);
+    list->SetComputeRootSignature(root.Get());
+    list->SetPipelineState(pipeline.Get());
+    list->SetComputeRoot32BitConstants(0, count, constants.data(), 0);
+    list->SetComputeRootDescriptorTable(1, heap->GetGPUDescriptorHandleForHeapStart());
+    list->Dispatch(1, 1, 1);
+    barrier(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    list->CopyBufferRegion(readback.Get(), 0, memory.Get(), 0, bytes);
+    if (FAILED(list->Close())) return result;
+    ID3D12CommandList* lists[] = {list.Get()};
+    queue->ExecuteCommandLists(1, lists);
+    if (FAILED(queue->Signal(fence.Get(), 1))) return result;
+    HANDLE event = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (event == nullptr) return result;
+    if (SUCCEEDED(fence->SetEventOnCompletion(1, event))) ::WaitForSingleObject(event, 10000);
+    ::CloseHandle(event);
+    if (FAILED(device->GetDeviceRemovedReason())) return result;
+    void* back = nullptr;
+    if (FAILED(readback->Map(0, nullptr, &back))) return result;
+    std::memcpy(result.data(), back, bytes);
+    readback->Unmap(0, nullptr);
+    return result;
+}
+
+}  // namespace
+
+TEST(shader_fixtures_read_a_descriptor_word_from_the_console_words) {
+    const Fixture* fixture = find_fixture("descriptor_word_as_data");
+    CHECK(fixture != nullptr);
+    if (fixture == nullptr) return;
+    Lowered lowered;
+    try {
+        lowered = lower_fixture(*fixture, {used_uav(kTableUserData, kTableSlot)});
+    } catch (const std::exception& error) {
+        std::printf("fixture %s did not translate: %s\n", fixture->name, error.what());
+        CHECK(false);
+        return;
+    }
+    CHECK(lowered.descriptor_words == kViewWords);
+    check_dxil(lowered.dxil, fixture->name);
+    if (!load_validator()) return;
+    constexpr std::uint32_t kFormatWord = 3;
+    constexpr std::uint32_t kFormat = 0x1234'5678u;
+    SpaceTwoRun run;
+    run.memory.assign(4, 0);
+    run.table.assign(kRunSlots * kConsoleSlotBytes / sizeof(std::uint32_t), 0);
+    run.table[kMemorySlot * kConsoleSlotBytes / sizeof(std::uint32_t) + kFormatWord] = kFormat;
+    run.table_register = kViewWordsRegister;
+    run.table_offset = kMemorySlot * kConsoleSlotBytes;
+    const std::vector<std::uint32_t> after = run_space_two(lowered, run);
+    if (after[0] == kUnrun) {
+        std::printf("skipped: no D3D12 device for descriptor words\n");
+        return;
+    }
+    CHECK(after[0] == kFormat);
 }

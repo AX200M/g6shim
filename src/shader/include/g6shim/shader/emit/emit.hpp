@@ -87,6 +87,9 @@ struct UserData {
     friend bool operator==(const UserData&, const UserData&) = default;
 };
 
+inline constexpr std::uint8_t kViewWords = 1;
+inline constexpr std::uint8_t kSamplerWords = 2;
+
 struct ImageHeapData {
     static constexpr std::uint32_t kWidthLow = 0;
     static constexpr std::uint32_t kDimensions = 1;
@@ -115,6 +118,7 @@ struct HostShader {
     std::vector<StaticSampler> static_samplers;
     std::vector<std::uint8_t> root_cbvs;
     std::vector<std::uint8_t> root_srvs;
+    std::uint8_t descriptor_words = 0;
 
     std::uint32_t user_data_dwords() const;
 };
