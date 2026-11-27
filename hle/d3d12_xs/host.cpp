@@ -6,6 +6,7 @@
 #include "g_present_plane_vs.h"
 #include "card.hpp"
 #include "descriptor_host.hpp"
+#include "gpu_capture.hpp"
 #include "queue.hpp"
 #include "removal.hpp"
 #include "resource.hpp"
@@ -558,6 +559,7 @@ void Batch::flush() {
 }
 
 Host::Host() {
+    gpu_capture::load();
     const bool debug = settings::enabled("G6SHIM_D3D_DEBUG");
     if (debug) {
         Microsoft::WRL::ComPtr<ID3D12Debug> layer;
@@ -1496,6 +1498,7 @@ std::optional<bool> Host::present(ID3D12Resource* texture, std::uint32_t state, 
     execute({presenter->copy.get()});
     wait_idle();
     presenter->swap_chain->Present(kPresentInterval, 0);
+    gpu_capture::frame_presented();
     if (capturing) finish_capture(number, desc, capture);
     presenter->meter.frame(presenter->hwnd);
     return false;
@@ -1697,6 +1700,7 @@ std::optional<bool> Host::present(std::span<const PresentedPlane> planes, std::u
     execute({presenter->copy.get()});
     wait_idle();
     presenter->swap_chain->Present(kPresentInterval, 0);
+    gpu_capture::frame_presented();
     if (capturing) finish_capture(number, capture_desc, capture);
     presenter->meter.frame(presenter->hwnd);
     return false;

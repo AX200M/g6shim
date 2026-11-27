@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "check.hpp"
 
+#include "d3d12_xs/gpu_capture.hpp"
 #include "d3d12_xs/host.hpp"
 
 #include <windows.h>
@@ -256,4 +257,14 @@ TEST(d3d12_xs_present_captures_the_composed_planes) {
     CHECK(pixel[1] == 0);
     CHECK(pixel[2] == 255);
     ::DeleteFileW(path.c_str());
+}
+
+TEST(d3d12_xs_gpu_capture_stays_off_without_a_tool) {
+    ::SetEnvironmentVariableA("G6SHIM_GPU_CAPTURE", nullptr);
+    gpu_capture::load();
+    const std::wstring trigger = L"g6shim_capture.trigger";
+    std::ofstream(trigger).put('x');
+    gpu_capture::frame_presented();
+    CHECK(::GetFileAttributesW(trigger.c_str()) != INVALID_FILE_ATTRIBUTES);
+    ::DeleteFileW(trigger.c_str());
 }

@@ -40,6 +40,7 @@ inline constexpr Binding kBindings[] = {
     {"G6SHIM_WINDOW", "window", "size"},
     {"G6SHIM_FULLSCREEN", "window", "fullscreen"},
     {"G6SHIM_CAPTURE_FRAMES", "graphics", "capture_frames"},
+    {"G6SHIM_GPU_CAPTURE", "graphics", "gpu_capture"},
     {"G6SHIM_D3D_DEBUG", "graphics", "d3d_debug"},
     {"G6SHIM_D3D_DRED", "graphics", "d3d_dred"},
     {"G6SHIM_D3D_WARP", "graphics", "d3d_warp"},
