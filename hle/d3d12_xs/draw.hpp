@@ -111,6 +111,7 @@ private:
     std::array<Object*, 2> host_heaps_{nullptr, nullptr};
     std::map<std::pair<std::uint64_t, std::uint64_t>, std::uint32_t> fresh_tables_;
     std::vector<std::tuple<Object*, std::uint32_t, std::uint32_t>> dynamic_;
+    std::uint64_t tables_generation_ = 0;
     bool table_failed_ = false;
 };
 

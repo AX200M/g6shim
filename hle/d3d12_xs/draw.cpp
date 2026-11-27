@@ -786,6 +786,11 @@ std::vector<std::pair<std::uint8_t, std::uint32_t>> State::tables(
         std::uint32_t count = 1;
         for (const auto* entry : entries)
             count = std::max(count, entry->table_offset_dwords / 8 + 1);
+        const std::uint64_t generation = shadow::eviction_generation();
+        if (generation != tables_generation_) {
+            fresh_tables_.clear();
+            tables_generation_ = generation;
+        }
         const auto key = std::make_pair(root.value, descriptor_hash(root.value, count));
         const auto known = fresh_tables_.find(key);
         if (known != fresh_tables_.end()) {
