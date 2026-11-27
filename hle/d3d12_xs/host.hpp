@@ -437,6 +437,20 @@ void mark_work(HostList& list, std::string_view label);
 
 void ensure_state(HostList& list, Object* resource, std::uint32_t state);
 
+inline constexpr std::size_t kUnreadablePageBytes = 4096;
+inline constexpr std::size_t kMaxUnreadablePages = 1 << 16;
+
+class UnreadablePages {
+public:
+    bool known(std::size_t at, std::size_t bytes, std::uint64_t remaps);
+    void note(std::size_t at, std::size_t bytes, std::uint64_t remaps);
+
+private:
+    std::mutex mutex_;
+    std::uint64_t remaps_ = 0;
+    std::unordered_set<std::size_t> pages_;
+};
+
 void copy_mapped(std::uint8_t* destination, const std::uint8_t* source, std::size_t bytes, bool title_destination);
 bool read_into(const std::uint8_t* source, std::span<std::uint8_t> destination);
 void write_mapped(std::uint8_t* destination, const std::uint8_t* source, std::size_t bytes);

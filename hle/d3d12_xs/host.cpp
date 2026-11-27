@@ -123,12 +123,34 @@ void finish_capture(unsigned frame, const D3D12_RESOURCE_DESC& desc, Capture& ca
     capture.readback->Unmap(0, nullptr);
 }
 
+bool copy_guarded(const std::uint8_t* source, std::uint8_t* destination, std::size_t bytes) {
+    __try {
+        std::memcpy(destination, source, bytes);
+        return true;
+    } __except (::GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER
+                                                                   : EXCEPTION_CONTINUE_SEARCH) {
+        return false;
+    }
+}
+
+UnreadablePages& unreadable_pages() {
+    static UnreadablePages pages;
+    return pages;
+}
+
 bool read_process(const std::uint8_t* source, std::uint8_t* destination, std::size_t bytes) {
+    const auto at = reinterpret_cast<std::size_t>(source);
+    UnreadablePages& unreadable = unreadable_pages();
+    if (!unreadable.known(at, bytes, watch::remaps())) {
+        if (copy_guarded(source, destination, bytes)) return true;
+        unreadable.note(at, bytes, watch::remaps());
+    }
     SIZE_T done = 0;
     return ::ReadProcessMemory(::GetCurrentProcess(), source, destination, bytes, &done) != 0;
 }
 
 bool write_process(std::uint8_t* destination, const std::uint8_t* source, std::size_t bytes) {
+    if (copy_guarded(source, destination, bytes)) return true;
     SIZE_T done = 0;
     return ::WriteProcessMemory(::GetCurrentProcess(), destination, source, bytes, &done) != 0;
 }
@@ -1739,6 +1761,32 @@ void ensure_state(HostList& list, Object* resource, std::uint32_t state) {
         transition(changed->first, static_cast<D3D12_RESOURCE_STATES>(changed->second),
                    static_cast<D3D12_RESOURCE_STATES>(wanted));
     list.list()->ResourceBarrier(1, &barrier);
+}
+
+bool UnreadablePages::known(std::size_t at, std::size_t bytes, std::uint64_t remaps) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (remaps != remaps_) return false;
+    const std::size_t end = at + bytes;
+    for (std::size_t page = at / kUnreadablePageBytes; page * kUnreadablePageBytes < end; ++page)
+        if (pages_.count(page) != 0) return true;
+    return false;
+}
+
+void UnreadablePages::note(std::size_t at, std::size_t bytes, std::uint64_t remaps) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (remaps != remaps_) {
+        pages_.clear();
+        remaps_ = remaps;
+    }
+    if (pages_.size() >= kMaxUnreadablePages) pages_.clear();
+    const std::size_t end = at + bytes;
+    for (std::size_t page = at / kUnreadablePageBytes; page * kUnreadablePageBytes < end; ++page) {
+        MEMORY_BASIC_INFORMATION info{};
+        const bool readable = ::VirtualQuery(reinterpret_cast<const void*>(page * kUnreadablePageBytes), &info,
+                                             sizeof info) != 0 &&
+                              info.State == MEM_COMMIT && (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) == 0;
+        if (!readable) pages_.insert(page);
+    }
 }
 
 void copy_mapped(std::uint8_t* destination, const std::uint8_t* source, std::size_t bytes,

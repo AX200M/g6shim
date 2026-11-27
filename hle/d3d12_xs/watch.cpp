@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -38,6 +39,7 @@ Journal g_journal;
 std::mutex g_guards_mutex;
 std::set<std::size_t> g_protected;
 std::set<std::size_t> g_clean;
+std::atomic<std::uint64_t> g_remaps{0};
 
 void install();
 
@@ -169,7 +171,10 @@ void writing(std::size_t at, std::size_t bytes) {
     open(at, clamped_end(at, bytes));
 }
 
+std::uint64_t remaps() { return g_remaps.load(std::memory_order_acquire); }
+
 void title_memory_remapped(std::size_t at, std::size_t bytes) {
+    g_remaps.fetch_add(1, std::memory_order_acq_rel);
     std::lock_guard<std::mutex> lock(g_guards_mutex);
     const std::size_t end = clamped_end(at, bytes);
     std::vector<std::size_t> blocks;

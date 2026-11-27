@@ -20,6 +20,7 @@ struct Pages {
 
 std::optional<Pages> writes(std::size_t start, std::size_t end, bool guarded);
 void writing(std::size_t at, std::size_t bytes);
+std::uint64_t remaps();
 void title_memory_remapped(std::size_t at, std::size_t bytes);
 
 }  // namespace g6shim::d3d12_xs::watch
