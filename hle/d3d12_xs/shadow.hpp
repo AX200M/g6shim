@@ -90,6 +90,7 @@ struct HostRange {
     std::string label;
 };
 
+bool merge_written(std::uint8_t* title, std::uint8_t* host, const std::uint8_t* old, std::size_t bytes);
 void register_buffer(std::uintptr_t resource, std::uint64_t start, std::uint64_t bytes);
 void unregister_buffer(std::uintptr_t resource, std::uint64_t start);
 std::optional<std::shared_ptr<Shadow>> find(std::uint64_t address, std::uint64_t bytes);

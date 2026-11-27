@@ -283,6 +283,37 @@ std::size_t Shadow::merge_card(std::size_t address, std::size_t bytes) {
     return written;
 }
 
+bool merge_written(std::uint8_t* title, std::uint8_t* host, const std::uint8_t* old, std::size_t bytes) {
+    constexpr std::size_t kBlock = 32;
+    bool changed = false;
+    const auto by_byte = [&](std::size_t from, std::size_t to) {
+        for (std::size_t i = from; i < to; ++i) {
+            if (title[i] != old[i]) {
+                host[i] = title[i];
+            } else if (host[i] != old[i]) {
+                title[i] = host[i];
+                changed = true;
+            }
+        }
+    };
+    std::size_t at = 0;
+    for (; at + kBlock <= bytes; at += kBlock) {
+        const bool title_kept = std::memcmp(title + at, old + at, kBlock) == 0;
+        const bool host_kept = std::memcmp(host + at, old + at, kBlock) == 0;
+        if (title_kept && host_kept) continue;
+        if (title_kept) {
+            std::memcpy(title + at, host + at, kBlock);
+            changed = true;
+        } else if (host_kept) {
+            std::memcpy(host + at, title + at, kBlock);
+        } else {
+            by_byte(at, at + kBlock);
+        }
+    }
+    by_byte(at, bytes);
+    return changed;
+}
+
 std::size_t Shadow::copy_back(std::size_t address, std::size_t bytes) {
     std::size_t written = 0;
     {
@@ -304,15 +335,7 @@ std::size_t Shadow::copy_back(std::size_t address, std::size_t bytes) {
                 if (n == 0 || host == nullptr || old == nullptr) break;
                 if (host::read_into(reinterpret_cast<const std::uint8_t*>(start + at),
                                     std::span<std::uint8_t>(title.data(), n))) {
-                    bool changed = false;
-                    for (std::size_t i = 0; i < n; ++i) {
-                        if (title[i] != old[i]) {
-                            host[i] = title[i];
-                        } else if (host[i] != old[i]) {
-                            title[i] = host[i];
-                            changed = true;
-                        }
-                    }
+                    const bool changed = merge_written(title.data(), host, old, n);
                     if (changed) {
                         watch::writing(start + at, n);
                         host::write_mapped(reinterpret_cast<std::uint8_t*>(start + at), title.data(), n);

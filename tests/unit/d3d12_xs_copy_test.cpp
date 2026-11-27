@@ -3,6 +3,7 @@
 #include "check.hpp"
 
 #include "d3d12_xs/host.hpp"
+#include "d3d12_xs/shadow.hpp"
 #include "d3d12_xs/watch.hpp"
 
 #include <windows.h>
@@ -11,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <span>
+#include <vector>
 
 using namespace g6shim::d3d12_xs;
 
@@ -53,4 +55,39 @@ TEST(d3d12_xs_unreadable_pages_are_forgotten_after_a_remap) {
     pages.note(at + kPage, 16, 8);
     CHECK(!pages.known(at, 16, 8));
     ::VirtualFree(memory, 0, MEM_RELEASE);
+}
+
+TEST(d3d12_xs_write_merge_matches_the_byte_rule) {
+    constexpr std::size_t kBytes = 4096 + 17;
+    std::uint32_t seed = 12345;
+    const auto next = [&seed] {
+        seed = seed * 1664525u + 1013904223u;
+        return seed >> 24;
+    };
+    for (int round = 0; round < 64; ++round) {
+        std::vector<std::uint8_t> old(kBytes);
+        for (auto& byte : old) byte = static_cast<std::uint8_t>(next());
+        std::vector<std::uint8_t> title = old;
+        std::vector<std::uint8_t> host = old;
+        const std::uint32_t density = 1 + static_cast<std::uint32_t>(round % 8) * 32;
+        for (std::size_t i = 0; i < kBytes; ++i) {
+            if (next() < density / 2) title[i] = static_cast<std::uint8_t>(next());
+            if (next() < density / 2) host[i] = static_cast<std::uint8_t>(next());
+        }
+        std::vector<std::uint8_t> want_title = title;
+        std::vector<std::uint8_t> want_host = host;
+        bool want_changed = false;
+        for (std::size_t i = 0; i < kBytes; ++i) {
+            if (want_title[i] != old[i]) {
+                want_host[i] = want_title[i];
+            } else if (want_host[i] != old[i]) {
+                want_title[i] = want_host[i];
+                want_changed = true;
+            }
+        }
+        const bool changed = shadow::merge_written(title.data(), host.data(), old.data(), kBytes);
+        CHECK(changed == want_changed);
+        CHECK(title == want_title);
+        CHECK(host == want_host);
+    }
 }
