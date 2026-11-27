@@ -7,7 +7,12 @@
 
 #include <g6shim/log.hpp>
 
+#include <windows.h>
+
+#include <psapi.h>
+
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -720,8 +725,81 @@ void collect_host_ranges(std::vector<HostRange>& out) {
     }
 }
 
+RamBand ram_band(RamBand previous, const RamSample& s) {
+    constexpr std::uint64_t kGiB = 1ull << 30;
+    const bool high = s.private_bytes * 5 >= s.commit_limit * 4 || s.working * 2 >= s.total_physical ||
+                      s.free_physical < 2 * kGiB || s.commit_headroom < kGiB;
+    const bool watch = s.private_bytes * 10 >= s.commit_limit * 7 || s.working * 4 >= s.total_physical ||
+                       s.free_physical < 4 * kGiB || s.commit_headroom < 2 * kGiB;
+    const RamBand wanted = high ? RamBand::kHigh : watch ? RamBand::kWatch : RamBand::kCalm;
+    const bool safe_high = s.private_bytes * 20 <= s.commit_limit * 13 && s.working * 4 <= s.total_physical &&
+                           s.free_physical >= 4 * kGiB && s.commit_headroom >= 3 * kGiB;
+    const bool safe_watch = s.private_bytes * 5 <= s.commit_limit * 3 && s.working * 5 <= s.total_physical &&
+                            s.free_physical >= 6 * kGiB && s.commit_headroom >= 3 * kGiB;
+    if (previous == RamBand::kHigh && wanted == RamBand::kCalm && !safe_high) return RamBand::kWatch;
+    if (previous == RamBand::kWatch && wanted == RamBand::kCalm && !safe_watch) return RamBand::kWatch;
+    return wanted;
+}
+
+namespace {
+
+constexpr std::uint64_t kRamSampleSubmissions = 32;
+constexpr std::array<std::uint64_t, 3> kBandIdleSubmissions = {kIdleSubmissions, 128, 16};
+constexpr std::array<std::uint64_t, 3> kBandLooseBytes = {kLooseBudgetBytes, 2ull << 30, 1ull << 30};
+
+std::optional<RamSample> ram_sample() {
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof status;
+    if (!::GlobalMemoryStatusEx(&status)) return std::nullopt;
+    PROCESS_MEMORY_COUNTERS_EX counters{};
+    counters.cb = sizeof counters;
+    if (!::K32GetProcessMemoryInfo(::GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
+                                   sizeof counters))
+        return std::nullopt;
+    RamSample sample;
+    sample.working = counters.WorkingSetSize;
+    sample.private_bytes = counters.PrivateUsage;
+    sample.free_physical = status.ullAvailPhys;
+    sample.commit_headroom = status.ullAvailPageFile;
+    sample.total_physical = status.ullTotalPhys;
+    sample.commit_limit = status.ullTotalPageFile;
+    return sample;
+}
+
+const char* band_name(RamBand band) {
+    switch (band) {
+    case RamBand::kCalm: return "calm";
+    case RamBand::kWatch: return "watch";
+    case RamBand::kHigh: return "high";
+    }
+    return "?";
+}
+
+std::atomic<RamBand> g_band{RamBand::kCalm};
+
+RamBand band_now(std::uint64_t submission) {
+    if (submission % kRamSampleSubmissions != 0) return g_band.load(std::memory_order_relaxed);
+    const std::optional<RamSample> sample = ram_sample();
+    if (!sample) return g_band.load(std::memory_order_relaxed);
+    const RamBand previous = g_band.load(std::memory_order_relaxed);
+    const RamBand band = ram_band(previous, *sample);
+    if (band != previous) {
+        g_band.store(band, std::memory_order_relaxed);
+        G6SHIM_INFO("d3d12_xs: memory pressure %s (%llu MiB free, %llu MiB private, %llu MiB commit left)",
+                    band_name(band), static_cast<unsigned long long>(sample->free_physical >> 20),
+                    static_cast<unsigned long long>(sample->private_bytes >> 20),
+                    static_cast<unsigned long long>(sample->commit_headroom >> 20));
+    }
+    return band;
+}
+
+}  // namespace
+
 void submission_completed() {
     const std::uint64_t now = g_submission.fetch_add(1, std::memory_order_relaxed) + 1;
+    const auto band = static_cast<std::size_t>(band_now(now));
+    const std::uint64_t idle = kBandIdleSubmissions[band];
+    const std::uint64_t budget = std::min(g_loose_budget.load(std::memory_order_relaxed), kBandLooseBytes[band]);
     std::vector<std::shared_ptr<Shadow>> gone;
     bool evicted = false;
     {
@@ -730,10 +808,10 @@ void submission_completed() {
         std::uint64_t held = 0;
         for (const auto& [key, window] : g_loose)
             if (window) held += window->bytes();
-        const bool over_budget = held > g_loose_budget.load(std::memory_order_relaxed);
+        const bool over_budget = held > budget;
         for (auto it = g_loose.begin(); over_budget && it != g_loose.end();) {
             const std::shared_ptr<Shadow>& window = it->second;
-            if (!window || window.use_count() != 1 || now - window->last_used() <= kIdleSubmissions ||
+            if (!window || window.use_count() != 1 || now - window->last_used() <= idle ||
                 (flying && host::references(window->buffer()) > 1)) {
                 ++it;
                 continue;

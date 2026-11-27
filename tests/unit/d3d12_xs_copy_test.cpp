@@ -124,6 +124,36 @@ TEST(d3d12_xs_put_changed_leaves_untouched_dwords_to_the_title) {
     }
 }
 
+TEST(d3d12_xs_ram_band_rises_at_once_and_falls_with_margin) {
+    constexpr std::uint64_t kGiB = 1ull << 30;
+    shadow::RamSample calm;
+    calm.working = 4 * kGiB;
+    calm.private_bytes = 8 * kGiB;
+    calm.free_physical = 16 * kGiB;
+    calm.commit_headroom = 40 * kGiB;
+    calm.total_physical = 32 * kGiB;
+    calm.commit_limit = 75 * kGiB;
+    CHECK(shadow::ram_band(shadow::RamBand::kCalm, calm) == shadow::RamBand::kCalm);
+    shadow::RamSample tight = calm;
+    tight.free_physical = 3 * kGiB;
+    CHECK(shadow::ram_band(shadow::RamBand::kCalm, tight) == shadow::RamBand::kWatch);
+    shadow::RamSample short_of_ram = calm;
+    short_of_ram.free_physical = kGiB;
+    CHECK(shadow::ram_band(shadow::RamBand::kCalm, short_of_ram) == shadow::RamBand::kHigh);
+    shadow::RamSample big_working_set = calm;
+    big_working_set.working = 17 * kGiB;
+    CHECK(shadow::ram_band(shadow::RamBand::kCalm, big_working_set) == shadow::RamBand::kHigh);
+    shadow::RamSample little_commit = calm;
+    little_commit.commit_headroom = 5 * kGiB / 2;
+    CHECK(shadow::ram_band(shadow::RamBand::kCalm, little_commit) == shadow::RamBand::kCalm);
+    CHECK(shadow::ram_band(shadow::RamBand::kHigh, little_commit) == shadow::RamBand::kWatch);
+    shadow::RamSample barely_calm = calm;
+    barely_calm.free_physical = 5 * kGiB;
+    CHECK(shadow::ram_band(shadow::RamBand::kHigh, barely_calm) == shadow::RamBand::kCalm);
+    CHECK(shadow::ram_band(shadow::RamBand::kWatch, barely_calm) == shadow::RamBand::kWatch);
+    CHECK(shadow::ram_band(shadow::RamBand::kWatch, calm) == shadow::RamBand::kCalm);
+}
+
 TEST(d3d12_xs_changed_span_finds_the_first_and_last_difference) {
     std::vector<std::uint8_t> a(1000, 7);
     std::vector<std::uint8_t> b = a;

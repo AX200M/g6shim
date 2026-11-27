@@ -28,6 +28,19 @@ namespace g6shim::d3d12_xs::shadow {
 inline constexpr std::uint64_t kIdleSubmissions = 512;
 inline constexpr std::uint64_t kLooseBudgetBytes = 4ull << 30;
 
+enum class RamBand : std::uint8_t { kCalm, kWatch, kHigh };
+
+struct RamSample {
+    std::uint64_t working = 0;
+    std::uint64_t private_bytes = 0;
+    std::uint64_t free_physical = 0;
+    std::uint64_t commit_headroom = 0;
+    std::uint64_t total_physical = 0;
+    std::uint64_t commit_limit = 0;
+};
+
+RamBand ram_band(RamBand previous, const RamSample& sample);
+
 struct BackCounts {
     std::uint64_t compared = 0;
     std::uint64_t read = 0;
