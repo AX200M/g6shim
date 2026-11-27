@@ -23,6 +23,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <span>
 #include <thread>
@@ -41,6 +42,13 @@ constexpr std::uint32_t kElementAlignment = 256;
 constexpr std::size_t kRecordPage = 64 << 10;
 constexpr std::size_t kSyncPages = 8;
 constexpr std::uint32_t kCopiedFrames = 8;
+constexpr std::uint64_t kLoggedInFull = 64;
+
+std::optional<std::uint64_t> worth_logging(std::atomic<std::uint64_t>& seen) {
+    const std::uint64_t count = seen.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= kLoggedInFull || (count & (count - 1)) == 0) return count;
+    return std::nullopt;
+}
 constexpr std::uint32_t kTabledRead = 1u << 31;
 constexpr DWORD kResetWrites = 1;
 constexpr std::uint32_t kImageBaseAddressShift = 8;
@@ -732,7 +740,10 @@ std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> make(const descriptor::Vie
         if (!shadow) return std::nullopt;
         const std::uint64_t address = (*shadow)->gpu(constant->address);
         if (address % kElementAlignment != 0) {
-            G6SHIM_WARN("d3d12_xs: constant buffer not 256-byte aligned on the host");
+            static std::atomic<std::uint64_t> seen{0};
+            if (const auto count = worth_logging(seen))
+                G6SHIM_WARN("d3d12_xs: constant buffer not 256-byte aligned on the host (%llu so far)",
+                            static_cast<unsigned long long>(*count));
             return std::nullopt;
         }
         D3D12_CONSTANT_BUFFER_VIEW_DESC desc{};
@@ -822,7 +833,10 @@ std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> make(const descriptor::Vie
     if (placed == nullptr) return std::nullopt;
     if (const auto texture = placed_texture(view)) return make(*texture, at);
     if (placed->resource[0] != kBufferDimension) {
-        G6SHIM_WARN("d3d12_xs: placed unordered texture view not mirrored (dimension %u)", placed->resource[0]);
+        static std::atomic<std::uint64_t> seen{0};
+        if (const auto count = worth_logging(seen))
+            G6SHIM_WARN("d3d12_xs: placed unordered texture view not mirrored (dimension %u, %llu so far)",
+                        placed->resource[0], static_cast<unsigned long long>(*count));
         return std::nullopt;
     }
     const std::uint64_t bytes = static_cast<std::uint64_t>(placed->resource[4]) |
