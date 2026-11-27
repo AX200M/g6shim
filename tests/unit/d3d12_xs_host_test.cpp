@@ -729,6 +729,123 @@ TEST(d3d12_xs_host_textures_are_created_and_transitioned) {
     CHECK(slot<std::uint32_t (*)(Object*)>(texture_object, 0x10)(texture_object) == 0);
 }
 
+namespace {
+
+constexpr std::uint32_t kWrittenAsWords = 42;
+constexpr std::uint32_t kReadAsSharedExponent = 67;
+constexpr std::uint32_t kUnorderedFlag = 0x4;
+
+Microsoft::WRL::ComPtr<ID3D12Resource> readback_of(ID3D12Device* device, std::uint64_t bytes);
+
+}  // namespace
+
+TEST(d3d12_xs_views_placed_in_written_textures_find_their_writer) {
+    host::Host* gpu = test_host();
+    if (gpu == nullptr) return;
+    std::vector<std::uint8_t> memory(0x40000, 0);
+    const auto address = reinterpret_cast<std::uint64_t>(memory.data());
+    resource::ResourceDesc written = texture_desc();
+    written.format = kWrittenAsWords;
+    written.flags = kUnorderedFlag;
+    Object* writer = nullptr;
+    CHECK(resource::create_at_address(nullptr, address, &written, 0, nullptr, &resource::kResourceIids[0], &writer) ==
+          S_OK);
+    resource::ResourceDesc read = texture_desc();
+    read.format = kReadAsSharedExponent;
+    Object* view = nullptr;
+    CHECK(resource::create_at_address_from_mip(address, &read, 0, &view) == S_OK);
+    resource::ResourceDesc narrower = read;
+    narrower.width = 32;
+    Object* smaller = nullptr;
+    CHECK(resource::create_at_address_from_mip(address, &narrower, 0, &smaller) == S_OK);
+    CHECK(resource::alias_source(view) == writer);
+    CHECK(resource::alias_source(smaller) == nullptr);
+    CHECK(resource::alias_source(writer) == nullptr);
+    resource::release_resource(writer);
+    CHECK(resource::alias_source(view) == nullptr);
+    resource::release_resource(view);
+    resource::release_resource(smaller);
+}
+
+TEST(d3d12_xs_views_placed_in_written_textures_read_the_written_texels) {
+    host::Host* gpu = test_host();
+    if (gpu == nullptr) return;
+    std::vector<std::uint8_t> memory(0x40000, 0);
+    const auto address = reinterpret_cast<std::uint64_t>(memory.data());
+    resource::ResourceDesc written = texture_desc();
+    written.format = kWrittenAsWords;
+    written.flags = kUnorderedFlag;
+    Object* writer = nullptr;
+    CHECK(resource::create_at_address(nullptr, address, &written, 0, nullptr, &resource::kResourceIids[0], &writer) ==
+          S_OK);
+    resource::ResourceDesc read = texture_desc();
+    read.format = kReadAsSharedExponent;
+    Object* view = nullptr;
+    CHECK(resource::create_at_address_from_mip(address, &read, 0, &view) == S_OK);
+    ID3D12Resource* source = texture::host_texture(writer);
+    ID3D12Resource* destination = texture::host_texture(view);
+    CHECK(source != nullptr && destination != nullptr);
+    if (source == nullptr || destination == nullptr) return;
+    const D3D12_RESOURCE_DESC source_desc = source->GetDesc();
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+    UINT64 bytes = 0;
+    gpu->device()->GetCopyableFootprints(&source_desc, 0, 1, 0, &footprint, nullptr, nullptr, &bytes);
+    auto upload = gpu->upload_buffer(bytes);
+    auto readback = readback_of(gpu->device(), static_cast<std::size_t>(bytes));
+    CHECK(upload.has_value() && readback != nullptr);
+    if (!upload || readback == nullptr) return;
+    const std::uint32_t width = static_cast<std::uint32_t>(source_desc.Width);
+    for (std::uint32_t y = 0; y < source_desc.Height; ++y)
+        for (std::uint32_t x = 0; x < width; ++x) {
+            const std::uint32_t word = y * width + x + 1;
+            std::memcpy(upload->second + y * footprint.Footprint.RowPitch + x * sizeof word, &word, sizeof word);
+        }
+    auto list = gpu->new_list();
+    CHECK(list != nullptr);
+    if (!list) return;
+    host::ensure_state(*list, writer, D3D12_RESOURCE_STATE_COPY_DEST);
+    D3D12_TEXTURE_COPY_LOCATION from_upload{};
+    from_upload.pResource = upload->first.Get();
+    from_upload.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    from_upload.PlacedFootprint = footprint;
+    D3D12_TEXTURE_COPY_LOCATION into_source{};
+    into_source.pResource = source;
+    into_source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    list->list()->CopyTextureRegion(&into_source, 0, 0, 0, &from_upload, nullptr);
+    CHECK(texture::alias_copy(*list, view, writer));
+    host::ensure_state(*list, view, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    D3D12_TEXTURE_COPY_LOCATION from_destination{};
+    from_destination.pResource = destination;
+    from_destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    D3D12_TEXTURE_COPY_LOCATION into_readback{};
+    into_readback.pResource = readback.Get();
+    into_readback.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    into_readback.PlacedFootprint = footprint;
+    into_readback.PlacedFootprint.Footprint.Format = destination->GetDesc().Format;
+    list->list()->CopyTextureRegion(&into_readback, 0, 0, 0, &from_destination, nullptr);
+    list->close();
+    gpu->execute({list.get()});
+    host::wait_idle();
+    CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
+    void* mapped = nullptr;
+    CHECK(SUCCEEDED(readback->Map(0, nullptr, &mapped)));
+    if (mapped != nullptr) {
+        bool same = true;
+        for (std::uint32_t y = 0; y < source_desc.Height; ++y)
+            for (std::uint32_t x = 0; x < width; ++x) {
+                std::uint32_t word = 0;
+                std::memcpy(&word, static_cast<const std::uint8_t*>(mapped) + y * footprint.Footprint.RowPitch +
+                                       x * sizeof word,
+                            sizeof word);
+                same = same && word == y * width + x + 1;
+            }
+        CHECK(same);
+        readback->Unmap(0, nullptr);
+    }
+    resource::release_resource(view);
+    resource::release_resource(writer);
+}
+
 TEST(d3d12_xs_host_page_mapper_is_resolved_from_xmem) {
     const auto exports = g6shim::xmem::private_api::resolve();
     CHECK(exports.map_alias != nullptr);

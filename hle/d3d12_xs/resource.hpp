@@ -191,6 +191,7 @@ bool host_resource(Object* resource_object);
 HRESULT create_at_address_from_mip(std::uint64_t address, const ResourceDesc* desc, std::uint32_t base_mip,
                                    Object** out);
 std::uint32_t host_base_mip(Object* resource_object);
+Object* alias_source(Object* resource_object);
 std::uint32_t release_resource(Object* resource_object);
 
 struct TextureObjects {

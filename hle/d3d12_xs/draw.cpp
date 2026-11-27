@@ -222,8 +222,10 @@ void readable(host::HostList& list, const g6shim::shader::UsedResource& used, co
     if (const auto* shader = std::get_if<descriptor::ShaderView>(&view);
         shader != nullptr && used.kind.kind == ResourceKind::Kind::Srv) {
         auto* object = reinterpret_cast<Object*>(shader->resource);
+        Object* written = placed ? resource::alias_source(object) : nullptr;
+        const bool copied = written != nullptr && texture::alias_copy(list, object, written);
         ID3D12Resource* texture = texture::host_texture(object);
-        if (texture != nullptr && texture::title_written(texture)) texture::upload(list, object, texture);
+        if (!copied && texture != nullptr && texture::title_written(texture)) texture::upload(list, object, texture);
         host::ensure_state(list, object, kShaderResource);
     } else if (const auto* unordered = std::get_if<descriptor::UnorderedView>(&view);
                unordered != nullptr && used.kind.kind == ResourceKind::Kind::Uav) {

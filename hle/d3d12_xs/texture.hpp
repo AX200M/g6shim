@@ -95,6 +95,7 @@ void host_written(Object* resource);
 bool committed(const void* at, std::size_t bytes);
 bool title_written(ID3D12Resource* texture);
 void upload(host::HostList& list, Object* resource, ID3D12Resource* texture);
+bool alias_copy(host::HostList& list, Object* placed, Object* source);
 std::optional<std::shared_ptr<Staging>> staging(Object* resource, ID3D12Resource* texture);
 
 struct DepthUavBinding {

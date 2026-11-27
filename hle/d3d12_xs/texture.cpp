@@ -186,8 +186,154 @@ std::optional<std::pair<void*, std::uint32_t>> host_transition(Object* object, s
     return std::make_pair(static_cast<void*>(copy->texture.Get()), before);
 }
 
+namespace {
+
+constexpr std::uint32_t kMostAliasParts = 54;
+constexpr std::uint32_t kCopySource = D3D12_RESOURCE_STATE_COPY_SOURCE;
+constexpr std::uint32_t kTargetOrUnordered = D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+constexpr std::size_t kAliasUseSalt = std::size_t{0xa11a5} << 44;
+
+struct AliasBridge {
+    Microsoft::WRL::ComPtr<ID3D12Resource> buffer;
+    std::vector<std::pair<D3D12_PLACED_SUBRESOURCE_FOOTPRINT, D3D12_PLACED_SUBRESOURCE_FOOTPRINT>> parts;
+};
+
+std::mutex g_alias_mutex;
+std::unordered_map<std::uintptr_t, std::shared_ptr<AliasBridge>> g_aliases;
+
+std::uint32_t subresource_count(const D3D12_RESOURCE_DESC& desc) {
+    const std::uint32_t layers = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1 : desc.DepthOrArraySize;
+    return std::uint32_t{desc.MipLevels} * layers;
+}
+
+std::shared_ptr<AliasBridge> make_alias_bridge(ID3D12Resource* from, ID3D12Resource* to) {
+    host::Host* gpu = host::host();
+    if (gpu == nullptr || gpu->device() == nullptr) return nullptr;
+    const D3D12_RESOURCE_DESC written = from->GetDesc();
+    const D3D12_RESOURCE_DESC read = to->GetDesc();
+    const std::uint32_t parts = subresource_count(written);
+    if (parts == 0 || parts > kMostAliasParts || parts != subresource_count(read)) return nullptr;
+    std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> written_rows(parts);
+    std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> read_rows(parts);
+    UINT64 written_bytes = 0;
+    UINT64 read_bytes = 0;
+    gpu->device()->GetCopyableFootprints(&written, 0, parts, 0, written_rows.data(), nullptr, nullptr, &written_bytes);
+    gpu->device()->GetCopyableFootprints(&read, 0, parts, 0, read_rows.data(), nullptr, nullptr, &read_bytes);
+    if (written_bytes == 0 || written_bytes != read_bytes) return nullptr;
+    for (std::uint32_t k = 0; k < parts; ++k) {
+        const D3D12_SUBRESOURCE_FOOTPRINT& a = written_rows[k].Footprint;
+        const D3D12_SUBRESOURCE_FOOTPRINT& b = read_rows[k].Footprint;
+        if (written_rows[k].Offset != read_rows[k].Offset || a.Width != b.Width || a.Height != b.Height ||
+            a.Depth != b.Depth || a.RowPitch != b.RowPitch)
+            return nullptr;
+    }
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    desc.Width = written_bytes;
+    desc.Height = 1;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    auto bridge = std::make_shared<AliasBridge>();
+    if (FAILED(gpu->device()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON,
+                                                      nullptr, IID_PPV_ARGS(&bridge->buffer))))
+        return nullptr;
+    host::name(bridge->buffer.Get(), "alias copy");
+    bridge->parts.reserve(parts);
+    for (std::uint32_t k = 0; k < parts; ++k) bridge->parts.emplace_back(written_rows[k], read_rows[k]);
+    G6SHIM_INFO("d3d12_xs: a view placed in a written %llux%u texture (%u parts) reads it through a copy, "
+                "format %d as %d",
+                static_cast<unsigned long long>(written.Width), written.Height, parts, written.Format, read.Format);
+    return bridge;
+}
+
+std::shared_ptr<AliasBridge> alias_bridge(Object* placed, ID3D12Resource* from, ID3D12Resource* to) {
+    const auto key = reinterpret_cast<std::uintptr_t>(placed);
+    std::lock_guard<std::mutex> lock(g_alias_mutex);
+    const auto found = g_aliases.find(key);
+    if (found != g_aliases.end()) return found->second;
+    std::shared_ptr<AliasBridge> made = make_alias_bridge(from, to);
+    g_aliases.emplace(key, made);
+    return made;
+}
+
+D3D12_TEXTURE_COPY_LOCATION subresource(ID3D12Resource* texture, std::size_t index) {
+    D3D12_TEXTURE_COPY_LOCATION location{};
+    location.pResource = texture;
+    location.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    location.SubresourceIndex = static_cast<UINT>(index);
+    return location;
+}
+
+D3D12_TEXTURE_COPY_LOCATION rows(ID3D12Resource* buffer, const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& footprint) {
+    D3D12_TEXTURE_COPY_LOCATION location{};
+    location.pResource = buffer;
+    location.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    location.PlacedFootprint = footprint;
+    return location;
+}
+
+}  // namespace
+
+bool alias_copy(host::HostList& list, Object* placed, Object* source) {
+    ID3D12Resource* to = host_texture(placed);
+    ID3D12Resource* from = host_texture(source);
+    if (to == nullptr || from == nullptr) return false;
+    const std::shared_ptr<AliasBridge> bridge = alias_bridge(placed, from, to);
+    if (!bridge) return false;
+    const bool first = list.first_use(reinterpret_cast<std::size_t>(placed) ^ kAliasUseSalt);
+    const auto changed = list.transition(source, kCopySource);
+    if (changed) {
+        const D3D12_RESOURCE_BARRIER barrier =
+            host::transition(changed->first, static_cast<D3D12_RESOURCE_STATES>(changed->second),
+                             static_cast<D3D12_RESOURCE_STATES>(host::legal_state(changed->first, kCopySource)));
+        list.list()->ResourceBarrier(1, &barrier);
+    }
+    if (!first && !changed) return true;
+    host::ensure_state(list, placed, kCopyDest);
+    ID3D12Resource* buffer = bridge->buffer.Get();
+    ID3D12GraphicsCommandList* commands = list.list();
+    const D3D12_RESOURCE_BARRIER to_write =
+        host::transition(buffer, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+    commands->ResourceBarrier(1, &to_write);
+    for (std::size_t k = 0; k < bridge->parts.size(); ++k) {
+        const D3D12_TEXTURE_COPY_LOCATION out = rows(buffer, bridge->parts[k].first);
+        const D3D12_TEXTURE_COPY_LOCATION in = subresource(from, k);
+        commands->CopyTextureRegion(&out, 0, 0, 0, &in, nullptr);
+    }
+    const D3D12_RESOURCE_BARRIER to_read =
+        host::transition(buffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    commands->ResourceBarrier(1, &to_read);
+    for (std::size_t k = 0; k < bridge->parts.size(); ++k) {
+        const D3D12_TEXTURE_COPY_LOCATION out = subresource(to, k);
+        const D3D12_TEXTURE_COPY_LOCATION in = rows(buffer, bridge->parts[k].second);
+        commands->CopyTextureRegion(&out, 0, 0, 0, &in, nullptr);
+    }
+    const D3D12_RESOURCE_BARRIER to_rest =
+        host::transition(buffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
+    commands->ResourceBarrier(1, &to_rest);
+    list.keep(buffer);
+    if (changed && (changed->second & kTargetOrUnordered) != 0) host::ensure_state(list, source, changed->second);
+    return true;
+}
+
 void forget(Object* object) {
     if (object == nullptr) return;
+    {
+        std::shared_ptr<AliasBridge> bridge;
+        {
+            std::lock_guard<std::mutex> lock(g_alias_mutex);
+            const auto found = g_aliases.find(reinterpret_cast<std::uintptr_t>(object));
+            if (found != g_aliases.end()) {
+                bridge = std::move(found->second);
+                g_aliases.erase(found);
+            }
+        }
+        if (bridge && bridge->buffer) host::retire(Microsoft::WRL::ComPtr<IUnknown>(bridge->buffer.Get()));
+    }
     if (const std::shared_ptr<later::HostTexture> copy = resource::host_copy(object)) {
         host::retire(copy->texture);
         if (copy->depth_uav) {

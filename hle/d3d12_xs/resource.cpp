@@ -13,7 +13,9 @@
 #include <bit>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <mutex>
+#include <set>
 #include <span>
 #include <variant>
 #include <vector>
@@ -232,6 +234,14 @@ using Backing = std::variant<Memory, PlacedBacking, std::uint8_t*>;
 
 std::array<std::atomic<std::int64_t>, std::variant_size_v<Backing>> g_texture_objects{};
 
+constexpr std::uint32_t kWritesAsTarget = 0x1;
+constexpr std::uint32_t kWritesAsDepth = 0x2;
+constexpr std::uint32_t kWritesUnordered = 0x4;
+constexpr std::size_t kMostReportedPairs = 64;
+
+std::mutex g_writers_mutex;
+std::map<std::uint64_t, Object*> g_writers;
+
 struct Resource : Object {
     Resource(const ResourceDesc& description, const HeapProperties& properties, std::uint32_t properties_flags,
              Backing backing_store, std::shared_ptr<later::HostTexture> host_copy)
@@ -245,6 +255,11 @@ struct Resource : Object {
     }
 
     ~Resource() {
+        if (indexed) {
+            std::lock_guard<std::mutex> lock(g_writers_mutex);
+            const auto found = g_writers.find(reinterpret_cast<std::uint64_t>(data()));
+            if (found != g_writers.end() && found->second == this) g_writers.erase(found);
+        }
         if (host) g_texture_objects[backing.index()].fetch_sub(1, std::memory_order_relaxed);
         if (auto* placed = std::get_if<PlacedBacking>(&backing)) release_heap(placed->heap);
         descriptor::forget(this);
@@ -265,6 +280,7 @@ struct Resource : Object {
     Backing backing;
     std::shared_ptr<later::HostTexture> host;
     std::uint32_t host_base_mip = 0;
+    bool indexed = false;
 };
 
 Resource* resource_of(Object* object) { return static_cast<Resource*>(object); }
@@ -287,13 +303,21 @@ ResourceDesc from_mip(const ResourceDesc& desc, std::uint32_t base_mip) {
     return reduced;
 }
 
+enum class Owner { kTitle, kView };
+
 HRESULT hand_out_resource(const ResourceDesc& desc, const HeapProperties& heap, std::uint32_t heap_flags,
                           Backing backing, std::uint32_t state, const void* clear, const Iid* iid, Object** out,
-                          std::uint32_t base_mip = 0) {
+                          std::uint32_t base_mip = 0, Owner owner = Owner::kTitle) {
     auto host = later::create_host_texture(from_mip(desc, base_mip), state, clear);
     auto resource = std::make_unique<Resource>(desc, heap, heap_flags, std::move(backing), std::move(host));
     resource->host_base_mip = base_mip;
     if (desc.dimension == kBuffer) later::shadow_register(resource.get(), resource->data(), desc.width);
+    constexpr std::uint32_t kWritten = kWritesAsTarget | kWritesAsDepth | kWritesUnordered;
+    if (owner == Owner::kTitle && resource->host && desc.dimension != kBuffer && (desc.flags & kWritten) != 0) {
+        resource->indexed = true;
+        std::lock_guard<std::mutex> lock(g_writers_mutex);
+        g_writers.insert_or_assign(reinterpret_cast<std::uint64_t>(resource->data()), resource.get());
+    }
     return hand_out(kResource, std::move(resource), iid, kResourceIids, out);
 }
 
@@ -673,10 +697,44 @@ HRESULT create_at_address_from_mip(std::uint64_t address, const ResourceDesc* de
     constexpr std::uint32_t kCommon = 0;
     constexpr HeapProperties kDefault{1, 0, 0, 1, 1};
     return hand_out_resource(*desc, kDefault, 0, Backing(reinterpret_cast<std::uint8_t*>(address)), kCommon, nullptr,
-                             &kResourceIids[0], out, base_mip);
+                             &kResourceIids[0], out, base_mip, Owner::kView);
 }
 
 std::uint32_t host_base_mip(Object* object) { return object != nullptr ? resource_of(object)->host_base_mip : 0; }
+
+Object* alias_source(Object* object) {
+    if (object == nullptr) return nullptr;
+    const Resource* view = resource_of(object);
+    const ResourceDesc& read = view->desc;
+    if (!view->host || read.dimension == kBuffer || read.mip_levels < 1 || read.depth_or_array_size < 1 ||
+        read.sample_count > 1 || view->host_base_mip != 0)
+        return nullptr;
+    std::lock_guard<std::mutex> lock(g_writers_mutex);
+    const auto found = g_writers.find(reinterpret_cast<std::uint64_t>(view->data()));
+    if (found == g_writers.end() || found->second == object) return nullptr;
+    const ResourceDesc& written = resource_of(found->second)->desc;
+    const auto texel = element(written.format);
+    const bool same = written.dimension == read.dimension && written.width == read.width &&
+                      written.height == read.height && written.mip_levels == read.mip_levels &&
+                      written.depth_or_array_size == read.depth_or_array_size &&
+                      (written.flags & kWritesAsDepth) == 0 && written.sample_count <= 1 && texel &&
+                      texel->second == 1 && texel == element(read.format);
+    if (!same) {
+        static std::mutex reported_mutex;
+        static std::set<std::array<std::uint64_t, 6>> reported;
+        const std::array<std::uint64_t, 6> pair{read.width, read.height, read.format,
+                                                written.width, written.height, written.format};
+        std::lock_guard<std::mutex> reported_lock(reported_mutex);
+        if (reported.size() < kMostReportedPairs && reported.insert(pair).second)
+            G6SHIM_INFO("d3d12_xs: a view placed in a written texture's memory differs from it "
+                        "(%llux%u format %u, %u levels, %u layers; written %llux%u format %u, %u levels, %u layers)",
+                        static_cast<unsigned long long>(read.width), read.height, read.format, read.mip_levels,
+                        read.depth_or_array_size, static_cast<unsigned long long>(written.width), written.height,
+                        written.format, written.mip_levels, written.depth_or_array_size);
+        return nullptr;
+    }
+    return found->second;
+}
 
 void copyable_footprints(Object*, const ResourceDesc* desc, std::uint32_t first, std::uint32_t count,
                          std::uint64_t base, PlacedFootprint* layouts, std::uint32_t* rows,
