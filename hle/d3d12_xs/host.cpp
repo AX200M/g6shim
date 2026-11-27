@@ -1172,9 +1172,6 @@ void Host::execute(const std::vector<HostList*>& runs) {
             std::lock_guard<std::mutex> lock(list->scratch_mutex_);
             for (const auto& chunk : list->chunks_)
                 if (chunk.buffer) flight.kept.emplace_back(chunk.buffer.Get());
-            list->chunks_.clear();
-            list->current_chunk_ = 0;
-            list->used_ = 0;
         }
     }
     flight.cards = std::move(cards);
@@ -1848,6 +1845,7 @@ void HostList::reset() {
     }
     {
         std::lock_guard<std::mutex> lock(scratch_mutex_);
+        chunks_.clear();
         current_chunk_ = 0;
         used_ = 0;
     }
