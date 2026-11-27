@@ -10,6 +10,7 @@
 #include <atomic>
 #include <charconv>
 #include <mutex>
+#include <set>
 #include <string>
 
 namespace g6shim::d3d12_xs::inplace {
@@ -35,6 +36,18 @@ std::atomic<std::uint64_t> g_let_go{0};
 
 std::mutex g_changed_mutex;
 std::vector<std::pair<std::uint64_t, std::uint64_t>> g_changed;
+std::mutex g_refused_mutex;
+std::set<std::pair<std::uint64_t, std::uint64_t>> g_refused_ranges;
+
+bool refused_before(std::uint64_t at, std::uint64_t size) {
+    std::lock_guard<std::mutex> lock(g_refused_mutex);
+    return g_refused_ranges.contains({at, size});
+}
+
+void remember_refused(std::uint64_t at, std::uint64_t size) {
+    std::lock_guard<std::mutex> lock(g_refused_mutex);
+    g_refused_ranges.insert({at, size});
+}
 
 std::uint64_t most_bytes() {
     static const std::uint64_t most = [] {
@@ -167,6 +180,10 @@ std::shared_ptr<Region> place(ID3D12Device* device, std::uint64_t start, std::ui
         g_over_budget.fetch_add(1, std::memory_order_relaxed);
         return nullptr;
     }
+    if (refused_before(at, size)) {
+        g_refused.fetch_add(1, std::memory_order_relaxed);
+        return nullptr;
+    }
     const Kind kind = kind_of(at, size);
     std::uint64_t open_at = at;
     if (kind == Kind::kMapped) {
@@ -185,6 +202,7 @@ std::shared_ptr<Region> place(ID3D12Device* device, std::uint64_t start, std::ui
     ComPtr<ID3D12Resource> buffer = heap ? place_buffer(device, heap.Get(), size, &result) : nullptr;
     if (!buffer) {
         if (kind == Kind::kMapped) ::UnmapViewOfFile(reinterpret_cast<void*>(open_at));
+        remember_refused(at, size);
         if (worth_logging(g_refused))
             G6SHIM_WARN("d3d12_xs: title memory %llx+%llx not opened in place (0x%08lX); a copy instead",
                         static_cast<unsigned long long>(at), static_cast<unsigned long long>(size),

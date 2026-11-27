@@ -4,6 +4,7 @@
 
 #include "d3d12_xs/host.hpp"
 #include "d3d12_xs/inplace.hpp"
+#include "d3d12_xs/shadow.hpp"
 
 #include <windows.h>
 
@@ -164,6 +165,47 @@ TEST(d3d12_xs_inplace_view_memory_is_opened_through_a_view_of_ours) {
     ::VirtualFree(hole + 3 * kUnit, 0, MEM_RELEASE);
     ::CloseHandle(g_section);
     g_section = nullptr;
+}
+
+TEST(d3d12_xs_inplace_buffer_offsets_count_from_the_placed_buffer) {
+    host::Host* gpu = inplace_host();
+    if (gpu == nullptr || gpu->device() == nullptr || !opens_existing_heaps(gpu->device())) return;
+    constexpr std::size_t kBytes = 2 * kUnit;
+    constexpr std::uint64_t kBias = 0x1230;
+    auto* memory = static_cast<std::uint8_t*>(
+        ::VirtualAlloc(nullptr, kBytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    CHECK(memory != nullptr);
+    if (memory == nullptr) return;
+    for (std::size_t i = 0; i < kBytes; ++i) memory[i] = static_cast<std::uint8_t>(i * 11 + 5);
+    const auto start = reinterpret_cast<std::uint64_t>(memory) + kBias;
+    {
+        auto region = inplace::place(gpu->device(), start, 4096, false);
+        CHECK(region != nullptr);
+        if (region) {
+            shadow::Shadow copy(region->buffer_ref(), reinterpret_cast<std::uint8_t*>(start), region->gpu(start),
+                                start, 4096);
+            copy.place_in(region);
+            CHECK(copy.offset(start) == kBias);
+            CHECK(copy.offset(start + 16) == kBias + 16);
+            CHECK(copy.gpu(start) == region->buffer()->GetGPUVirtualAddress() + kBias);
+            const auto readback = readback_buffer(gpu->device(), 64);
+            const auto list = gpu->new_list();
+            CHECK((readback && list));
+            if (readback && list) {
+                list->list()->CopyBufferRegion(readback.Get(), 0, copy.buffer(), copy.offset(start + 16), 64);
+                list->close();
+                gpu->execute({list.get()});
+                host::wait_idle();
+                void* mapped = nullptr;
+                CHECK(SUCCEEDED(readback->Map(0, nullptr, &mapped)));
+                if (mapped != nullptr) {
+                    CHECK(std::memcmp(mapped, memory + kBias + 16, 64) == 0);
+                    readback->Unmap(0, nullptr);
+                }
+            }
+        }
+    }
+    ::VirtualFree(memory, 0, MEM_RELEASE);
 }
 
 TEST(d3d12_xs_inplace_turns_down_memory_it_cannot_open) {

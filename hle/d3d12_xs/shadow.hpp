@@ -71,7 +71,9 @@ public:
 
     std::uint64_t gpu(std::uint64_t address) const { return gpu_ + (address - start_); }
     std::uint64_t left(std::uint64_t address) const;
-    std::uint64_t offset(std::uint64_t address) const { return address - start_; }
+    std::uint64_t offset(std::uint64_t address) const {
+        return in_place_ ? address - in_place_->base() : address - start_;
+    }
     std::uint64_t start() const { return start_; }
     std::uint64_t bytes() const { return bytes_; }
     std::uint8_t* data() const { return data_; }
