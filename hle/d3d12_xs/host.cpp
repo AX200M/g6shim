@@ -28,7 +28,9 @@
 #include <deque>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <thread>
+#include <tuple>
 
 namespace g6shim::d3d12_xs::host {
 
@@ -267,6 +269,13 @@ void Meter::frame(HWND hwnd) {
                         interval.execute_call.milliseconds, interval.execute_max_ms, interval.wait.milliseconds,
                         interval.wait_max_ms, interval.copy_back.milliseconds, interval.copy_back_max_ms,
                         static_cast<unsigned long long>(interval.copy_back.bytes), interval.gpu.milliseconds);
+            const shadow::CopyBackStats back = shadow::take_copy_back_stats();
+            G6SHIM_INFO("d3d12_xs: copy-back merge %.1f ms over %llu ranges, %llu MiB compared, %llu KiB of title "
+                        "memory read, %llu KiB written",
+                        static_cast<double>(back.nanoseconds) / 1e6, static_cast<unsigned long long>(back.ranges),
+                        static_cast<unsigned long long>(back.compared >> 20),
+                        static_cast<unsigned long long>(back.read >> 10),
+                        static_cast<unsigned long long>(back.written >> 10));
             log_host_memory();
         } else {
             G6SHIM_INFO("d3d12_xs: %.1f fps, %.1f ms/frame, loose title memory %zu windows %llu MiB, %llu evicted, "
@@ -1107,22 +1116,19 @@ void Host::execute(const std::vector<HostList*>& runs) {
         }
         if (cards_open) cards.read_changed(device_.Get(), queue_.Get());
         const auto copied_at = std::chrono::steady_clock::now();
-        std::vector<std::tuple<std::shared_ptr<shadow::Shadow>, std::size_t, std::size_t>> back;
+        std::vector<shadow::WriteRange> back;
         for (HostList* list : runs) {
             if (list == nullptr) continue;
             std::lock_guard<std::mutex> lock(list->deferred_mutex_);
             for (const Step& step : list->deferred_.copies) {
                 const auto* write = std::get_if<GpuWriteStep>(&step);
-                if (write == nullptr || !write->shadow) continue;
-                const bool known = std::any_of(back.begin(), back.end(), [&](const auto& entry) {
-                    return std::get<0>(entry).get() == write->shadow.get() && std::get<1>(entry) == write->address &&
-                           std::get<2>(entry) == write->bytes;
-                });
-                if (!known) back.emplace_back(write->shadow, write->address, write->bytes);
+                if (write != nullptr && write->shadow) back.emplace_back(write->shadow, write->address, write->bytes);
             }
         }
-        std::uint64_t copied = 0;
-        for (const auto& [copy, address, bytes] : back) copied += copy->copy_back(address, bytes);
+        shadow::CopyBackStats back_stats;
+        shadow::copy_back_all(back, &back_stats);
+        shadow::note_copy_back_stats(back_stats);
+        const std::uint64_t copied = back_stats.written;
         if (cards_open) {
             cards.sync_kept(device_.Get(), queue_.Get());
             card::release_recorder();
@@ -2188,6 +2194,7 @@ void HostList::run_deferred(Batch& batch) {
     std::uint64_t refreshes = 0;
     std::uint64_t gpu_writes = 0;
     std::uint64_t snapshot_bytes = 0;
+    std::set<std::tuple<const shadow::Shadow*, std::size_t, std::size_t>> declared;
     for (const Step& step : deferred_.copies) {
         if (const auto* copy = std::get_if<CopyStep>(&step)) {
             if (copy->title_memory) batch.title_written();
@@ -2199,8 +2206,9 @@ void HostList::run_deferred(Batch& batch) {
             if (work->title_memory) batch.title_written();
             work->work();
         } else if (const auto* write = std::get_if<GpuWriteStep>(&step)) {
-            batch.flush();
             ++gpu_writes;
+            if (!declared.emplace(write->shadow.get(), write->address, write->bytes).second) continue;
+            batch.flush();
             snapshot_bytes += write->shadow->writing(write->address, write->bytes);
         } else if (const auto* staged = std::get_if<TextureStep>(&step)) {
             if (batch.texture_due(staged->staging.get())) staged->staging->refresh();

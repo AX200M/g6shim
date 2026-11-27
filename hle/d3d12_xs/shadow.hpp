@@ -13,7 +13,9 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -25,6 +27,20 @@ namespace g6shim::d3d12_xs::shadow {
 
 inline constexpr std::uint64_t kIdleSubmissions = 512;
 inline constexpr std::uint64_t kLooseBudgetBytes = 4ull << 30;
+
+struct BackCounts {
+    std::uint64_t compared = 0;
+    std::uint64_t read = 0;
+    std::uint64_t written = 0;
+};
+
+struct CopyBackStats {
+    std::uint64_t nanoseconds = 0;
+    std::uint64_t ranges = 0;
+    std::uint64_t compared = 0;
+    std::uint64_t read = 0;
+    std::uint64_t written = 0;
+};
 
 struct LooseStats {
     std::size_t windows = 0;
@@ -56,6 +72,8 @@ public:
     void gpu_writes(host::HostList& list, std::uint64_t address, std::uint64_t bytes);
     std::size_t writing(std::size_t address, std::size_t bytes);
     std::size_t copy_back(std::size_t address, std::size_t bytes);
+    BackCounts merge_back(std::size_t address, std::size_t bytes);
+    void finish_writes(const std::vector<std::pair<std::size_t, std::size_t>>& sorted_ranges);
     void discard_write(std::size_t address, std::size_t bytes);
     std::size_t update(std::size_t address, std::size_t bytes);
 
@@ -91,6 +109,14 @@ struct HostRange {
 };
 
 bool merge_written(std::uint8_t* title, std::uint8_t* host, const std::uint8_t* old, std::size_t bytes);
+std::optional<std::pair<std::size_t, std::size_t>> changed_span(const std::uint8_t* a, const std::uint8_t* b,
+                                                               std::size_t bytes);
+std::size_t put_changed(std::uint8_t* destination, const std::uint8_t* was, const std::uint8_t* now,
+                        std::size_t bytes);
+using WriteRange = std::tuple<std::shared_ptr<Shadow>, std::size_t, std::size_t>;
+void copy_back_all(std::span<const WriteRange> writes, CopyBackStats* stats);
+CopyBackStats take_copy_back_stats();
+void note_copy_back_stats(const CopyBackStats& stats);
 void register_buffer(std::uintptr_t resource, std::uint64_t start, std::uint64_t bytes);
 void unregister_buffer(std::uintptr_t resource, std::uint64_t start);
 std::optional<std::shared_ptr<Shadow>> find(std::uint64_t address, std::uint64_t bytes);

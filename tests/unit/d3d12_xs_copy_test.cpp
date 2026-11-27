@@ -91,3 +91,48 @@ TEST(d3d12_xs_write_merge_matches_the_byte_rule) {
         CHECK(host == want_host);
     }
 }
+
+TEST(d3d12_xs_put_changed_leaves_untouched_dwords_to_the_title) {
+    constexpr std::size_t kBytes = 256;
+    constexpr std::uint8_t kLate = 0xEE;
+    alignas(16) std::array<std::uint8_t, kBytes + 8> memory{};
+    std::vector<std::uint8_t> was(kBytes, 1);
+    std::vector<std::uint8_t> now = was;
+    now[5] = 2;
+    now[6] = 3;
+    now[100] = 4;
+    for (std::size_t offset = 0; offset < 4; ++offset) {
+        std::uint8_t* destination = memory.data() + offset;
+        std::memcpy(destination, was.data(), kBytes);
+        for (std::size_t i = 0; i < kBytes; ++i)
+            if ((reinterpret_cast<std::uintptr_t>(destination + i) / 4) !=
+                    (reinterpret_cast<std::uintptr_t>(destination + 5) / 4) &&
+                (reinterpret_cast<std::uintptr_t>(destination + i) / 4) !=
+                    (reinterpret_cast<std::uintptr_t>(destination + 6) / 4) &&
+                (reinterpret_cast<std::uintptr_t>(destination + i) / 4) !=
+                    (reinterpret_cast<std::uintptr_t>(destination + 100) / 4))
+                destination[i] = kLate;
+        const std::size_t written = shadow::put_changed(destination, was.data(), now.data(), kBytes);
+        CHECK(written >= 3);
+        CHECK(written <= 12);
+        CHECK(destination[5] == 2);
+        CHECK(destination[6] == 3);
+        CHECK(destination[100] == 4);
+        CHECK(destination[0] == kLate);
+        CHECK(destination[50] == kLate);
+        CHECK(destination[kBytes - 1] == kLate);
+    }
+}
+
+TEST(d3d12_xs_changed_span_finds_the_first_and_last_difference) {
+    std::vector<std::uint8_t> a(1000, 7);
+    std::vector<std::uint8_t> b = a;
+    CHECK(!shadow::changed_span(a.data(), b.data(), a.size()).has_value());
+    b[130] = 1;
+    b[870] = 1;
+    const auto span = shadow::changed_span(a.data(), b.data(), a.size());
+    CHECK(span.has_value());
+    if (!span) return;
+    CHECK(span->first == 130);
+    CHECK(span->second == 871);
+}

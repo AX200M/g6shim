@@ -196,9 +196,10 @@ void sync_cards(Flight& flight) {
 
 std::uint64_t copy_back_flight(Flight& flight) {
     if (flight.cards_open) land_cards(flight);
-    std::uint64_t copied = 0;
-    for (const auto& [shadow, address, bytes] : flight.writes)
-        if (shadow) copied += shadow->copy_back(address, bytes);
+    shadow::CopyBackStats stats;
+    shadow::copy_back_all(flight.writes, &stats);
+    shadow::note_copy_back_stats(stats);
+    const std::uint64_t copied = stats.written;
     if (flight.cards_open) sync_cards(flight);
     for (const WriteStep& write : flight.deferred) write.written.write(write.destination, write.bytes);
     shadow::submission_completed();

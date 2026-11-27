@@ -8,6 +8,7 @@
 #include <g6shim/log.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -26,6 +27,7 @@ constexpr std::uint8_t kNotWatched = 2;
 constexpr std::size_t kPoolSize = 8;
 constexpr std::uint64_t kWindowBytes = 4 << 20;
 constexpr std::uint64_t kCopyAlignment = 1 << 16;
+constexpr std::size_t kBackPieceBytes = 64 << 10;
 
 std::mutex g_pool_mutex;
 std::vector<std::vector<std::uint8_t>> g_pool;
@@ -75,6 +77,11 @@ std::atomic<std::uint64_t> g_generation{0};
 std::atomic<std::uint64_t> g_buffers_generation{1};
 std::atomic<std::uint64_t> g_evicted{0};
 std::atomic<std::uint64_t> g_loose_budget{kLooseBudgetBytes};
+std::atomic<std::uint64_t> g_back_nanoseconds{0};
+std::atomic<std::uint64_t> g_back_ranges{0};
+std::atomic<std::uint64_t> g_back_compared{0};
+std::atomic<std::uint64_t> g_back_read{0};
+std::atomic<std::uint64_t> g_back_written{0};
 
 std::optional<std::shared_ptr<Shadow>> loose(std::uint64_t address, std::uint64_t end) {
     const std::uint64_t start = address & ~(kWindowBytes - 1);
@@ -239,6 +246,7 @@ std::size_t Shadow::merge_card(std::size_t address, std::size_t bytes) {
         if (!host::read_into(reinterpret_cast<const std::uint8_t*>(start + lo),
                              std::span<std::uint8_t>(title.data(), n)))
             continue;
+        const std::vector<std::uint8_t> was = title;
         bool changed = false;
         bool kept = false;
         std::size_t i = 0;
@@ -275,12 +283,115 @@ std::size_t Shadow::merge_card(std::size_t address, std::size_t bytes) {
         }
         if (changed) {
             watch::writing(start + lo, n);
-            host::write_mapped(reinterpret_cast<std::uint8_t*>(start + lo), title.data(), n);
-            written += n;
+            written += put_changed(reinterpret_cast<std::uint8_t*>(start + lo), was.data(), title.data(), n);
         }
         if (kept) card_->note_kept(static_cast<std::uint32_t>(piece), lo, n);
     }
     return written;
+}
+
+std::optional<std::pair<std::size_t, std::size_t>> changed_span(const std::uint8_t* a, const std::uint8_t* b,
+                                                               std::size_t bytes) {
+    constexpr std::size_t kBlock = 64;
+    std::size_t first = 0;
+    while (first + kBlock <= bytes && std::memcmp(a + first, b + first, kBlock) == 0) first += kBlock;
+    while (first < bytes && a[first] == b[first]) ++first;
+    if (first == bytes) return std::nullopt;
+    std::size_t end = bytes;
+    while (end - first >= kBlock && std::memcmp(a + end - kBlock, b + end - kBlock, kBlock) == 0) end -= kBlock;
+    while (end > first && a[end - 1] == b[end - 1]) --end;
+    return std::make_pair(first, end);
+}
+
+std::size_t put_changed(std::uint8_t* destination, const std::uint8_t* was, const std::uint8_t* now,
+                        std::size_t bytes) {
+    constexpr std::size_t kDword = 4;
+    constexpr std::size_t kBlock = 32;
+    const auto base = reinterpret_cast<std::uintptr_t>(destination);
+    std::size_t written = 0;
+    std::size_t run = 0;
+    bool open = false;
+    const auto flush = [&](std::size_t end) {
+        if (!open) return;
+        host::write_mapped(destination + run, now + run, end - run);
+        written += end - run;
+        open = false;
+    };
+    std::size_t at = 0;
+    while (at < bytes) {
+        const bool aligned = (base + at) % kDword == 0;
+        if (aligned && at + kBlock <= bytes && std::memcmp(was + at, now + at, kBlock) == 0) {
+            flush(at);
+            at += kBlock;
+            continue;
+        }
+        const std::size_t unit = std::min(kDword - (base + at) % kDword, bytes - at);
+        if (std::memcmp(was + at, now + at, unit) != 0) {
+            if (!open) {
+                run = at;
+                open = true;
+            }
+        } else {
+            flush(at);
+        }
+        at += unit;
+    }
+    flush(bytes);
+    return written;
+}
+
+void copy_back_all(std::span<const WriteRange> writes, CopyBackStats* stats) {
+    const auto began = std::chrono::steady_clock::now();
+    std::map<Shadow*, std::vector<std::pair<std::size_t, std::size_t>>> by_shadow;
+    for (const auto& [copy, address, bytes] : writes)
+        if (copy && bytes > 0) by_shadow[copy.get()].emplace_back(address, address + bytes);
+    for (auto& [copy, ranges] : by_shadow) {
+        std::sort(ranges.begin(), ranges.end());
+        ranges.erase(std::unique(ranges.begin(), ranges.end()), ranges.end());
+        std::size_t union_from = ranges.front().first;
+        std::size_t union_to = ranges.front().second;
+        const auto merge = [&](std::size_t from, std::size_t to) {
+            const BackCounts counts = copy->merge_back(from, to - from);
+            if (stats != nullptr) {
+                ++stats->ranges;
+                stats->compared += counts.compared;
+                stats->read += counts.read;
+                stats->written += counts.written;
+            }
+        };
+        for (const auto& [from, to] : ranges) {
+            if (from <= union_to) {
+                union_to = std::max(union_to, to);
+                continue;
+            }
+            merge(union_from, union_to);
+            union_from = from;
+            union_to = to;
+        }
+        merge(union_from, union_to);
+        copy->finish_writes(ranges);
+    }
+    if (stats != nullptr)
+        stats->nanoseconds += static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - began).count());
+}
+
+void note_copy_back_stats(const CopyBackStats& stats) {
+    g_back_nanoseconds.fetch_add(stats.nanoseconds, std::memory_order_relaxed);
+    g_back_ranges.fetch_add(stats.ranges, std::memory_order_relaxed);
+    g_back_compared.fetch_add(stats.compared, std::memory_order_relaxed);
+    g_back_read.fetch_add(stats.read, std::memory_order_relaxed);
+    g_back_written.fetch_add(stats.written, std::memory_order_relaxed);
+}
+
+CopyBackStats take_copy_back_stats() {
+    CopyBackStats stats;
+    stats.nanoseconds = g_back_nanoseconds.exchange(0, std::memory_order_relaxed);
+    stats.ranges = g_back_ranges.exchange(0, std::memory_order_relaxed);
+    stats.compared = g_back_compared.exchange(0, std::memory_order_relaxed);
+    stats.read = g_back_read.exchange(0, std::memory_order_relaxed);
+    stats.written = g_back_written.exchange(0, std::memory_order_relaxed);
+    return stats;
 }
 
 bool merge_written(std::uint8_t* title, std::uint8_t* host, const std::uint8_t* old, std::size_t bytes) {
@@ -314,61 +425,63 @@ bool merge_written(std::uint8_t* title, std::uint8_t* host, const std::uint8_t* 
     return changed;
 }
 
-std::size_t Shadow::copy_back(std::size_t address, std::size_t bytes) {
-    std::size_t written = 0;
-    {
-        std::lock_guard<std::mutex> snapshot_lock(before_mutex_);
-        const auto [from, to] = inside(address, bytes);
-        const std::size_t start = static_cast<std::size_t>(start_);
-        if (card_) {
-            written = merge_card(address, bytes);
-        } else if (const auto held = before_of(from, to)) {
-            const std::vector<std::uint8_t>& before = *held;
-            constexpr std::size_t kPiece = 64 << 10;
-            std::vector<std::uint8_t> title(kPiece, 0);
-            std::vector<std::size_t> synced;
-            std::size_t at = from;
-            while (at < to) {
-                const std::size_t n = std::min(kPiece - (start + at) % kPiece, to - at);
-                std::uint8_t* host = data_ + at;
-                const std::uint8_t* old = before.data() + (at - from);
-                if (n == 0 || host == nullptr || old == nullptr) break;
-                if (host::read_into(reinterpret_cast<const std::uint8_t*>(start + at),
-                                    std::span<std::uint8_t>(title.data(), n))) {
-                    const bool changed = merge_written(title.data(), host, old, n);
-                    if (changed) {
-                        watch::writing(start + at, n);
-                        host::write_mapped(reinterpret_cast<std::uint8_t*>(start + at), title.data(), n);
-                        written += n;
+BackCounts Shadow::merge_back(std::size_t address, std::size_t bytes) {
+    BackCounts counts;
+    std::lock_guard<std::mutex> snapshot_lock(before_mutex_);
+    const auto [from, to] = inside(address, bytes);
+    counts.compared = to > from ? to - from : 0;
+    if (card_) {
+        counts.written = merge_card(address, bytes);
+        return counts;
+    }
+    const std::size_t start = static_cast<std::size_t>(start_);
+    std::vector<std::uint8_t> title;
+    std::vector<std::uint8_t> was;
+    auto part = before_.upper_bound(from);
+    if (part != before_.begin()) --part;
+    for (; part != before_.end() && part->first < to; ++part) {
+        const std::size_t part_from = std::max(from, part->first);
+        const std::size_t part_to = std::min(to, part->first + part->second.size());
+        std::size_t at = part_from;
+        while (at < part_to) {
+            const std::size_t n = std::min(kBackPieceBytes - (start + at) % kBackPieceBytes, part_to - at);
+            const std::uint8_t* old = part->second.data() + (at - part->first);
+            if (const auto span = changed_span(data_ + at, old, n)) {
+                const std::size_t lo = at + span->first;
+                const std::size_t len = span->second - span->first;
+                auto* target = reinterpret_cast<std::uint8_t*>(start + lo);
+                title.resize(len);
+                if (host::read_into(target, std::span<std::uint8_t>(title.data(), len))) {
+                    counts.read += len;
+                    was.assign(title.begin(), title.end());
+                    if (merge_written(title.data(), data_ + lo, old + span->first, len)) {
+                        watch::writing(start + lo, len);
+                        counts.written += put_changed(target, was.data(), title.data(), len);
                     }
-                    if (n > 0 && host != nullptr && old != nullptr && (changed || std::memcmp(host, old, n) != 0))
-                        synced.push_back((start + at) / watch::kPageBytes);
-                }
-                at += n;
-            }
-            const std::size_t first = (start + from + watch::kPageBytes - 1) / watch::kPageBytes;
-            const std::size_t last = (start + to) / watch::kPageBytes;
-            if (first < last && !synced.empty() && watched_.load(std::memory_order_relaxed) != kNotWatched) {
-                const auto pages = watch::writes(first * watch::kPageBytes, last * watch::kPageBytes, true);
-                if (pages) {
-                    const std::size_t base = start / watch::kPageBytes;
-                    std::lock_guard<std::mutex> lock(copied_mutex_);
-                    for (const std::size_t page : synced)
-                        if (page >= base && page - base < copied_.size() && page >= first && page < last)
-                            copied_[page - base] = pages->asked;
                 }
             }
+            at += n;
         }
     }
-    {
-        std::lock_guard<std::mutex> lock(pending_mutex_);
-        const auto range = std::make_pair(address, address + bytes);
-        pending_.erase(std::remove(pending_.begin(), pending_.end(), range), pending_.end());
-        if (pending_.empty()) {
-            std::lock_guard<std::mutex> snapshot_lock(before_mutex_);
-            drop_before();
-        }
+    return counts;
+}
+
+void Shadow::finish_writes(const std::vector<std::pair<std::size_t, std::size_t>>& sorted_ranges) {
+    std::lock_guard<std::mutex> lock(pending_mutex_);
+    pending_.erase(std::remove_if(pending_.begin(), pending_.end(),
+                                  [&](const std::pair<std::size_t, std::size_t>& range) {
+                                      return std::binary_search(sorted_ranges.begin(), sorted_ranges.end(), range);
+                                  }),
+                   pending_.end());
+    if (pending_.empty()) {
+        std::lock_guard<std::mutex> snapshot_lock(before_mutex_);
+        drop_before();
     }
+}
+
+std::size_t Shadow::copy_back(std::size_t address, std::size_t bytes) {
+    const std::size_t written = merge_back(address, bytes).written;
+    finish_writes({std::make_pair(address, address + bytes)});
     return written;
 }
 

@@ -427,7 +427,7 @@ TEST(d3d12_xs_host_shadow_copies_back_only_what_shaders_changed) {
     CHECK((*copy)->update(address, title.size()) == title.size());
     (*copy)->writing(address, 16);
     (*copy)->data()[0] = 9;
-    CHECK((*copy)->copy_back(address, 16) == 16);
+    CHECK((*copy)->copy_back(address, 16) == 1);
     CHECK(title[0] == 9);
     CHECK(title[1] == 4);
     shadow::unregister_buffer(kSlot, address);
@@ -450,7 +450,7 @@ TEST(d3d12_xs_host_shadow_copies_back_writes_that_walk_a_buffer) {
     for (const std::size_t at : kWrites) (*copy)->writing(address + at, kStep);
     title[kTitleChange] = 77;
     for (const std::size_t at : kWrites) (*copy)->data()[at] = 9;
-    for (const std::size_t at : kWrites) CHECK((*copy)->copy_back(address + at, kStep) == kStep);
+    for (const std::size_t at : kWrites) CHECK((*copy)->copy_back(address + at, kStep) == 1);
     for (const std::size_t at : kWrites) {
         CHECK(title[at] == 9);
         CHECK(title[at + 1] == 4);
@@ -459,8 +459,41 @@ TEST(d3d12_xs_host_shadow_copies_back_writes_that_walk_a_buffer) {
     CHECK(title[0] == 4);
     (*copy)->writing(address, kStep);
     (*copy)->data()[1] = 5;
-    CHECK((*copy)->copy_back(address, kStep) == kStep);
+    CHECK((*copy)->copy_back(address, kStep) == 1);
     CHECK(title[1] == 5);
+    shadow::unregister_buffer(kSlot, address);
+}
+
+TEST(d3d12_xs_host_shadow_merges_overlapping_write_ranges_once) {
+    if (test_host() == nullptr) return;
+    constexpr std::size_t kBytes = 8192;
+    std::vector<std::uint8_t> title(kBytes, 4);
+    const auto address = reinterpret_cast<std::uint64_t>(title.data());
+    constexpr std::uintptr_t kSlot = 0x5153;
+    shadow::register_buffer(kSlot, address, title.size());
+    const auto copy = shadow::find(address, title.size());
+    CHECK(copy.has_value());
+    if (!copy) return;
+    CHECK((*copy)->update(address, title.size()) == title.size());
+    constexpr std::array<std::size_t, 4> kFrom{0, 256, 1024, 6000};
+    std::vector<shadow::WriteRange> writes;
+    for (const std::size_t from : kFrom) {
+        (*copy)->writing(address + from, kBytes - from);
+        writes.emplace_back(*copy, static_cast<std::size_t>(address + from), kBytes - from);
+        writes.emplace_back(*copy, static_cast<std::size_t>(address + from), kBytes - from);
+    }
+    (*copy)->data()[300] = 9;
+    (*copy)->data()[7000] = 8;
+    title[301] = 77;
+    shadow::CopyBackStats stats;
+    shadow::copy_back_all(writes, &stats);
+    CHECK(stats.ranges == 1);
+    CHECK(stats.compared == kBytes);
+    CHECK(stats.written == 5);
+    CHECK(title[300] == 9);
+    CHECK(title[301] == 77);
+    CHECK(title[7000] == 8);
+    CHECK((*copy)->data()[301] == 77);
     shadow::unregister_buffer(kSlot, address);
 }
 
