@@ -290,6 +290,9 @@ private:
     void image(const IrInst& inst, std::size_t b, std::size_t i);
     std::array<V, 3> cube_direction(V s, V t, V face);
     void buffer(const IrInst& inst, std::size_t b, std::size_t i);
+    void narrow_buffer(const IrInst& inst, const BufferFields& fields, Site site, const Source& src,
+                       const UsedResource* used, std::optional<V> index, V off, std::uint32_t uav_flag,
+                       std::uint32_t bits, bool sign, bool store, std::optional<V> guard_value);
     void export_(std::size_t b, std::size_t i);
     void emit_indices(const Export& e, std::optional<V> guard);
     std::optional<std::uint8_t> unnamed_row() const;

@@ -25,6 +25,7 @@
 #include "g6shim/shader/emit/lower.hpp"
 #include "g6shim/shader/emit/validator.hpp"
 #include "g6shim/shader/error.hpp"
+#include "g6shim/shader/gfx10.hpp"
 
 namespace {
 
@@ -124,6 +125,54 @@ std::uint32_t u32_bits(float value) { return std::bit_cast<std::uint32_t>(value)
 
 void note_gpu_comparison_skipped(const char* label, std::size_t cases) {
     std::printf("  GPU comparison skipped for %s: %zu cases checked by lowering only\n", label, cases);
+}
+
+std::array<std::uint32_t, 2> mubuf(std::uint8_t op, std::uint8_t vdata, std::uint8_t srsrc,
+                                   std::uint16_t byte_offset) {
+    return {0x38u << 26 | static_cast<std::uint32_t>(op) << 18 | (byte_offset & 0xFFFu),
+            0x80u << 24 | ((srsrc >> 2) & 0x1Fu) << 16 | static_cast<std::uint32_t>(vdata) << 8};
+}
+
+std::string decoded_name(const std::array<std::uint32_t, 2>& words) {
+    std::vector<std::uint8_t> code;
+    for (const std::uint32_t word : {words[0], words[1], kSEndPgm})
+        for (int k = 0; k < 4; ++k) code.push_back(static_cast<std::uint8_t>(word >> (8 * k)));
+    try {
+        const std::vector<Instruction> instructions = decode(code);
+        if (instructions.empty() || !instructions[0].name()) return {};
+        return std::string(*instructions[0].name());
+    } catch (const std::exception& error) {
+        return error.what();
+    }
+}
+
+TEST(byte_and_short_buffer_accesses_lower_and_validate) {
+    struct Case {
+        std::uint8_t op;
+        const char* name;
+        bool store;
+    };
+    constexpr std::array<Case, 6> kCases = {Case{0x08, "buffer_load_ubyte", false},
+                                            Case{0x09, "buffer_load_sbyte", false},
+                                            Case{0x0A, "buffer_load_ushort", false},
+                                            Case{0x0B, "buffer_load_sshort", false},
+                                            Case{0x18, "buffer_store_byte", true},
+                                            Case{0x1A, "buffer_store_short", true}};
+    constexpr std::array<std::uint16_t, 3> kOffsets = {0, 1, 3};
+    for (const Case& narrow : kCases) {
+        for (const std::uint16_t offset : kOffsets) {
+            const auto access = mubuf(narrow.op, narrow.store ? 1 : 0, 8, offset);
+            CHECK(decoded_name(access) == narrow.name);
+            try {
+                check_valu(std::vector<std::uint32_t>(access.begin(), access.end()), narrow.name);
+            } catch (const std::exception& error) {
+                std::printf("  %s at byte %u does not lower: %s\n", narrow.name, static_cast<unsigned>(offset),
+                            error.what());
+                CHECK(false);
+            }
+        }
+    }
+    note_gpu_comparison_skipped("byte and short buffer accesses", kCases.size() * kOffsets.size());
 }
 
 TEST(max_and_min_pick_a_zero_with_the_right_sign) {

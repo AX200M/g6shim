@@ -330,6 +330,15 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
         else if (op == "cmpswap") atomic = UINT32_MAX;
         else fail(name);
     }
+    struct Narrow {
+        std::uint32_t bits = 0;
+        bool sign = false;
+    };
+    std::optional<Narrow> narrow;
+    if (name == "buffer_load_ubyte" || name == "buffer_store_byte") narrow = Narrow{8, false};
+    else if (name == "buffer_load_sbyte") narrow = Narrow{8, true};
+    else if (name == "buffer_load_ushort" || name == "buffer_store_short") narrow = Narrow{16, false};
+    else if (name == "buffer_load_sshort") narrow = Narrow{16, true};
     const bool d16 =
         name.starts_with("buffer_") && name.find("_format_d16_") != std::string_view::npos;
     std::string plain(name);
@@ -338,7 +347,7 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
     const std::string_view plain_view(plain);
     bool typed = false;
     std::uint32_t count = 0;
-    if (atomic) {
+    if (atomic || narrow) {
         typed = false;
         count = 1;
     } else {
@@ -392,6 +401,7 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
     const UsedResource* used = used_kind(src);
     if (flat_buffer(src, used)) {
         if ((typed && !fields->format) || d16) fail("a typed buffer access through a runtime address");
+        if (narrow) fail("a byte or 16-bit buffer access through a runtime address");
         const FlatTarget target = flat_buffer_target(inst, *fields, index, after_scalar_offset, 4 * count);
         const V undef = s_.m.undef(s_.t.i32);
         const V align = s_.m.i32(4);
@@ -445,6 +455,7 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
     if (base != 0) off = s_.m.bin(c, Bin::Add, off, s_.m.i32(base));
     if (extra) off = s_.m.bin(c, Bin::Add, off, *extra);
     if (used != nullptr && used->kind.kind == ResourceType::Kind::Cbv && !typed) {
+        if (narrow) fail("a byte or 16-bit constant buffer read");
         const V h = handle(site, src, false, {13, static_cast<std::uint32_t>(0x1'0000)});
         V byte = off;
         if (index) {
@@ -467,6 +478,10 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
                      (used != nullptr && used->kind.kind == ResourceType::Kind::Uav);
     const std::uint32_t u = uav ? 0x1000 : 0;
     const V iu = s_.m.undef(s_.t.i32);
+    if (narrow) {
+        narrow_buffer(inst, *fields, site, src, used, index, off, u, narrow->bits, narrow->sign, store, guard_value);
+        return;
+    }
     if (atomic) {
         const std::uint32_t op = *atomic;
         if (!fields->data) fail("buffer atomic data");
@@ -809,6 +824,74 @@ V Lower::raw_byte_fits(V handle, V byte, std::uint32_t bytes) {
     const V no_wrap = s_.m.cmp(c, pred::kIuge, end, byte);
     const V inside = s_.m.cmp(c, pred::kIule, end, size);
     return s_.m.bin(c, Bin::And, no_wrap, inside);
+}
+
+void Lower::narrow_buffer(const IrInst& inst, const BufferFields& fields, Site site, const Source& src,
+                          const UsedResource* used, std::optional<V> index, V off, std::uint32_t uav_flag,
+                          std::uint32_t bits, bool sign, bool store, std::optional<V> guard_value) {
+    constexpr std::uint32_t kAtomicAnd = 1;
+    constexpr std::uint32_t kAtomicOr = 2;
+    constexpr std::uint32_t kLastByte = 3;
+    constexpr std::uint32_t kBitsPerByte = 8;
+    const std::size_t c = cur_;
+    V byte = off;
+    if (index) {
+        if (used == nullptr || used->stride != 1) fail("a byte or 16-bit buffer access by index");
+        byte = s_.m.bin(c, Bin::Add, *index, off);
+    }
+    if (!fields.data) fail("a buffer result");
+    const auto* data = std::get_if<VectorOperand>(&*fields.data);
+    if (data == nullptr) fail("a buffer result");
+    const V h = handle(site, src, false, {11 | uav_flag, 0});
+    const V k3 = s_.m.i32(kLastByte);
+    const V within = s_.m.bin(c, Bin::And, byte, k3);
+    const V aligned = s_.m.bin(c, Bin::Sub, byte, within);
+    const V shift = s_.m.bin(c, Bin::Shl, within, k3);
+    const V next = s_.m.bin(c, Bin::Add, aligned, s_.m.i32(sizeof(std::uint32_t)));
+    const V ones = s_.m.i32(bits == 8 ? 0xFFu : 0xFFFFu);
+    const V k8 = s_.m.i32(kBitsPerByte);
+    const V straddles = s_.m.cmp(c, pred::kEq, within, k3);
+    if (!store) {
+        const V low = as_int(bounded_raw_words(h, aligned, 1)[0]);
+        V x = s_.m.bin(cur_, Bin::LShr, low, shift);
+        if (bits == 16) {
+            V high = as_int(bounded_raw_words(h, next, 1)[0]);
+            high = s_.m.bin(cur_, Bin::Shl, high, k8);
+            high = s_.m.select(cur_, straddles, high, s_.m.i32(0));
+            x = s_.m.bin(cur_, Bin::Or, x, high);
+        }
+        x = s_.m.bin(cur_, Bin::And, x, ones);
+        if (sign) {
+            const V up = s_.m.i32(32 - bits);
+            x = s_.m.bin(cur_, Bin::Shl, x, up);
+            x = s_.m.bin(cur_, Bin::AShr, x, up);
+        }
+        write(inst, Reg::v(data->reg), x, guard_value);
+        return;
+    }
+    const V value = s_.m.bin(c, Bin::And, vgprs(inst, *fields.data, 1)[0], ones);
+    const V clear = s_.m.bin(c, Bin::Shl, ones, shift);
+    const V keep = s_.m.bin(c, Bin::Xor, clear, s_.m.i32(0xFFFF'FFFFu));
+    const V set = s_.m.bin(c, Bin::Shl, value, shift);
+    const V keep_next = s_.m.i32(0xFFFF'FF00u);
+    const V set_next = s_.m.bin(c, Bin::LShr, value, k8);
+    const V iu = s_.m.undef(s_.t.i32);
+    const Ty i32t = s_.t.i32;
+    const auto change = [&](V at, V keep_bits, V set_bits) {
+        for (const auto& [op, x] : {std::pair{kAtomicAnd, keep_bits}, std::pair{kAtomicOr, set_bits}})
+            s_.op(cur_, "atomicBinOp.i32", Attr::NoUnwind, i32t, 78, {h, s_.m.i32(op), at, iu, iu, x});
+    };
+    const V fits = raw_byte_fits(h, aligned, sizeof(std::uint32_t));
+    const V allowed = guard_value ? s_.m.bin(c, Bin::And, *guard_value, fits) : fits;
+    const auto at = begin_guarded(allowed);
+    change(aligned, keep, set);
+    if (bits == 16) {
+        const V next_fits = raw_byte_fits(h, next, sizeof(std::uint32_t));
+        const auto second = begin_guarded(s_.m.bin(cur_, Bin::And, straddles, next_fits));
+        change(next, keep_next, set_next);
+        end_guarded(second, {});
+    }
+    end_guarded(at, {});
 }
 
 std::vector<V> Lower::bounded_raw_words(V handle, V byte, std::uint32_t count) {
