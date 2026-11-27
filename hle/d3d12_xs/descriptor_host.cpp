@@ -1176,6 +1176,26 @@ void HostHeap::raw_at(std::uint32_t index, Microsoft::WRL::ComPtr<ID3D12Resource
     keep(index, std::move(buffer));
 }
 
+void HostHeap::raw_unordered_at(std::uint32_t index, Microsoft::WRL::ComPtr<ID3D12Resource> buffer,
+                                std::uint64_t offset, std::uint64_t bytes) {
+    host::Host* device = host::host();
+    if (device == nullptr) return;
+    D3D12_UNORDERED_ACCESS_VIEW_DESC desc{};
+    desc.Format = DXGI_FORMAT_R32_TYPELESS;
+    desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+    if (buffer == nullptr || raw_view_elements(bytes) == 0) {
+        desc.Buffer.NumElements = 1;
+        device->device()->CreateUnorderedAccessView(nullptr, nullptr, &desc, cpu(index));
+        keep(index, Microsoft::WRL::ComPtr<ID3D12Resource>());
+        return;
+    }
+    desc.Buffer.FirstElement = offset / kRawElementBytes;
+    desc.Buffer.NumElements = static_cast<UINT>(raw_view_elements(bytes));
+    device->device()->CreateUnorderedAccessView(buffer.Get(), nullptr, &desc, cpu(index));
+    keep(index, std::move(buffer));
+}
+
 std::uint32_t HostHeap::console_slot_bytes() const {
     return sampler_ ? descriptor_words::kSamplerSlotBytes : descriptor_words::kViewSlotBytes;
 }

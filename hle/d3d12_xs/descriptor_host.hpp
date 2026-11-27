@@ -57,6 +57,8 @@ public:
     void constant_at(std::uint32_t index, std::uint64_t gpu, std::uint32_t bytes);
     void raw_at(std::uint32_t index, Microsoft::WRL::ComPtr<ID3D12Resource> buffer, std::uint64_t offset,
                 std::uint64_t bytes);
+    void raw_unordered_at(std::uint32_t index, Microsoft::WRL::ComPtr<ID3D12Resource> buffer, std::uint64_t offset,
+                          std::uint64_t bytes);
     ID3D12Resource* console_words() const { return words_.Get(); }
     std::uint64_t console_words_bytes() const;
     std::uint32_t console_slot_bytes() const;

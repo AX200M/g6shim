@@ -295,6 +295,28 @@ TEST(d3d12_xs_host_descriptor_heap_writes_the_console_words_of_a_mirrored_view) 
     CHECK(slot<std::uint32_t (*)(Object*)>(heap, 0x10)(heap) == 0);
 }
 
+TEST(d3d12_xs_host_registered_buffers_with_copies_are_addressable) {
+    if (test_host() == nullptr) return;
+    constexpr std::size_t kTitleBytes = 4096;
+    constexpr std::uintptr_t kSlot = 0x7201;
+    std::vector<std::uint8_t> title(kTitleBytes, 3);
+    const auto address = reinterpret_cast<std::uint64_t>(title.data());
+    const std::uint64_t before = shadow::buffers_generation();
+    shadow::register_buffer(kSlot, address, title.size());
+    const std::uint64_t registered = shadow::buffers_generation();
+    CHECK(registered != before);
+    const auto copy = shadow::find(address, title.size());
+    CHECK(copy.has_value());
+    CHECK(shadow::buffers_generation() != registered);
+    const auto all = shadow::addressable();
+    CHECK(std::any_of(all.begin(), all.end(), [&](const auto& shadow) { return shadow->start() == address; }));
+    const std::uint64_t copied = shadow::buffers_generation();
+    shadow::unregister_buffer(kSlot, address);
+    CHECK(shadow::buffers_generation() != copied);
+    const auto left = shadow::addressable();
+    CHECK(std::none_of(left.begin(), left.end(), [&](const auto& shadow) { return shadow->start() == address; }));
+}
+
 TEST(d3d12_xs_host_old_descriptor_reaches_the_current_window_after_eviction) {
     host::Host* gpu = test_host();
     if (gpu == nullptr) return;

@@ -390,6 +390,56 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
     if (descriptor == descriptors_.end()) fail("an untracked buffer");
     const Source& src = *descriptor->second;
     const UsedResource* used = used_kind(src);
+    if (flat_buffer(src, used)) {
+        if ((typed && !fields->format) || d16) fail("a typed buffer access through a runtime address");
+        const FlatTarget target = flat_buffer_target(inst, *fields, index, after_scalar_offset, 4 * count);
+        const V undef = s_.m.undef(s_.t.i32);
+        const V align = s_.m.i32(4);
+        if (!fields->data) fail("a buffer result");
+        const auto* data = std::get_if<VectorOperand>(&*fields->data);
+        if (data == nullptr) fail("a buffer result");
+        if (atomic) {
+            const bool exchange = *atomic == UINT32_MAX;
+            const std::vector<V> vals = vgprs(inst, *fields->data, exchange ? 2 : 1);
+            bool returns = false;
+            if (const auto* cache_fields = std::get_if<BufferFields>(&inst.fields)) returns = cache_fields->cache.glc;
+            V old = s_.m.i32(0);
+            if (returns) {
+                if (const std::optional<Value> read = inst.read(Reg::v(data->reg))) old = i32_of(*read);
+            }
+            const auto at = begin_guarded(guard_value);
+            V r;
+            if (exchange) {
+                r = s_.op(cur_, "atomicCompareExchange.i32", Attr::NoUnwind, s_.t.i32, 79,
+                          {target.handle, target.byte, undef, undef, vals[1], vals[0]});
+            } else {
+                r = s_.op(cur_, "atomicBinOp.i32", Attr::NoUnwind, s_.t.i32, 78,
+                          {target.handle, s_.m.i32(*atomic), target.byte, undef, undef, vals[0]});
+            }
+            const V result = end_guarded(at, {{r, old}})[0];
+            if (returns) write(inst, Reg::v(data->reg), result, std::nullopt);
+            return;
+        }
+        if (store) {
+            const std::vector<V> vals = vgprs(inst, *fields->data, static_cast<std::uint8_t>(count));
+            std::vector<V> args{target.handle, target.byte, undef};
+            args.insert(args.end(), vals.begin(), vals.end());
+            args.resize(3 + 4, undef);
+            args.push_back(s_.m.i8(static_cast<std::uint8_t>((1u << count) - 1u)));
+            args.push_back(align);
+            const auto at = begin_guarded(guard_value);
+            s_.op(cur_, "rawBufferStore.i32", Attr::NoUnwind, s_.t.void_type, 140, args);
+            end_guarded(at, {});
+            return;
+        }
+        const std::vector<V> loaded = fields->format ? format_load(target.handle, target.byte, *fields->format, count)
+                                                     : bounded_raw_words(target.handle, target.byte, count);
+        for (std::size_t k = 0; k < loaded.size(); ++k) {
+            const V x = fields->format ? loaded[k] : as_int(loaded[k]);
+            write(inst, Reg::v(static_cast<std::uint8_t>(data->reg + k)), x, guard_value);
+        }
+        return;
+    }
     const auto [base, extra] = built_offset(src);
     if (base != 0) off = s_.m.bin(c, Bin::Add, off, s_.m.i32(base));
     if (extra) off = s_.m.bin(c, Bin::Add, off, *extra);

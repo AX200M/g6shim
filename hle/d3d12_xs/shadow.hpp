@@ -93,6 +93,8 @@ struct HostRange {
 void register_buffer(std::uintptr_t resource, std::uint64_t start, std::uint64_t bytes);
 void unregister_buffer(std::uintptr_t resource, std::uint64_t start);
 std::optional<std::shared_ptr<Shadow>> find(std::uint64_t address, std::uint64_t bytes);
+std::uint64_t buffers_generation();
+std::vector<std::shared_ptr<Shadow>> addressable();
 std::string nearest(std::uint64_t va);
 void collect_host_ranges(std::vector<HostRange>& out);
 void submission_completed();

@@ -523,6 +523,7 @@ private:
     const char* why_no_base(std::optional<Value> dynamic) const {
         if (!dynamic) return "a constant address";
         const Value v = *dynamic;
+        if (param_of(v)) return "an address held inside a root parameter";
         if (v.index < inputs_.size() && inputs_[v.index]) return "an address in an SGPR that is no root parameter";
         for (Value leaf : leaves(v)) {
             const auto inst = def(leaf);
@@ -1532,6 +1533,12 @@ Source Source::lane_phi(std::size_t block, std::vector<std::optional<Source>> op
     return source;
 }
 
+Source Source::flat() {
+    Source source;
+    source.kind = Kind::Flat;
+    return source;
+}
+
 std::vector<const Source*> Source::leaves() const {
     if (kind == Kind::Phi || kind == Kind::Select || kind == Kind::Lanes) {
         std::vector<const Source*> out;
@@ -1555,6 +1562,11 @@ bool operator==(const Source& a, const Source& b) {
            a.key == b.key && a.args == b.args && a.options == b.options;
 }
 
+static bool runtime_address(const TraceError& error) {
+    constexpr std::string_view kUndefinedBase = "an address in an SGPR that is no root parameter";
+    return std::string_view(error.what) != kUndefinedBase;
+}
+
 static Resources track_resources(const Program& program, const std::vector<RootParam>& layout, HwStage stage,
                                  const Structured* lanes, std::span<const Site> ring_address_loads,
                                  const ComputeIo* compute) {
@@ -1575,8 +1587,15 @@ static Resources track_resources(const Program& program, const std::vector<RootP
             const std::string_view name = inst.name();
             std::vector<Value> first_lane;
             std::vector<std::pair<Value, Site>> offset;
-            const auto descriptor = [&](const Operand& op, Role role) {
-                const Source source = tracer.descriptor(inst, op, b);
+            const auto descriptor = [&](const Operand& op, Role role, bool flat_ok = false) {
+                Source source;
+                try {
+                    source = tracer.descriptor(inst, op, b);
+                } catch (const TraceError& error) {
+                    if (!flat_ok || !runtime_address(error)) throw;
+                    out.descriptors.push_back(Descriptor{site, role, Source::flat()});
+                    return;
+                }
                 const auto words = tracer.first_lane_words(inst, op);
                 if (words) first_lane.insert(first_lane.end(), words->begin(), words->end());
                 if (source.kind == Source::Kind::Loaded) {
@@ -1597,7 +1616,7 @@ static Resources track_resources(const Program& program, const std::vector<RootP
                     descriptor(image->rsrc, Role::Resource);
                     if (image->sampler) descriptor(*image->sampler, Role::Sampler);
                 } else if (const auto* buffer = std::get_if<BufferFields>(&inst.fields)) {
-                    descriptor(buffer->rsrc, Role::Resource);
+                    descriptor(buffer->rsrc, Role::Resource, true);
                 } else if (const auto* smem = std::get_if<SmemFields>(&inst.fields)) {
                     if (name.starts_with("s_buffer_")) {
                         descriptor(smem->base, Role::Resource);
@@ -1608,14 +1627,25 @@ static Resources track_resources(const Program& program, const std::vector<RootP
                         if (stage == HwStage::Gs && name == "s_load_dword" &&
                             std::binary_search(ring_address_loads.begin(), ring_address_loads.end(), site))
                             continue;
-                        out.scalar.emplace_back(
-                            site, tracer.smem_address(inst, smem->base, smem->offset, smem->soffset));
+                        Address address{kFlat, 0, std::nullopt};
+                        try {
+                            address = tracer.smem_address(inst, smem->base, smem->offset, smem->soffset);
+                        } catch (const TraceError& error) {
+                            if (name.find("_store_") != std::string_view::npos || !runtime_address(error)) throw;
+                        }
+                        out.scalar.emplace_back(site, address);
                     }
                 } else if (const auto* flat = std::get_if<FlatFields>(&inst.fields)) {
-                    if (name.starts_with("global_"))
-                        out.scalar.emplace_back(site, tracer.flat_address(inst, flat->addr ? &*flat->addr : nullptr,
-                                                                          flat->saddr ? &*flat->saddr : nullptr,
-                                                                          flat->offset));
+                    if (name.starts_with("global_")) {
+                        Address address{kFlat, 0, std::nullopt};
+                        try {
+                            address = tracer.flat_address(inst, flat->addr ? &*flat->addr : nullptr,
+                                                          flat->saddr ? &*flat->saddr : nullptr, flat->offset);
+                        } catch (const TraceError& error) {
+                            if (!runtime_address(error)) throw;
+                        }
+                        out.scalar.emplace_back(site, address);
+                    }
                 }
             } catch (const TraceError& error) {
                 detail::fail_unsupported(inst.machine.offset, error.what);

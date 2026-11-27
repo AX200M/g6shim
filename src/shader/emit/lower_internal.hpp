@@ -93,6 +93,13 @@ std::optional<std::pair<std::uint8_t, std::uint8_t>> packed_half(
     const std::vector<SigElement>& elements, std::uint8_t a, std::optional<std::uint8_t> b,
     std::uint8_t h);
 
+inline constexpr std::uint32_t kCodeAddressTag = 0xFFFF;
+
+struct FlatTarget {
+    V handle;
+    V byte;
+};
+
 std::map<std::uint8_t, std::pair<bool, std::optional<std::uint8_t>>> half_outputs(
     const StageIo& io, const std::vector<SigElement>& outputs);
 
@@ -123,6 +130,16 @@ private:
 
     V code_dword(V byte);
     void flat(const IrInst& inst, std::size_t b, std::size_t i);
+    std::vector<V> flat_table_load(V byte, std::uint32_t count);
+    V at_or_below(V a_low, V a_high, V b_low, V b_high);
+    std::pair<V, V> add_address(V low, V high, V bytes);
+    FlatTarget flat_lookup(V low, V high, std::optional<V> in_range);
+    FlatTarget flat_buffer_target(const IrInst& inst, const BufferFields& fields, std::optional<V> index, V off,
+                                  std::uint32_t bytes);
+    void flat_smem(const IrInst& inst);
+    bool reads_program_counter() const;
+    void flat_global(const IrInst& inst, std::size_t b, std::size_t i);
+    bool flat_buffer(const Source& src, const UsedResource* used) const;
     bool joins_data(const IrBlock& block, const Phi& phi) const;
     void find_sections();
     void section_inst(std::size_t b, std::size_t i, std::size_t start);

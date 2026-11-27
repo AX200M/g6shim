@@ -89,6 +89,11 @@ struct UserData {
 
 inline constexpr std::uint8_t kViewWords = 1;
 inline constexpr std::uint8_t kSamplerWords = 2;
+inline constexpr std::uint8_t kFlatTable = 4;
+inline constexpr std::uint32_t kFlatHeaderBytes = 16;
+inline constexpr std::uint32_t kFlatEntryBytes = 16;
+inline constexpr std::uint32_t kFlatSearchSteps = 16;
+inline constexpr std::uint32_t kFlatMaxEntries = 1u << kFlatSearchSteps;
 
 struct ImageHeapData {
     static constexpr std::uint32_t kWidthLow = 0;

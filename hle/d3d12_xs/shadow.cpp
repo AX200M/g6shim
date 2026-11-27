@@ -72,6 +72,7 @@ std::map<std::pair<std::uint64_t, std::uint64_t>, std::shared_ptr<Shadow>> g_loo
 std::unordered_set<ID3D12Resource*> g_loose_buffers;
 std::atomic<std::uint64_t> g_submission{0};
 std::atomic<std::uint64_t> g_generation{0};
+std::atomic<std::uint64_t> g_buffers_generation{1};
 std::atomic<std::uint64_t> g_evicted{0};
 std::atomic<std::uint64_t> g_loose_budget{kLooseBudgetBytes};
 
@@ -443,6 +444,7 @@ std::size_t Shadow::copy_range(std::size_t from, std::size_t to) {
 void register_buffer(std::uintptr_t resource, std::uint64_t start, std::uint64_t bytes) {
     std::lock_guard<std::mutex> lock(g_buffers_mutex);
     g_buffers.insert_or_assign(BufferKey{start, resource}, Entry{start + bytes, nullptr});
+    g_buffers_generation.fetch_add(1, std::memory_order_relaxed);
 }
 
 void unregister_buffer(std::uintptr_t resource, std::uint64_t start) {
@@ -453,6 +455,7 @@ void unregister_buffer(std::uintptr_t resource, std::uint64_t start) {
         if (found == g_buffers.end()) return;
         dropped = std::move(found->second.shadow);
         g_buffers.erase(found);
+        g_buffers_generation.fetch_add(1, std::memory_order_relaxed);
     }
     if (dropped) host::retire(std::move(dropped));
 }
@@ -496,9 +499,20 @@ std::optional<std::shared_ptr<Shadow>> find(std::uint64_t address, std::uint64_t
                                 static_cast<unsigned long long>(key.first), static_cast<unsigned long long>(len));
                 entry.shadow = std::make_shared<Shadow>(std::move(buffer->first), buffer->second, gpu, key.first, len);
             }
+            g_buffers_generation.fetch_add(1, std::memory_order_relaxed);
         }
         return entry.shadow;
     }
+}
+
+std::uint64_t buffers_generation() { return g_buffers_generation.load(std::memory_order_relaxed); }
+
+std::vector<std::shared_ptr<Shadow>> addressable() {
+    std::vector<std::shared_ptr<Shadow>> shadows;
+    std::lock_guard<std::mutex> lock(g_buffers_mutex);
+    for (const auto& [key, entry] : g_buffers)
+        if (entry.shadow) shadows.push_back(entry.shadow);
+    return shadows;
 }
 
 std::string nearest(std::uint64_t va) {

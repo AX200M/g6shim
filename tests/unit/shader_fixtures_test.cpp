@@ -75,6 +75,8 @@ constexpr std::string_view kImageGather4LodBorder = "image_gather4_lod_border";
 constexpr std::string_view kHeapPointerAsAddress = "heap_pointer_as_address";
 constexpr std::string_view kSpilledRootJoin = "spilled_root_join";
 constexpr std::string_view kDescriptorRegisterReuse = "descriptor_register_reuse";
+constexpr std::string_view kFlatAddressStore = "flat_address_store";
+constexpr std::string_view kCodeTableLane = "code_table_lane";
 
 const Fixture* find_fixture(std::string_view name) {
     const auto found = std::find_if(std::begin(kFixtures), std::end(kFixtures),
@@ -465,7 +467,8 @@ TEST(shader_fixtures_translate_and_validate) {
             fixture.name == kSamplerLodData || fixture.name == kSpilledComputeRoot ||
             fixture.name == kImageGather4Lod || fixture.name == kImageGather4LodBorder ||
             fixture.name == kHeapPointerAsAddress || fixture.name == kHeapScalarLoad ||
-            fixture.name == kSpilledRootJoin || fixture.name == kDescriptorRegisterReuse)
+            fixture.name == kSpilledRootJoin || fixture.name == kDescriptorRegisterReuse ||
+            fixture.name == kFlatAddressStore || fixture.name == kCodeTableLane)
             continue;
         bool translated = true;
         Lowered lowered;
@@ -1487,6 +1490,9 @@ namespace {
 
 using Microsoft::WRL::ComPtr;
 
+constexpr std::uint64_t kFlatBase = 0x1'0000'0000ull;
+constexpr std::uint32_t kFlatWords = 16;
+constexpr std::uint32_t kFlatFirstValue = 100;
 constexpr std::uint32_t kUnrun = 0xDEADu;
 constexpr std::uint32_t kSpaceTwoSlot = 0;
 constexpr std::uint32_t kNullSlot = 1;
@@ -1661,6 +1667,28 @@ std::vector<std::uint32_t> run_space_two(const Lowered& lowered, const SpaceTwoR
     return result;
 }
 
+std::array<std::uint32_t, kFlatWords> run_flat_address_store(const Lowered& lowered, std::uint64_t address) {
+    SpaceTwoRun run;
+    run.memory.resize(kFlatWords);
+    for (std::uint32_t k = 0; k < kFlatWords; ++k) run.memory[k] = kFlatFirstValue + k;
+    const auto bytes = static_cast<std::uint32_t>(kFlatWords * sizeof(std::uint32_t));
+    run.table = {1, kNullSlot, 0, 0, static_cast<std::uint32_t>(kFlatBase), static_cast<std::uint32_t>(kFlatBase >> 32),
+                 bytes, kMemorySlot};
+    run.table_register = kFlatTableRegister;
+    run.root_words = {static_cast<std::uint32_t>(address), static_cast<std::uint32_t>(address >> 32)};
+    const std::vector<std::uint32_t> after = run_space_two(lowered, run);
+    std::array<std::uint32_t, kFlatWords> result{};
+    std::copy(after.begin(), after.end(), result.begin());
+    return result;
+}
+
+std::array<std::uint32_t, kFlatWords> flat_expected(std::optional<std::uint32_t> stored_word) {
+    std::array<std::uint32_t, kFlatWords> values{};
+    for (std::uint32_t k = 0; k < kFlatWords; ++k) values[k] = kFlatFirstValue + k;
+    if (stored_word) values[*stored_word] = values[*stored_word - 1] + 5;
+    return values;
+}
+
 }  // namespace
 
 TEST(shader_fixtures_read_a_descriptor_word_from_the_console_words) {
@@ -1692,4 +1720,51 @@ TEST(shader_fixtures_read_a_descriptor_word_from_the_console_words) {
         return;
     }
     CHECK(after[0] == kFormat);
+}
+
+TEST(shader_fixtures_load_and_store_through_runtime_title_addresses) {
+    const Fixture* fixture = find_fixture(kFlatAddressStore);
+    CHECK(fixture != nullptr);
+    if (fixture == nullptr) return;
+    constexpr std::uint8_t kFlatConstantsSlot = 0;
+    constexpr std::uint32_t kFlatUserSgprs = 4;
+    Lowered lowered;
+    try {
+        lowered = lower_compute(fixture->words, kFixtureVgprs,
+                                {root_param(RootType::Kind::Constants, 0, kFlatConstantsSlot)}, {},
+                                kFlatUserSgprs << kUserSgprShift, {1, 1, 1});
+    } catch (const std::exception& error) {
+        std::printf("fixture %s did not translate: %s\n", fixture->name, error.what());
+        CHECK(false);
+        return;
+    }
+    CHECK((lowered.descriptor_words & kFlatTable) != 0);
+    check_dxil(lowered.dxil, fixture->name);
+    if (!load_validator()) return;
+    const auto hit = run_flat_address_store(lowered, kFlatBase);
+    if (hit[0] == kUnrun) {
+        std::printf("skipped: no D3D12 device for runtime title addresses\n");
+        return;
+    }
+    CHECK(hit == flat_expected(1));
+    CHECK(run_flat_address_store(lowered, kFlatBase + 8) == flat_expected(3));
+    CHECK(run_flat_address_store(lowered, kFlatBase + 4 * (kFlatWords - 1)) == flat_expected(std::nullopt));
+    CHECK(run_flat_address_store(lowered, 0x5000) == flat_expected(std::nullopt));
+    auto missed_load = flat_expected(std::nullopt);
+    missed_load[0] = 5;
+    CHECK(run_flat_address_store(lowered, kFlatBase - 4) == missed_load);
+}
+
+TEST(shader_fixtures_read_a_code_table_through_a_per_lane_program_counter_address) {
+    const Fixture* fixture = find_fixture(kCodeTableLane);
+    CHECK(fixture != nullptr);
+    if (fixture == nullptr) return;
+    try {
+        const Lowered lowered = lower_fixture(*fixture, {used_uav(kTableUserData, kTableSlot)});
+        CHECK((lowered.descriptor_words & kFlatTable) != 0);
+        check_dxil(lowered.dxil, fixture->name);
+    } catch (const std::exception& error) {
+        std::printf("fixture %s did not translate: %s\n", fixture->name, error.what());
+        CHECK(false);
+    }
 }

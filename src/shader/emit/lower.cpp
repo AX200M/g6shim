@@ -439,7 +439,7 @@ V Lower::code_dword(V byte) {
                 first = std::min(first.value_or(offset), offset);
             }
         }
-        if (!first) fail("a code table");
+        if (!first) first = 0;
         const std::vector<std::uint8_t>& code = x_->native->code;
         if (*first > code.size()) fail("a code table past the code");
         std::vector<std::uint32_t> words;
@@ -479,6 +479,10 @@ void Lower::flat(const IrInst& inst, std::size_t b, std::size_t i) {
     const auto* fields = std::get_if<FlatFields>(&inst.fields);
     if (fields == nullptr) std::abort();
     const std::string_view name = inst.name();
+    if (const auto flat_at = scalar_.find(Site{b, i}); flat_at != scalar_.end() && flat_at->second.param == kFlat) {
+        flat_global(inst, b, i);
+        return;
+    }
     std::optional<std::string_view> rest = std::nullopt;
     if (name.starts_with("global_load_")) rest = name.substr(12);
     if (!rest) fail("a global memory write");
@@ -761,7 +765,9 @@ Lowered Lower::run() {
     out.root_srvs.reserve(s_.root_srvs.size());
     for (const auto& entry : s_.root_srvs) out.root_srvs.push_back(entry.first);
     for (const auto& entry : s_.words_srvs)
-        out.descriptor_words |= entry.first == kSamplerWordsRegister ? kSamplerWords : kViewWords;
+        out.descriptor_words |= entry.first == kSamplerWordsRegister ? kSamplerWords
+                                : entry.first == kFlatTableRegister  ? kFlatTable
+                                                                     : kViewWords;
     out.user_data = user_reads();
     out.samplers = samplers_;
     out.nonuniform_handles = s_.nonuniform_handles;

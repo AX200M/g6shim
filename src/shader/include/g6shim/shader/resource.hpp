@@ -29,6 +29,7 @@ struct SiteHash {
 };
 
 inline constexpr std::size_t kCode = static_cast<std::size_t>(-1);
+inline constexpr std::size_t kFlat = static_cast<std::size_t>(-2);
 
 struct Address {
     std::size_t param = 0;
@@ -48,6 +49,7 @@ struct Source {
         Fetched,
         Lanes,
         LanePhi,
+        Flat,
     };
 
     Kind kind = Kind::Constant;
@@ -70,6 +72,7 @@ struct Source {
     static Source fetched(Site load, std::uint8_t first);
     static Source lanes(Value mask, std::vector<Source> args);
     static Source lane_phi(std::size_t block, std::vector<std::optional<Source>> options);
+    static Source flat();
 
     std::vector<const Source*> leaves() const;
 };

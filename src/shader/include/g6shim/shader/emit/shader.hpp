@@ -21,6 +21,7 @@ inline constexpr std::uint32_t kRootCbvSpace = 1;
 inline constexpr std::uint32_t kDescriptorWordsSpace = 2;
 inline constexpr std::uint8_t kViewWordsRegister = 0;
 inline constexpr std::uint8_t kSamplerWordsRegister = 1;
+inline constexpr std::uint8_t kFlatTableRegister = 2;
 
 namespace feature {
 
@@ -79,6 +80,7 @@ struct Shader {
          const std::vector<V>& args);
     V user_data_handle();
     V descriptor_words_handle(bool sampler);
+    V flat_table_handle();
     V root_cbv_handle(std::uint8_t slot);
     V root_srv_handle(std::uint8_t slot);
     V sampler_handle(std::size_t block, std::uint32_t n);

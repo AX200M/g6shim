@@ -3,6 +3,7 @@
 #include "draw.hpp"
 
 #include "descriptor_host.hpp"
+#include "frame.hpp"
 #include "host.hpp"
 #include "indirect.hpp"
 #include "later.hpp"
@@ -21,6 +22,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -229,6 +231,108 @@ void readable(host::HostList& list, const g6shim::shader::UsedResource& used, co
         host::ensure_state(list, object, kUnorderedAccess);
         texture::note_depth_uav(list, object, unordered->desc ? unordered->desc->data() : nullptr);
     }
+}
+
+struct FlatTable {
+    FlatTable() = default;
+    FlatTable(const FlatTable&) = delete;
+    FlatTable& operator=(const FlatTable&) = delete;
+    ~FlatTable() {
+        if (count != 0) later::descriptor_release_dynamic(heap, first, count);
+    }
+
+    std::uint64_t generation = 0;
+    std::uint64_t frame = 0;
+    Object* heap = nullptr;
+    std::uint32_t first = 0;
+    std::uint32_t count = 0;
+    Microsoft::WRL::ComPtr<ID3D12Resource> table;
+    std::vector<std::shared_ptr<shadow::Shadow>> shadows;
+};
+
+using g6shim::shader::emit::kFlatEntryBytes;
+using g6shim::shader::emit::kFlatHeaderBytes;
+using g6shim::shader::emit::kFlatMaxEntries;
+constexpr std::uint64_t kFlatPieceBytes = descriptor_host::kMaxRawViewElements * sizeof(std::uint32_t);
+constexpr std::uint32_t kFlatTableSlot = 0;
+constexpr std::uint32_t kFlatNullSlot = 1;
+constexpr std::uint32_t kFlatFirstPieceSlot = 2;
+
+std::mutex g_flat_mutex;
+std::map<descriptor_host::HostHeap*, std::shared_ptr<FlatTable>> g_flat_tables;
+
+std::shared_ptr<FlatTable> make_flat_table(Object* heap_object, descriptor_host::HostHeap* host_heap,
+                                           std::uint64_t generation) {
+    host::Host* gpu = host::host();
+    if (gpu == nullptr) return nullptr;
+    auto made = std::make_shared<FlatTable>();
+    made->generation = generation;
+    made->heap = heap_object;
+    made->shadows = shadow::addressable();
+    struct Piece {
+        std::uint64_t base = 0;
+        std::uint64_t bytes = 0;
+        ID3D12Resource* buffer = nullptr;
+        std::uint64_t offset = 0;
+    };
+    std::vector<Piece> pieces;
+    std::uint64_t covered = 0;
+    for (const auto& copy : made->shadows) {
+        ID3D12Resource* buffer = copy->buffer();
+        if (buffer == nullptr ||
+            (static_cast<std::uint32_t>(buffer->GetDesc().Flags) & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0)
+            continue;
+        const std::uint64_t base = copy->start();
+        if (base < covered) continue;
+        const std::uint64_t total = copy->bytes();
+        for (std::uint64_t at = 0; at < total && pieces.size() < kFlatMaxEntries; at += kFlatPieceBytes)
+            pieces.push_back(Piece{base + at, std::min(kFlatPieceBytes, total - at), buffer, copy->offset(base) + at});
+        covered = base + total;
+    }
+    made->count = static_cast<std::uint32_t>(pieces.size()) + kFlatFirstPieceSlot;
+    const auto first = host_heap->dynamic(made->count);
+    if (!first) {
+        made->count = 0;
+        return nullptr;
+    }
+    made->first = *first;
+    const std::uint64_t bytes = kFlatHeaderBytes + std::uint64_t{kFlatEntryBytes} * pieces.size();
+    auto upload = gpu->upload_buffer(bytes);
+    if (!upload) {
+        host_heap->release(made->first, made->count);
+        made->count = 0;
+        return nullptr;
+    }
+    host::name(upload->first.Get(), "runtime address table");
+    made->table = upload->first;
+    std::vector<std::uint32_t> words(bytes / sizeof(std::uint32_t), 0);
+    words[0] = static_cast<std::uint32_t>(pieces.size());
+    words[1] = made->first + kFlatNullSlot;
+    for (std::size_t k = 0; k < pieces.size(); ++k) {
+        const std::size_t at = (kFlatHeaderBytes + kFlatEntryBytes * k) / sizeof(std::uint32_t);
+        words[at] = static_cast<std::uint32_t>(pieces[k].base);
+        words[at + 1] = static_cast<std::uint32_t>(pieces[k].base >> 32);
+        words[at + 2] = static_cast<std::uint32_t>(pieces[k].bytes);
+        words[at + 3] = made->first + kFlatFirstPieceSlot + static_cast<std::uint32_t>(k);
+    }
+    std::memcpy(upload->second, words.data(), static_cast<std::size_t>(bytes));
+    host_heap->raw_at(made->first + kFlatTableSlot, made->table, 0, bytes);
+    host_heap->raw_unordered_at(made->first + kFlatNullSlot, nullptr, 0, 0);
+    for (std::size_t k = 0; k < pieces.size(); ++k)
+        host_heap->raw_unordered_at(made->first + kFlatFirstPieceSlot + static_cast<std::uint32_t>(k),
+                                    Microsoft::WRL::ComPtr<ID3D12Resource>(pieces[k].buffer), pieces[k].offset,
+                                    pieces[k].bytes);
+    return made;
+}
+
+std::vector<std::pair<std::shared_ptr<shadow::Shadow>, std::uint64_t>> copied_root_views(std::span<const Root> roots) {
+    std::vector<std::pair<std::shared_ptr<shadow::Shadow>, std::uint64_t>> views;
+    for (const Root& root : roots) {
+        if (root.kind != Root::Kind::kView) continue;
+        auto found = shadow::find(root.value, 1);
+        if (found && !shadow::live_loose((*found)->buffer())) views.emplace_back(std::move(*found), root.value);
+    }
+    return views;
 }
 
 }  // namespace
@@ -449,6 +553,47 @@ std::optional<D3D12_GPU_DESCRIPTOR_HANDLE> State::words_table(host::HostList& li
         host_heap->raw_at(slot, Microsoft::WRL::ComPtr<ID3D12Resource>(words), 0, source->console_words_bytes());
     }
     return D3D12_GPU_DESCRIPTOR_HANDLE{host_heap->gpu_start() + static_cast<std::uint64_t>(slot) * host_heap->step()};
+}
+
+std::optional<D3D12_GPU_DESCRIPTOR_HANDLE> State::flat_table(host::HostList& list, bool compute) {
+    const auto views = copied_root_views(roots(compute));
+    const auto heaps = view_heap();
+    if (!heaps) return std::nullopt;
+    auto [heap_object, host_heap] = *heaps;
+    const std::uint64_t generation = shadow::buffers_generation();
+    std::shared_ptr<FlatTable> current;
+    {
+        std::lock_guard<std::mutex> lock(g_flat_mutex);
+        std::shared_ptr<FlatTable>& held = g_flat_tables[host_heap];
+        const std::uint64_t now = frame::current_frame();
+        const bool stale = held && held->generation != generation && held->frame != now;
+        if (!held || stale || held->heap != heap_object) {
+            auto made = make_flat_table(heap_object, host_heap, generation);
+            if (!made) {
+                static std::once_flag once;
+                std::call_once(once, [] {
+                    G6SHIM_WARN("d3d12_xs: no table of title memory for runtime addresses; the draw is dropped");
+                });
+                return std::nullopt;
+            }
+            made->frame = now;
+            host::retire(std::move(held));
+            held = std::move(made);
+            static std::once_flag logged;
+            const std::size_t copies = held->shadows.size();
+            std::call_once(logged, [copies] {
+                G6SHIM_INFO("d3d12_xs: runtime addresses resolved through %zu title buffers", copies);
+            });
+        }
+        current = held;
+    }
+    list.keep(current->table.Get());
+    if (list.first_refresh(current.get(), current->generation)) {
+        for (const auto& copy : current->shadows) copy->refresh(list, copy->start(), copy->bytes());
+    }
+    for (const auto& [copy, address] : views) copy->gpu_writes(list, address, copy->left(address));
+    return D3D12_GPU_DESCRIPTOR_HANDLE{host_heap->gpu_start() +
+                                       static_cast<std::uint64_t>(current->first) * host_heap->step()};
 }
 
 const descriptor::Heap* State::heap_of(std::uint64_t handle) const {
@@ -683,7 +828,9 @@ bool State::bind(host::HostList& list, const pipeline_host::HostPipeline& pipeli
                 commands->SetGraphicsRoot32BitConstants(parameter, dwords, values.data(), 0);
         }
         for (const auto& [bit, parameter] : stage.descriptor_words) {
-            const auto table = words_table(list, bit == g6shim::shader::emit::kSamplerWords);
+            const auto table = bit == g6shim::shader::emit::kFlatTable
+                                   ? flat_table(list, compute)
+                                   : words_table(list, bit == g6shim::shader::emit::kSamplerWords);
             if (!table) return false;
             if (compute)
                 commands->SetComputeRootDescriptorTable(parameter, *table);

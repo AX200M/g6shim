@@ -394,6 +394,21 @@ If the signal, the completion event or the wait fails, or the device has been re
 | shaders | a descriptor loaded through a table or heap whose word is read as data, and that no root constant explains, reads that word from these buffers: raw views in register space 2, register 0 for views and 1 for samplers, each a descriptor table of one slot in the bound view heap |
 | reused register | a word joined at a phi with data, which the translator cannot express, joins as 0 |
 
+## Runtime title addresses
+
+A shader that loads, stores or builds a buffer descriptor from an address it computes at run time (read from memory, built from root constants, joined at a phi), or that writes through a root descriptor, reaches title memory through a table of the title buffers that have host copies.
+
+| Piece | Meaning |
+|---|---|
+| table | raw view, register 2 of space 2: a 16-byte header (entry count, heap index of a null view) and 16-byte entries (base low, base high, bytes, heap index) sorted by base |
+| entries | one per registered title buffer with a host copy (the first of overlapping buffers wins), split into 512 MiB pieces (the most a raw view holds); at most 65,536 |
+| slots | one dynamic run in the bound view heap per table: the table, a null raw unordered view, then one raw unordered view per piece |
+| copies | refreshed from title memory where the title wrote, the first time a table is bound in a command list; shader writes are copied back to title memory only from each root view's address to the end of its host copy, for root views that are not loose windows |
+| rebuilt | when a title buffer is registered or released or gets a host copy, at most once per frame per heap; the replaced table is retired after the submissions in flight |
+| lookup | a 16-step binary search in the shader; an address outside every entry, or outside a buffer descriptor's records, reads 0 and drops writes |
+| program counter | `s_getpc_b64` gives the code offset of the next instruction with a high word of `0xFFFF`, which no title address has; a scalar load through such an address reads the program's own code and data |
+| not resolved | addresses in hardware SGPRs that hold no root parameter: their value is undefined, so those shaders still fail to translate |
+
 ## Title memory copies
 
 | Piece | Bytes |

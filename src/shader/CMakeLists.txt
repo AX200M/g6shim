@@ -8,6 +8,7 @@ add_library(g6shim_shader STATIC
   emit/emit.cpp
   emit/lower.cpp
   emit/lower_export.cpp
+  emit/lower_flat.cpp
   emit/lower_image.cpp
   emit/lower_memory.cpp
   emit/lower_salu.cpp

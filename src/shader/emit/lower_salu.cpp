@@ -107,6 +107,12 @@ void Lower::sop(const IrInst& inst) {
         if (reg == nullptr) return std::nullopt;
         return inst.read(Reg::s(reg->code));
     };
+    if (name == "s_getpc_b64" && dst_code) {
+        constexpr std::uint32_t kInstructionBytes = 4;
+        set(lo, Val::i32(s_.m.i32(static_cast<std::uint32_t>(inst.machine.offset) + kInstructionBytes)));
+        set(inst.write(Reg::s(static_cast<std::uint8_t>(*dst_code + 1))), Val::i32(s_.m.i32(kCodeAddressTag)));
+        return;
+    }
     if (name == "s_mov_b32" && lo && src.size() == 1) {
         const auto value = scalar_value(src[0]);
         if (value && heap_pointer(*value)) {
@@ -591,6 +597,10 @@ void Lower::smem(const IrInst& inst, Site site) {
     const auto tracked = scalar_.find(site);
     if (tracked != scalar_.end() && tracked->second.param == kCode) {
         code_smem(inst, tracked->second);
+        return;
+    }
+    if (tracked != scalar_.end() && tracked->second.param == kFlat) {
+        flat_smem(inst);
         return;
     }
     std::string_view rest;

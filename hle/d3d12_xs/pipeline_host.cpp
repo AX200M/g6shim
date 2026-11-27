@@ -414,15 +414,17 @@ std::optional<HostPipeline> HostPipeline::make(const std::vector<std::shared_ptr
             parameter.ShaderVisibility = visibility;
             parameters.push_back(parameter);
         }
+        using g6shim::shader::emit::kFlatTable;
         using g6shim::shader::emit::kSamplerWords;
         using g6shim::shader::emit::kViewWords;
-        for (const std::uint8_t bit : {kViewWords, kSamplerWords}) {
+        for (const std::uint8_t bit : {kViewWords, kSamplerWords, kFlatTable}) {
             if ((host_shader.descriptor_words & bit) == 0) continue;
             stage.descriptor_words.emplace_back(bit, static_cast<std::uint32_t>(parameters.size()));
             D3D12_DESCRIPTOR_RANGE1& range = ranges.emplace_back();
             range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
             range.NumDescriptors = 1;
             range.BaseShaderRegister = bit == kSamplerWords ? g6shim::shader::emit::kSamplerWordsRegister
+                                       : bit == kFlatTable  ? g6shim::shader::emit::kFlatTableRegister
                                                             : g6shim::shader::emit::kViewWordsRegister;
             range.RegisterSpace = g6shim::shader::emit::kDescriptorWordsSpace;
             range.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE | D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE;

@@ -148,6 +148,8 @@ V Shader::root_srv_handle(std::uint8_t slot) {
     return handle;
 }
 
+V Shader::flat_table_handle() { return words_handle(kFlatTableRegister); }
+
 V Shader::descriptor_words_handle(bool sampler) {
     return words_handle(sampler ? kSamplerWordsRegister : kViewWordsRegister);
 }
