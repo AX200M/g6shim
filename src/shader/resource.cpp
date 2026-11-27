@@ -1567,6 +1567,10 @@ static bool runtime_address(const TraceError& error) {
     return std::string_view(error.what) != kUndefinedBase;
 }
 
+static bool is_ray_node_test(std::string_view name) {
+    return name == "image_bvh_intersect_ray" || name == "image_bvh64_intersect_ray";
+}
+
 static Resources track_resources(const Program& program, const std::vector<RootParam>& layout, HwStage stage,
                                  const Structured* lanes, std::span<const Site> ring_address_loads,
                                  const ComputeIo* compute) {
@@ -1613,6 +1617,7 @@ static Resources track_resources(const Program& program, const std::vector<RootP
             };
             try {
                 if (const auto* image = std::get_if<ImageFields>(&inst.fields)) {
+                    if (is_ray_node_test(name)) continue;
                     descriptor(image->rsrc, Role::Resource);
                     if (image->sampler) descriptor(*image->sampler, Role::Sampler);
                 } else if (const auto* buffer = std::get_if<BufferFields>(&inst.fields)) {

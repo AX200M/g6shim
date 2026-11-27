@@ -98,6 +98,22 @@ inline constexpr std::uint32_t kCodeAddressTag = 0xFFFF;
 struct FlatTarget {
     V handle;
     V byte;
+    V found;
+};
+
+struct BvhNode {
+    V handle;
+    V byte;
+    V low;
+    V high;
+    V found;
+};
+
+struct BvhRay {
+    V extent;
+    std::array<V, 3> origin;
+    std::array<V, 3> direction;
+    std::array<V, 3> inverse;
 };
 
 std::map<std::uint8_t, std::pair<bool, std::optional<std::uint8_t>>> half_outputs(
@@ -290,6 +306,11 @@ private:
     void image(const IrInst& inst, std::size_t b, std::size_t i);
     std::array<V, 3> cube_direction(V s, V t, V face);
     void buffer(const IrInst& inst, std::size_t b, std::size_t i);
+    void bvh(const IrInst& inst, std::size_t b, std::size_t i);
+    BvhNode bvh_node_at(V low, V high);
+    std::vector<V> bvh_words(const BvhNode& node, std::optional<V> base, std::uint32_t offset, std::uint32_t count);
+    std::array<V, 4> bvh_boxes(const BvhNode& node, V kind, const BvhRay& ray, V sort);
+    std::array<V, 4> bvh_triangle(const BvhNode& node, V kind, const BvhRay& ray);
     void narrow_buffer(const IrInst& inst, const BufferFields& fields, Site site, const Source& src,
                        const UsedResource* used, std::optional<V> index, V off, std::uint32_t uav_flag,
                        std::uint32_t bits, bool sign, bool store, std::optional<V> guard_value);

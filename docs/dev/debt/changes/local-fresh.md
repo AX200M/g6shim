@@ -15,5 +15,29 @@
 
 - Chained extensions on upscale dispatches, allocation callbacks and console-only create descriptors are dropped.
   Closes when: a title is seen passing one that changes the result.
+
+# shader
+
+## add Functional
+
 - `g6shim-shader --prepare` fills only the translated-shader cache; host pipelines are still built during the run.
   Closes when: the prepare step also builds the title's pipelines from a recorded list.
+- The ray-tracing node test always returns the triangle's barycentric numerators; the triangle-id return mode (descriptor dword 3, bit 24 clear) is not produced.
+  Closes when: a title is seen clearing that bit, and the mode's result layout is observed.
+- The ray-tracing node test returns a triangle miss for node kinds 6 and 7 (instance, procedural).
+  Closes when: the console's result for those kinds is observed.
+
+## add Unknown function info
+
+- The ray-tracing node test's rounding, the order of two boxes entered at the same distance, and the result for a ray exactly through a shared edge (here: a hit in both triangles) are not confirmed against the console.
+  Closes when: a capture of the console's results for such rays is compared.
+  Title IDs: 7952987A
+
+# d3d12_xs
+
+## add Functional
+
+- Copy-back writes what shaders changed in whole dwords; a title thread writing another byte of the same dword while the GPU ran loses that byte.
+  Closes when: copy-back writes single bytes where the title changed the dword's other bytes.
+- Bytes copy-back writes into title memory show as title writes at the next refresh and are uploaded again.
+  Closes when: pages written only by copy-back are left out of the next refresh.

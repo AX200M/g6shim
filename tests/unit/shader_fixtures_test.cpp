@@ -8,11 +8,13 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <exception>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -1682,6 +1684,108 @@ std::array<std::uint32_t, kFlatWords> run_flat_address_store(const Lowered& lowe
     return result;
 }
 
+constexpr std::uint32_t kNoChild = 0xFFFF'FFFFu;
+constexpr std::uint32_t kBvhBox32Byte = 0;
+constexpr std::uint32_t kBvhTriangleByte = 128;
+constexpr std::uint32_t kBvhBox16Byte = 192;
+constexpr std::uint32_t kBvhOutputByte = 256;
+constexpr std::uint32_t kBvhMemoryWords = 72;
+constexpr std::uint32_t kBvhSortBit = 1u << 31;
+constexpr std::uint32_t kBvhUserSgprs = 8;
+constexpr std::uint16_t kBvhVgprs = 32;
+constexpr std::array<std::uint32_t, 4> kBvhChildren = {0x100, 0x200, 0x300, kNoChild};
+constexpr std::array<std::array<float, 6>, 4> kBvhBoxes = {std::array<float, 6>{-1, -1, 10, 1, 1, 11},
+                                                          std::array<float, 6>{-1, -1, 2, 1, 1, 3},
+                                                          std::array<float, 6>{5, 5, 5, 6, 6, 6},
+                                                          std::array<float, 6>{-1, -1, 1, 1, 1, 2}};
+constexpr std::array<std::uint16_t, 4 * 6> kBvhBoxHalves = {0xBC00, 0xBC00, 0x4900, 0x3C00, 0x3C00, 0x4980,
+                                                            0xBC00, 0xBC00, 0x4000, 0x3C00, 0x3C00, 0x4200,
+                                                            0x4500, 0x4500, 0x4500, 0x4600, 0x4600, 0x4600,
+                                                            0xBC00, 0xBC00, 0x3C00, 0x3C00, 0x3C00, 0x4000};
+constexpr std::array<std::array<float, 3>, 3> kBvhTriangle = {std::array<float, 3>{-1, -1, 5},
+                                                             std::array<float, 3>{1, -1, 5},
+                                                             std::array<float, 3>{0, 1, 5}};
+constexpr std::uint32_t kBvhTriangleIds = 1u | 2u << 2;
+
+std::uint32_t bvh_pointer(std::uint32_t byte, std::uint32_t kind) { return (byte / 64) << 3 | kind; }
+
+std::vector<std::uint32_t> bvh_node_test_program() {
+    constexpr std::uint32_t kVMov = 0x001;
+    constexpr std::uint16_t kLiteral = 0xFF;
+    constexpr std::uint16_t kZero = 0x80;
+    constexpr std::uint8_t kNullSgpr = 125;
+    const auto mov = [](std::uint8_t vdst, std::uint16_t src) {
+        return 0x7E00'0000u | static_cast<std::uint32_t>(vdst) << 17 | kVMov << 9 | (src & 0x1FFu);
+    };
+    std::vector<std::uint32_t> words;
+    words.push_back(mov(5, 4));
+    words.push_back(mov(6, kZero));
+    const std::array<float, 10> ray = {100.0f, 0, 0, 0, 0, 0, 1, std::numeric_limits<float>::infinity(),
+                                       std::numeric_limits<float>::infinity(), 1};
+    for (std::size_t k = 0; k < ray.size(); ++k) {
+        words.push_back(mov(static_cast<std::uint8_t>(7 + k), kLiteral));
+        words.push_back(float_bits(ray[k]));
+    }
+    constexpr std::uint32_t kBvh64 = 0xE7;
+    constexpr std::uint32_t kR128 = 1u << 15;
+    words.push_back(0x3Cu << 26 | (kBvh64 & 0x7Fu) << 18 | kR128 | 0xFu << 8 | (kBvh64 >> 7));
+    words.push_back(5u | 0u << 8 | 0u << 16);
+    words.push_back(mov(20, 5));
+    words.push_back(mov(21, 6));
+    constexpr std::uint32_t kGlobalStoreX4 = 0x1E;
+    constexpr std::uint32_t kGlobalSegment = 2;
+    words.push_back(0x37u << 26 | kGlobalStoreX4 << 18 | kGlobalSegment << 14);
+    words.push_back(20u | 0u << 8 | static_cast<std::uint32_t>(kNullSgpr) << 16);
+    words.push_back(0xBF81'0000u);
+    return words;
+}
+
+std::vector<std::uint32_t> bvh_memory() {
+    std::vector<std::uint32_t> memory(kBvhMemoryWords, 0);
+    const auto put_box_node = [&](std::uint32_t byte, bool halves) {
+        const std::uint32_t at = byte / 4;
+        for (std::size_t n = 0; n < kBvhChildren.size(); ++n) memory[at + n] = kBvhChildren[n];
+        if (halves) {
+            for (std::size_t h = 0; h < kBvhBoxHalves.size(); ++h)
+                memory[at + 4 + h / 2] |= static_cast<std::uint32_t>(kBvhBoxHalves[h]) << (16 * (h % 2));
+            return;
+        }
+        for (std::size_t n = 0; n < kBvhBoxes.size(); ++n)
+            for (std::size_t k = 0; k < 6; ++k) memory[at + 4 + 6 * n + k] = float_bits(kBvhBoxes[n][k]);
+    };
+    put_box_node(kBvhBox32Byte, false);
+    put_box_node(kBvhBox16Byte, true);
+    const std::uint32_t triangle = kBvhTriangleByte / 4;
+    for (std::size_t v = 0; v < kBvhTriangle.size(); ++v)
+        for (std::size_t k = 0; k < 3; ++k) memory[triangle + 3 * v + k] = float_bits(kBvhTriangle[v][k]);
+    memory[triangle + 15] = kBvhTriangleIds;
+    return memory;
+}
+
+std::optional<std::array<std::uint32_t, 4>> run_bvh_node_test(const Lowered& lowered, std::uint32_t pointer,
+                                                               bool sort) {
+    SpaceTwoRun run;
+    run.memory = bvh_memory();
+    const auto bytes = static_cast<std::uint32_t>(run.memory.size() * sizeof(std::uint32_t));
+    run.table = {1, kNullSlot, 0, 0, static_cast<std::uint32_t>(kFlatBase), static_cast<std::uint32_t>(kFlatBase >> 32),
+                 bytes, kMemorySlot};
+    run.table_register = kFlatTableRegister;
+    const std::uint64_t output = kFlatBase + kBvhOutputByte;
+    run.root_words = {static_cast<std::uint32_t>(kFlatBase >> 8),
+                      static_cast<std::uint32_t>((kFlatBase >> 40) & 0xFF) | (sort ? kBvhSortBit : 0u),
+                      0,
+                      0,
+                      pointer,
+                      static_cast<std::uint32_t>(output),
+                      static_cast<std::uint32_t>(output >> 32),
+                      0};
+    const std::vector<std::uint32_t> after = run_space_two(lowered, run);
+    if (after[0] == kUnrun) return std::nullopt;
+    std::array<std::uint32_t, 4> result{};
+    std::copy_n(after.begin() + kBvhOutputByte / 4, 4, result.begin());
+    return result;
+}
+
 std::array<std::uint32_t, kFlatWords> flat_expected(std::optional<std::uint32_t> stored_word) {
     std::array<std::uint32_t, kFlatWords> values{};
     for (std::uint32_t k = 0; k < kFlatWords; ++k) values[k] = kFlatFirstValue + k;
@@ -1753,6 +1857,52 @@ TEST(shader_fixtures_load_and_store_through_runtime_title_addresses) {
     auto missed_load = flat_expected(std::nullopt);
     missed_load[0] = 5;
     CHECK(run_flat_address_store(lowered, kFlatBase - 4) == missed_load);
+}
+
+TEST(shader_ray_node_tests_run_on_the_card) {
+    Lowered lowered;
+    RootParam constants = root_param(RootType::Kind::Constants, 0, 0);
+    constants.sgprs = kBvhUserSgprs;
+    try {
+        lowered = lower_compute(bvh_node_test_program(), kBvhVgprs, {constants}, {}, kBvhUserSgprs << kUserSgprShift,
+                                {1, 1, 1});
+    } catch (const std::exception& error) {
+        std::printf("the ray node test program did not translate: %s\n", error.what());
+        CHECK(false);
+        return;
+    }
+    CHECK((lowered.descriptor_words & kFlatTable) != 0);
+    check_dxil(lowered.dxil, "ray node tests");
+    if (!load_validator()) return;
+    const auto sorted = run_bvh_node_test(lowered, bvh_pointer(kBvhBox32Byte, 5), true);
+    if (!sorted) {
+        std::printf("skipped: no D3D12 device for ray node tests\n");
+        return;
+    }
+    const std::array<std::uint32_t, 4> nearest_first = {0x200, 0x100, kNoChild, kNoChild};
+    const std::array<std::uint32_t, 4> child_order = {0x100, 0x200, kNoChild, kNoChild};
+    const std::array<std::uint32_t, 4> nothing = {kNoChild, kNoChild, kNoChild, kNoChild};
+    const std::array<std::uint32_t, 4> miss = {0x7F80'0000u, 0x3F80'0000u, 0, 0};
+    CHECK(*sorted == nearest_first);
+    CHECK(run_bvh_node_test(lowered, bvh_pointer(kBvhBox32Byte, 5), false) == child_order);
+    CHECK(run_bvh_node_test(lowered, bvh_pointer(kBvhBox16Byte, 4), true) == nearest_first);
+    CHECK(run_bvh_node_test(lowered, bvh_pointer(kBvhBox32Byte, 6), true) == miss);
+    CHECK(run_bvh_node_test(lowered, bvh_pointer(100 * 64, 5), true) == nothing);
+    CHECK(run_bvh_node_test(lowered, bvh_pointer(100 * 64, 0), true) == miss);
+    const auto hit = run_bvh_node_test(lowered, bvh_pointer(kBvhTriangleByte, 0), true);
+    CHECK(hit.has_value());
+    if (!hit) return;
+    const auto as_float = [](std::uint32_t bits) {
+        float value = 0;
+        std::memcpy(&value, &bits, sizeof value);
+        return value;
+    };
+    const float det = as_float((*hit)[1]);
+    CHECK(det != 0.0f);
+    if (det == 0.0f) return;
+    CHECK(std::fabs(as_float((*hit)[0]) / det - 5.0f) < 1e-5f);
+    CHECK(std::fabs(as_float((*hit)[2]) / det - 0.25f) < 1e-5f);
+    CHECK(std::fabs(as_float((*hit)[3]) / det - 0.5f) < 1e-5f);
 }
 
 TEST(shader_fixtures_read_a_code_table_through_a_per_lane_program_counter_address) {

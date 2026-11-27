@@ -108,7 +108,7 @@ FlatTarget Lower::flat_lookup(V low, V high, std::optional<V> in_range) {
     if (in_range) found = s_.m.bin(c, Bin::And, found, *in_range);
     const V index = s_.m.select(c, found, entry[3], null_index);
     const V handle = s_.heap_handle(c, index, false, true, {kRawBuffer | kUnorderedView, 0});
-    return FlatTarget{handle, s_.m.select(c, found, offset, s_.m.i32(0))};
+    return FlatTarget{handle, s_.m.select(c, found, offset, s_.m.i32(0)), found};
 }
 
 FlatTarget Lower::flat_buffer_target(const IrInst& inst, const BufferFields& fields, std::optional<V> index, V off,

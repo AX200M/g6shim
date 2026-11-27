@@ -175,6 +175,41 @@ TEST(byte_and_short_buffer_accesses_lower_and_validate) {
     note_gpu_comparison_skipped("byte and short buffer accesses", kCases.size() * kOffsets.size());
 }
 
+std::array<std::uint32_t, 2> mimg_bvh(bool wide, std::uint8_t vaddr, std::uint8_t vdata, std::uint8_t srsrc) {
+    const std::uint32_t op = wide ? 0xE7u : 0xE6u;
+    constexpr std::uint32_t kR128 = 1u << 15;
+    return {0x3Cu << 26 | (op & 0x7Fu) << 18 | kR128 | 0xFu << 8 | (op >> 7),
+            static_cast<std::uint32_t>(vaddr) | static_cast<std::uint32_t>(vdata) << 8 |
+                ((srsrc >> 2) & 0x1Fu) << 16};
+}
+
+TEST(ray_node_tests_lower_and_validate) {
+    constexpr std::uint16_t kZero = 0x80;
+    constexpr std::uint16_t kOne = 0xF2;
+    constexpr std::uint16_t kFour = 0xF6;
+    for (const bool wide : {false, true}) {
+        std::vector<std::uint16_t> operands = {sgpr(0)};
+        if (wide) operands.push_back(kZero);
+        operands.insert(operands.end(), {kFour, kZero, kZero, kZero, kOne, kOne, kOne, kOne, kOne, kOne});
+        std::vector<std::uint32_t> body;
+        for (std::size_t k = 0; k < operands.size(); ++k)
+            body.push_back(vop1(0x001, static_cast<std::uint8_t>(5 + k), operands[k]));
+        const auto test = mimg_bvh(wide, 5, 0, 8);
+        const char* name = wide ? "image_bvh64_intersect_ray" : "image_bvh_intersect_ray";
+        CHECK(decoded_name(test) == name);
+        body.insert(body.end(), test.begin(), test.end());
+        try {
+            const Lowered lowered = build_valu_cs(body);
+            CHECK((lowered.descriptor_words & kFlatTable) != 0);
+            check_dxil(lowered.dxil, name);
+        } catch (const std::exception& error) {
+            std::printf("  %s does not lower: %s\n", name, error.what());
+            CHECK(false);
+        }
+    }
+    note_gpu_comparison_skipped("ray node tests", 2);
+}
+
 TEST(max_and_min_pick_a_zero_with_the_right_sign) {
     const std::array<std::uint16_t, 4> ops = {0x110, 0x10F, 0x154, 0x151};
     for (std::uint16_t op : ops) {

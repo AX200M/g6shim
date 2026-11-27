@@ -46,6 +46,10 @@ std::uint32_t gather_border_bits(std::uint32_t border, std::uint32_t channel) {
 void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
     const auto* fields = std::get_if<ImageFields>(&inst.fields);
     if (fields == nullptr) std::abort();
+    if (inst.name() == "image_bvh_intersect_ray" || inst.name() == "image_bvh64_intersect_ray") {
+        bvh(inst, b, i);
+        return;
+    }
     if (fields->tfe || fields->lwe) fail("an image access with tfe or lwe");
     const std::string_view name = inst.name();
     const bool a16 = fields->a16;
