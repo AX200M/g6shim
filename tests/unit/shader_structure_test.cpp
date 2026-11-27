@@ -130,4 +130,34 @@ TEST(structure_irreducible_loops_are_split) {
     CHECK(s.exits.size() == p.blocks.size());
 }
 
+TEST(structure_a_mask_join_records_a_constant_and_a_compare) {
+    const Program p = program(
+        {0xBE850380u, 0xF4080202u, 0xFA000000u, 0x7E020200u, 0x7E040201u, 0x7E060202u, 0x7E080203u,
+         0xD7650005u, 0x020100C1u, 0xBF068000u, 0xBF850003u, 0xD4C10006u, 0x02000305u, 0xBF820001u,
+         0xBE860380u, 0xD5010000u, 0x00190280u, 0x340A0A85u, 0xBF8CC07Fu, 0xE0701000u, 0x80020005u,
+         kEndpgm},
+        false);
+    const Structured s = structure(p);
+    const Phi* phi = nullptr;
+    for (const Block& block : p.blocks)
+        for (const Phi& candidate : block.phis)
+            if (candidate.reg == Reg::s(6)) phi = &candidate;
+    CHECK(phi != nullptr);
+    if (phi == nullptr) return;
+    CHECK(s.masks.contains(phi->value));
+    const auto edges = s.phi_masks.find(phi->value);
+    CHECK(edges != s.phi_masks.end());
+    if (edges == s.phi_masks.end()) return;
+    CHECK(edges->second.size() == phi->args.size());
+    bool saw_false = false;
+    bool saw_lane = false;
+    for (Bool edge : edges->second) {
+        if (edge == kFalse) saw_false = true;
+        for (const Atom& atom : s.bools.support(edge))
+            if (atom.kind == Atom::Kind::Lane) saw_lane = true;
+    }
+    CHECK(saw_false);
+    CHECK(saw_lane);
+}
+
 }  // namespace

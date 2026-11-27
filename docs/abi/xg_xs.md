@@ -129,4 +129,14 @@ With a mip tail, at most two slices are listed and entries for slices after the 
 | 5, 6, 21, 22, 23 | 4KB `S`, `D`, `S_X`, `D_X`, `R_X` | 4 KiB |
 | 9, 10, 17, 18, 24, 25, 26, 27 | 64KB `S`, `D`, `S_T`, `D_T`, `Z_X`, `S_X`, `D_X`, `R_X` | 64 KiB |
 
-3D textures accept 0, 5, 9, 17, 21 and 24 through 27. Modes from 16 up depend on pipe and bank configuration and have no CPU addressing.
+3D textures accept 0, 5, 9, 17, 21 and 24 through 27.
+
+## Address configuration
+
+Pipe and bank XOR, and multisample placement, depend on an address configuration. It is not part of the resource description. Callers that know it set it before creating a layout; otherwise the default is used. The default is 16 pipes, 8 packers, a 256-byte pipe interleave and 8 compressed fragments. That default is not a measured value for the console GPU.
+
+Pipes and packers are powers of two, pipes from 1 to 64, packers no larger than the pipe count, and at most four pipes per packer. The pipe interleave is 256, 512, 1024 or 2048 bytes. Compressed fragments are 1, 2, 4 or 8. Any other value is rejected.
+
+Element equations are published for a 256-byte pipe interleave. Other interleaves are stored, and XOR element offsets and copies stay unavailable. The compressed-fragment setting does not change those equations. 4 KiB `R_X` has no element equation.
+
+An element offset is the byte address of a sample from the start of the plane. Coordinates outside the mip, and a sample index at or past the sample count, are rejected. Within a block the address is the XOR of coordinate bits selected by the swizzle mode, element size and address configuration. The block index is then added. A tail mip adds its tail coordinate before that XOR and keeps the block index of the unadjusted coordinate. Samples of one texel are adjacent in a linear copy, sample 0 first. A copy of a multisampled mip carries every sample.

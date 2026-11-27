@@ -1,263 +1,321 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="618" height="338" viewBox="0 0 618 338" role="img">
+<svg xmlns="http://www.w3.org/2000/svg" width="624" height="386" viewBox="0 0 624 386" role="img">
 <title>Coverage of the replacement DLLs</title>
 <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="11" fill="#6b7280">
 <text x="14" y="23">AcpHal.dll</text>
-<text x="217" y="23" text-anchor="end">9/9</text>
+<text x="223" y="23" text-anchor="end">9/9</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="16" width="8" height="8" fill="#2ea043"/>
-<rect x="236" y="16" width="8" height="8" fill="#2ea043"/>
-<rect x="245" y="16" width="8" height="8" fill="#2ea043"/>
-<rect x="254" y="16" width="8" height="8" fill="#2ea043"/>
-<rect x="263" y="16" width="8" height="8" fill="#2ea043"/>
-<rect x="272" y="16" width="8" height="8" fill="#2ea043"/>
-<rect x="281" y="16" width="8" height="8" fill="#2ea043"/>
-<rect x="290" y="16" width="8" height="8" fill="#2ea043"/>
-<rect x="299" y="16" width="8" height="8" fill="#2ea043"/>
+<rect x="233" y="16" width="8" height="8" fill="#2ea043"/>
+<rect x="242" y="16" width="8" height="8" fill="#2ea043"/>
+<rect x="251" y="16" width="8" height="8" fill="#2ea043"/>
+<rect x="260" y="16" width="8" height="8" fill="#2ea043"/>
+<rect x="269" y="16" width="8" height="8" fill="#2ea043"/>
+<rect x="278" y="16" width="8" height="8" fill="#2ea043"/>
+<rect x="287" y="16" width="8" height="8" fill="#2ea043"/>
+<rect x="296" y="16" width="8" height="8" fill="#2ea043"/>
+<rect x="305" y="16" width="8" height="8" fill="#2ea043"/>
 </g>
 <text x="14" y="35">chad.dll</text>
-<text x="217" y="35" text-anchor="end">5/5</text>
+<text x="223" y="35" text-anchor="end">5/5</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="28" width="8" height="8" fill="#2ea043"/>
-<rect x="236" y="28" width="8" height="8" fill="#2ea043"/>
-<rect x="245" y="28" width="8" height="8" fill="#2ea043"/>
-<rect x="254" y="28" width="8" height="8" fill="#2ea043"/>
-<rect x="263" y="28" width="8" height="8" fill="#2ea043"/>
+<rect x="233" y="28" width="8" height="8" fill="#2ea043"/>
+<rect x="242" y="28" width="8" height="8" fill="#2ea043"/>
+<rect x="251" y="28" width="8" height="8" fill="#2ea043"/>
+<rect x="260" y="28" width="8" height="8" fill="#2ea043"/>
+<rect x="269" y="28" width="8" height="8" fill="#2ea043"/>
 </g>
 <text x="14" y="47">d3d11_x.dll</text>
-<text x="217" y="47" text-anchor="end">3/3</text>
+<text x="223" y="47" text-anchor="end">3/3</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="40" width="8" height="8" fill="#2ea043"/>
-<rect x="236" y="40" width="8" height="8" fill="#2ea043"/>
-<rect x="245" y="40" width="8" height="8" fill="#2ea043"/>
+<rect x="233" y="40" width="8" height="8" fill="#2ea043"/>
+<rect x="242" y="40" width="8" height="8" fill="#2ea043"/>
+<rect x="251" y="40" width="8" height="8" fill="#2ea043"/>
 </g>
 <text x="14" y="59">d3d12_x.dll</text>
-<text x="217" y="59" text-anchor="end">3/4</text>
+<text x="223" y="59" text-anchor="end">3/4</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="52" width="8" height="8" fill="#2ea043"/>
-<rect x="236" y="52" width="8" height="8" fill="#2ea043"/>
-<rect x="245" y="52" width="8" height="8" fill="#2ea043"/>
-<rect x="254" y="52" width="8" height="8" fill="#d29922"/>
+<rect x="233" y="52" width="8" height="8" fill="#2ea043"/>
+<rect x="242" y="52" width="8" height="8" fill="#2ea043"/>
+<rect x="251" y="52" width="8" height="8" fill="#2ea043"/>
+<rect x="260" y="52" width="8" height="8" fill="#d29922"/>
 </g>
 <text x="14" y="71">d3d12_xs.dll</text>
-<text x="217" y="71" text-anchor="end">0/4</text>
+<text x="223" y="71" text-anchor="end">6/6</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="64" width="8" height="8" fill="#d29922"/>
-<rect x="236" y="64" width="8" height="8" fill="#d29922"/>
-<rect x="245" y="64" width="8" height="8" fill="#d29922"/>
-<rect x="254" y="64" width="8" height="8" fill="#d29922"/>
+<rect x="233" y="64" width="8" height="8" fill="#2ea043"/>
+<rect x="242" y="64" width="8" height="8" fill="#2ea043"/>
+<rect x="251" y="64" width="8" height="8" fill="#2ea043"/>
+<rect x="260" y="64" width="8" height="8" fill="#2ea043"/>
+<rect x="269" y="64" width="8" height="8" fill="#2ea043"/>
+<rect x="278" y="64" width="8" height="8" fill="#2ea043"/>
 </g>
 <text x="14" y="83">EtwPlus.dll</text>
-<text x="217" y="83" text-anchor="end">0/4</text>
+<text x="223" y="83" text-anchor="end">0/4</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="76" width="8" height="8" fill="#d29922"/>
-<rect x="236" y="76" width="8" height="8" fill="#d29922"/>
-<rect x="245" y="76" width="8" height="8" fill="#d29922"/>
-<rect x="254" y="76" width="8" height="8" fill="#d29922"/>
+<rect x="233" y="76" width="8" height="8" fill="#d29922"/>
+<rect x="242" y="76" width="8" height="8" fill="#d29922"/>
+<rect x="251" y="76" width="8" height="8" fill="#d29922"/>
+<rect x="260" y="76" width="8" height="8" fill="#d29922"/>
 </g>
-<text x="14" y="95">g6shim_combase.dll</text>
-<text x="217" y="95" text-anchor="end">0/45</text>
-<text x="227" y="95">+45 forwarded</text>
-<text x="14" y="107">g6shim_crtfs.dll</text>
-<text x="217" y="107" text-anchor="end">6/65</text>
+<text x="14" y="95">g6shim_advapi32.dll</text>
+<text x="223" y="95" text-anchor="end">4/853</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="100" width="8" height="8" fill="#2ea043"/>
-<rect x="236" y="100" width="8" height="8" fill="#2ea043"/>
-<rect x="245" y="100" width="8" height="8" fill="#2ea043"/>
-<rect x="254" y="100" width="8" height="8" fill="#2ea043"/>
-<rect x="263" y="100" width="8" height="8" fill="#2ea043"/>
-<rect x="272" y="100" width="8" height="8" fill="#2ea043"/>
+<rect x="233" y="88" width="8" height="8" fill="#2ea043"/>
+<rect x="242" y="88" width="8" height="8" fill="#2ea043"/>
+<rect x="251" y="88" width="8" height="8" fill="#2ea043"/>
+<rect x="260" y="88" width="8" height="8" fill="#2ea043"/>
 </g>
-<text x="286" y="107">+59 forwarded</text>
-<text x="14" y="119">g6shim_crtstdio.dll</text>
-<text x="217" y="119" text-anchor="end">7/159</text>
+<text x="274" y="95">+849 forwarded</text>
+<text x="14" y="107">g6shim_combase.dll</text>
+<text x="223" y="107" text-anchor="end">0/45</text>
+<text x="233" y="107">+45 forwarded</text>
+<text x="14" y="119">g6shim_crtfs.dll</text>
+<text x="223" y="119" text-anchor="end">17/65</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="112" width="8" height="8" fill="#2ea043"/>
-<rect x="236" y="112" width="8" height="8" fill="#2ea043"/>
-<rect x="245" y="112" width="8" height="8" fill="#2ea043"/>
-<rect x="254" y="112" width="8" height="8" fill="#2ea043"/>
-<rect x="263" y="112" width="8" height="8" fill="#2ea043"/>
-<rect x="272" y="112" width="8" height="8" fill="#2ea043"/>
-<rect x="281" y="112" width="8" height="8" fill="#2ea043"/>
+<rect x="233" y="112" width="8" height="8" fill="#2ea043"/>
+<rect x="242" y="112" width="8" height="8" fill="#2ea043"/>
+<rect x="251" y="112" width="8" height="8" fill="#2ea043"/>
+<rect x="260" y="112" width="8" height="8" fill="#2ea043"/>
+<rect x="269" y="112" width="8" height="8" fill="#2ea043"/>
+<rect x="278" y="112" width="8" height="8" fill="#2ea043"/>
+<rect x="287" y="112" width="8" height="8" fill="#2ea043"/>
+<rect x="296" y="112" width="8" height="8" fill="#2ea043"/>
+<rect x="305" y="112" width="8" height="8" fill="#2ea043"/>
+<rect x="314" y="112" width="8" height="8" fill="#2ea043"/>
+<rect x="323" y="112" width="8" height="8" fill="#2ea043"/>
+<rect x="332" y="112" width="8" height="8" fill="#2ea043"/>
+<rect x="341" y="112" width="8" height="8" fill="#2ea043"/>
+<rect x="350" y="112" width="8" height="8" fill="#2ea043"/>
+<rect x="359" y="112" width="8" height="8" fill="#2ea043"/>
+<rect x="368" y="112" width="8" height="8" fill="#2ea043"/>
+<rect x="377" y="112" width="8" height="8" fill="#2ea043"/>
 </g>
-<text x="295" y="119">+152 forwarded</text>
-<text x="14" y="131">g6shim_crttime.dll</text>
-<text x="217" y="131" text-anchor="end">1/72</text>
+<text x="391" y="119">+48 forwarded</text>
+<text x="14" y="131">g6shim_crtstdio.dll</text>
+<text x="223" y="131" text-anchor="end">7/159</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="124" width="8" height="8" fill="#2ea043"/>
+<rect x="233" y="124" width="8" height="8" fill="#2ea043"/>
+<rect x="242" y="124" width="8" height="8" fill="#2ea043"/>
+<rect x="251" y="124" width="8" height="8" fill="#2ea043"/>
+<rect x="260" y="124" width="8" height="8" fill="#2ea043"/>
+<rect x="269" y="124" width="8" height="8" fill="#2ea043"/>
+<rect x="278" y="124" width="8" height="8" fill="#2ea043"/>
+<rect x="287" y="124" width="8" height="8" fill="#2ea043"/>
 </g>
-<text x="241" y="131">+71 forwarded</text>
-<text x="14" y="143">g6shim_file.dll</text>
-<text x="217" y="143" text-anchor="end">14/77</text>
+<text x="301" y="131">+152 forwarded</text>
+<text x="14" y="143">g6shim_crttime.dll</text>
+<text x="223" y="143" text-anchor="end">1/72</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="136" width="8" height="8" fill="#2ea043"/>
-<rect x="236" y="136" width="8" height="8" fill="#2ea043"/>
-<rect x="245" y="136" width="8" height="8" fill="#2ea043"/>
-<rect x="254" y="136" width="8" height="8" fill="#2ea043"/>
-<rect x="263" y="136" width="8" height="8" fill="#2ea043"/>
-<rect x="272" y="136" width="8" height="8" fill="#2ea043"/>
-<rect x="281" y="136" width="8" height="8" fill="#2ea043"/>
-<rect x="290" y="136" width="8" height="8" fill="#2ea043"/>
-<rect x="299" y="136" width="8" height="8" fill="#2ea043"/>
-<rect x="308" y="136" width="8" height="8" fill="#2ea043"/>
-<rect x="317" y="136" width="8" height="8" fill="#2ea043"/>
-<rect x="326" y="136" width="8" height="8" fill="#2ea043"/>
-<rect x="335" y="136" width="8" height="8" fill="#2ea043"/>
-<rect x="344" y="136" width="8" height="8" fill="#2ea043"/>
+<rect x="233" y="136" width="8" height="8" fill="#2ea043"/>
 </g>
-<text x="358" y="143">+63 forwarded</text>
-<text x="14" y="155">g6shim_file2.dll</text>
-<text x="217" y="155" text-anchor="end">1/11</text>
+<text x="247" y="143">+71 forwarded</text>
+<text x="14" y="155">g6shim_file.dll</text>
+<text x="223" y="155" text-anchor="end">17/77</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="148" width="8" height="8" fill="#2ea043"/>
+<rect x="233" y="148" width="8" height="8" fill="#2ea043"/>
+<rect x="242" y="148" width="8" height="8" fill="#2ea043"/>
+<rect x="251" y="148" width="8" height="8" fill="#2ea043"/>
+<rect x="260" y="148" width="8" height="8" fill="#2ea043"/>
+<rect x="269" y="148" width="8" height="8" fill="#2ea043"/>
+<rect x="278" y="148" width="8" height="8" fill="#2ea043"/>
+<rect x="287" y="148" width="8" height="8" fill="#2ea043"/>
+<rect x="296" y="148" width="8" height="8" fill="#2ea043"/>
+<rect x="305" y="148" width="8" height="8" fill="#2ea043"/>
+<rect x="314" y="148" width="8" height="8" fill="#2ea043"/>
+<rect x="323" y="148" width="8" height="8" fill="#2ea043"/>
+<rect x="332" y="148" width="8" height="8" fill="#2ea043"/>
+<rect x="341" y="148" width="8" height="8" fill="#2ea043"/>
+<rect x="350" y="148" width="8" height="8" fill="#2ea043"/>
+<rect x="359" y="148" width="8" height="8" fill="#2ea043"/>
+<rect x="368" y="148" width="8" height="8" fill="#2ea043"/>
+<rect x="377" y="148" width="8" height="8" fill="#2ea043"/>
 </g>
-<text x="241" y="155">+10 forwarded</text>
-<text x="14" y="167">g6shim_kernel32.dll</text>
-<text x="217" y="167" text-anchor="end">18/1698</text>
+<text x="391" y="155">+60 forwarded</text>
+<text x="14" y="167">g6shim_file2.dll</text>
+<text x="223" y="167" text-anchor="end">2/11</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="160" width="8" height="8" fill="#2ea043"/>
-<rect x="236" y="160" width="8" height="8" fill="#2ea043"/>
-<rect x="245" y="160" width="8" height="8" fill="#2ea043"/>
-<rect x="254" y="160" width="8" height="8" fill="#2ea043"/>
-<rect x="263" y="160" width="8" height="8" fill="#2ea043"/>
-<rect x="272" y="160" width="8" height="8" fill="#2ea043"/>
-<rect x="281" y="160" width="8" height="8" fill="#2ea043"/>
-<rect x="290" y="160" width="8" height="8" fill="#2ea043"/>
-<rect x="299" y="160" width="8" height="8" fill="#2ea043"/>
-<rect x="308" y="160" width="8" height="8" fill="#2ea043"/>
-<rect x="317" y="160" width="8" height="8" fill="#2ea043"/>
-<rect x="326" y="160" width="8" height="8" fill="#2ea043"/>
-<rect x="335" y="160" width="8" height="8" fill="#2ea043"/>
-<rect x="344" y="160" width="8" height="8" fill="#2ea043"/>
-<rect x="353" y="160" width="8" height="8" fill="#2ea043"/>
-<rect x="362" y="160" width="8" height="8" fill="#2ea043"/>
-<rect x="371" y="160" width="8" height="8" fill="#2ea043"/>
-<rect x="380" y="160" width="8" height="8" fill="#2ea043"/>
+<rect x="233" y="160" width="8" height="8" fill="#2ea043"/>
+<rect x="242" y="160" width="8" height="8" fill="#2ea043"/>
 </g>
-<text x="394" y="167">+1680 forwarded</text>
-<text x="14" y="179">g6shim_mfplat.dll</text>
-<text x="217" y="179" text-anchor="end">0/12</text>
+<text x="256" y="167">+9 forwarded</text>
+<text x="14" y="179">g6shim_kernel32.dll</text>
+<text x="223" y="179" text-anchor="end">23/1698</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="172" width="8" height="8" fill="#d29922"/>
-<rect x="236" y="172" width="8" height="8" fill="#d29922"/>
+<rect x="233" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="242" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="251" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="260" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="269" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="278" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="287" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="296" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="305" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="314" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="323" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="332" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="341" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="350" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="359" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="368" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="377" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="386" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="395" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="404" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="413" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="422" y="172" width="8" height="8" fill="#2ea043"/>
+<rect x="431" y="172" width="8" height="8" fill="#2ea043"/>
 </g>
-<text x="250" y="179">+10 forwarded</text>
-<text x="14" y="191">g6shim_mmdevapi.dll</text>
-<text x="217" y="191" text-anchor="end">0/2</text>
+<text x="445" y="179">+1675 forwarded</text>
+<text x="14" y="191">g6shim_libloader.dll</text>
+<text x="223" y="191" text-anchor="end">2/29</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="184" width="8" height="8" fill="#d29922"/>
+<rect x="233" y="184" width="8" height="8" fill="#2ea043"/>
+<rect x="242" y="184" width="8" height="8" fill="#2ea043"/>
 </g>
-<text x="241" y="191">+1 forwarded</text>
-<text x="14" y="203">g6shim_vccorlib140.dll</text>
-<text x="217" y="203" text-anchor="end">1/82</text>
+<text x="256" y="191">+27 forwarded</text>
+<text x="14" y="203">g6shim_libloader2.dll</text>
+<text x="223" y="203" text-anchor="end">2/3</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="196" width="8" height="8" fill="#2ea043"/>
+<rect x="233" y="196" width="8" height="8" fill="#2ea043"/>
+<rect x="242" y="196" width="8" height="8" fill="#2ea043"/>
 </g>
-<text x="241" y="203">+81 forwarded</text>
-<text x="14" y="215">kernelx.dll</text>
-<text x="217" y="215" text-anchor="end">22/183</text>
+<text x="256" y="203">+1 forwarded</text>
+<text x="14" y="215">g6shim_mfplat.dll</text>
+<text x="223" y="215" text-anchor="end">0/12</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="236" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="245" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="254" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="263" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="272" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="281" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="290" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="299" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="308" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="317" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="326" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="335" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="344" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="353" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="362" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="371" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="380" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="389" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="398" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="407" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="416" y="208" width="8" height="8" fill="#2ea043"/>
-<rect x="425" y="208" width="8" height="8" fill="#d29922"/>
-<rect x="434" y="208" width="8" height="8" fill="#d29922"/>
-<rect x="443" y="208" width="8" height="8" fill="#d29922"/>
-<rect x="452" y="208" width="8" height="8" fill="#d29922"/>
-<rect x="461" y="208" width="8" height="8" fill="#d29922"/>
-<rect x="470" y="208" width="8" height="8" fill="#d29922"/>
-<rect x="479" y="208" width="8" height="8" fill="#d29922"/>
-<rect x="488" y="208" width="8" height="8" fill="#d29922"/>
-<rect x="497" y="208" width="8" height="8" fill="#d29922"/>
+<rect x="233" y="208" width="8" height="8" fill="#d29922"/>
+<rect x="242" y="208" width="8" height="8" fill="#d29922"/>
 </g>
-<text x="511" y="215">+152 forwarded</text>
-<text x="14" y="227">vccorlib110.DLL</text>
-<text x="217" y="227" text-anchor="end">0/70</text>
+<text x="256" y="215">+10 forwarded</text>
+<text x="14" y="227">g6shim_mmdevapi.dll</text>
+<text x="223" y="227" text-anchor="end">0/2</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="220" width="8" height="8" fill="#d29922"/>
-<rect x="236" y="220" width="8" height="8" fill="#d29922"/>
+<rect x="233" y="220" width="8" height="8" fill="#d29922"/>
 </g>
-<text x="250" y="227">+68 forwarded</text>
-<text x="14" y="239">xapu.dll</text>
-<text x="217" y="239" text-anchor="end">5/5</text>
+<text x="247" y="227">+1 forwarded</text>
+<text x="14" y="239">g6shim_vccorlib140.dll</text>
+<text x="223" y="239" text-anchor="end">1/82</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="232" width="8" height="8" fill="#2ea043"/>
-<rect x="236" y="232" width="8" height="8" fill="#2ea043"/>
-<rect x="245" y="232" width="8" height="8" fill="#2ea043"/>
-<rect x="254" y="232" width="8" height="8" fill="#2ea043"/>
-<rect x="263" y="232" width="8" height="8" fill="#2ea043"/>
+<rect x="233" y="232" width="8" height="8" fill="#2ea043"/>
 </g>
-<text x="14" y="251">XCRDAPI.dll</text>
-<text x="217" y="251" text-anchor="end">1/1</text>
+<text x="247" y="239">+81 forwarded</text>
+<text x="14" y="251">g6shim_xgameruntime.dll</text>
+<text x="223" y="251" text-anchor="end">8/8</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="244" width="8" height="8" fill="#2ea043"/>
+<rect x="233" y="244" width="8" height="8" fill="#2ea043"/>
+<rect x="242" y="244" width="8" height="8" fill="#2ea043"/>
+<rect x="251" y="244" width="8" height="8" fill="#2ea043"/>
+<rect x="260" y="244" width="8" height="8" fill="#2ea043"/>
+<rect x="269" y="244" width="8" height="8" fill="#2ea043"/>
+<rect x="278" y="244" width="8" height="8" fill="#2ea043"/>
+<rect x="287" y="244" width="8" height="8" fill="#2ea043"/>
+<rect x="296" y="244" width="8" height="8" fill="#2ea043"/>
 </g>
-<text x="14" y="263">XFrontPanelDisplay.dll</text>
-<text x="217" y="263" text-anchor="end">0/6</text>
+<text x="14" y="263">kernelx.dll</text>
+<text x="223" y="263" text-anchor="end">22/183</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="256" width="8" height="8" fill="#d29922"/>
-<rect x="236" y="256" width="8" height="8" fill="#d29922"/>
-<rect x="245" y="256" width="8" height="8" fill="#d29922"/>
-<rect x="254" y="256" width="8" height="8" fill="#d29922"/>
-<rect x="263" y="256" width="8" height="8" fill="#d29922"/>
-<rect x="272" y="256" width="8" height="8" fill="#d29922"/>
+<rect x="233" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="242" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="251" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="260" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="269" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="278" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="287" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="296" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="305" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="314" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="323" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="332" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="341" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="350" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="359" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="368" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="377" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="386" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="395" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="404" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="413" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="422" y="256" width="8" height="8" fill="#2ea043"/>
+<rect x="431" y="256" width="8" height="8" fill="#d29922"/>
+<rect x="440" y="256" width="8" height="8" fill="#d29922"/>
+<rect x="449" y="256" width="8" height="8" fill="#d29922"/>
+<rect x="458" y="256" width="8" height="8" fill="#d29922"/>
+<rect x="467" y="256" width="8" height="8" fill="#d29922"/>
+<rect x="476" y="256" width="8" height="8" fill="#d29922"/>
+<rect x="485" y="256" width="8" height="8" fill="#d29922"/>
+<rect x="494" y="256" width="8" height="8" fill="#d29922"/>
+<rect x="503" y="256" width="8" height="8" fill="#d29922"/>
 </g>
-<text x="14" y="275">xg_x.dll</text>
-<text x="217" y="275" text-anchor="end">5/5</text>
+<text x="517" y="263">+152 forwarded</text>
+<text x="14" y="275">vccorlib110.DLL</text>
+<text x="223" y="275" text-anchor="end">0/70</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="268" width="8" height="8" fill="#2ea043"/>
-<rect x="236" y="268" width="8" height="8" fill="#2ea043"/>
-<rect x="245" y="268" width="8" height="8" fill="#2ea043"/>
-<rect x="254" y="268" width="8" height="8" fill="#2ea043"/>
-<rect x="263" y="268" width="8" height="8" fill="#2ea043"/>
+<rect x="233" y="268" width="8" height="8" fill="#d29922"/>
+<rect x="242" y="268" width="8" height="8" fill="#d29922"/>
 </g>
-<text x="14" y="287">xg_xs.dll</text>
-<text x="217" y="287" text-anchor="end">2/2</text>
+<text x="256" y="275">+68 forwarded</text>
+<text x="14" y="287">xapu.dll</text>
+<text x="223" y="287" text-anchor="end">5/5</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="280" width="8" height="8" fill="#2ea043"/>
-<rect x="236" y="280" width="8" height="8" fill="#2ea043"/>
+<rect x="233" y="280" width="8" height="8" fill="#2ea043"/>
+<rect x="242" y="280" width="8" height="8" fill="#2ea043"/>
+<rect x="251" y="280" width="8" height="8" fill="#2ea043"/>
+<rect x="260" y="280" width="8" height="8" fill="#2ea043"/>
+<rect x="269" y="280" width="8" height="8" fill="#2ea043"/>
 </g>
-<text x="14" y="299">xmem.dll</text>
-<text x="217" y="299" text-anchor="end">13/13</text>
+<text x="14" y="299">XCRDAPI.dll</text>
+<text x="223" y="299" text-anchor="end">1/1</text>
 <g shape-rendering="crispEdges">
-<rect x="227" y="292" width="8" height="8" fill="#2ea043"/>
-<rect x="236" y="292" width="8" height="8" fill="#2ea043"/>
-<rect x="245" y="292" width="8" height="8" fill="#2ea043"/>
-<rect x="254" y="292" width="8" height="8" fill="#2ea043"/>
-<rect x="263" y="292" width="8" height="8" fill="#2ea043"/>
-<rect x="272" y="292" width="8" height="8" fill="#2ea043"/>
-<rect x="281" y="292" width="8" height="8" fill="#2ea043"/>
-<rect x="290" y="292" width="8" height="8" fill="#2ea043"/>
-<rect x="299" y="292" width="8" height="8" fill="#2ea043"/>
-<rect x="308" y="292" width="8" height="8" fill="#2ea043"/>
-<rect x="317" y="292" width="8" height="8" fill="#2ea043"/>
-<rect x="326" y="292" width="8" height="8" fill="#2ea043"/>
-<rect x="335" y="292" width="8" height="8" fill="#2ea043"/>
+<rect x="233" y="292" width="8" height="8" fill="#2ea043"/>
+</g>
+<text x="14" y="311">XFrontPanelDisplay.dll</text>
+<text x="223" y="311" text-anchor="end">0/6</text>
+<g shape-rendering="crispEdges">
+<rect x="233" y="304" width="8" height="8" fill="#d29922"/>
+<rect x="242" y="304" width="8" height="8" fill="#d29922"/>
+<rect x="251" y="304" width="8" height="8" fill="#d29922"/>
+<rect x="260" y="304" width="8" height="8" fill="#d29922"/>
+<rect x="269" y="304" width="8" height="8" fill="#d29922"/>
+<rect x="278" y="304" width="8" height="8" fill="#d29922"/>
+</g>
+<text x="14" y="323">xg_x.dll</text>
+<text x="223" y="323" text-anchor="end">5/5</text>
+<g shape-rendering="crispEdges">
+<rect x="233" y="316" width="8" height="8" fill="#2ea043"/>
+<rect x="242" y="316" width="8" height="8" fill="#2ea043"/>
+<rect x="251" y="316" width="8" height="8" fill="#2ea043"/>
+<rect x="260" y="316" width="8" height="8" fill="#2ea043"/>
+<rect x="269" y="316" width="8" height="8" fill="#2ea043"/>
+</g>
+<text x="14" y="335">xg_xs.dll</text>
+<text x="223" y="335" text-anchor="end">2/2</text>
+<g shape-rendering="crispEdges">
+<rect x="233" y="328" width="8" height="8" fill="#2ea043"/>
+<rect x="242" y="328" width="8" height="8" fill="#2ea043"/>
+</g>
+<text x="14" y="347">xmem.dll</text>
+<text x="223" y="347" text-anchor="end">14/14</text>
+<g shape-rendering="crispEdges">
+<rect x="233" y="340" width="8" height="8" fill="#2ea043"/>
+<rect x="242" y="340" width="8" height="8" fill="#2ea043"/>
+<rect x="251" y="340" width="8" height="8" fill="#2ea043"/>
+<rect x="260" y="340" width="8" height="8" fill="#2ea043"/>
+<rect x="269" y="340" width="8" height="8" fill="#2ea043"/>
+<rect x="278" y="340" width="8" height="8" fill="#2ea043"/>
+<rect x="287" y="340" width="8" height="8" fill="#2ea043"/>
+<rect x="296" y="340" width="8" height="8" fill="#2ea043"/>
+<rect x="305" y="340" width="8" height="8" fill="#2ea043"/>
+<rect x="314" y="340" width="8" height="8" fill="#2ea043"/>
+<rect x="323" y="340" width="8" height="8" fill="#2ea043"/>
+<rect x="332" y="340" width="8" height="8" fill="#2ea043"/>
+<rect x="341" y="340" width="8" height="8" fill="#2ea043"/>
+<rect x="350" y="340" width="8" height="8" fill="#2ea043"/>
 </g>
 <g shape-rendering="crispEdges">
-<rect x="14" y="314" width="8" height="8" fill="#2ea043"/>
-<text x="26" y="321">implemented</text>
-<rect x="113" y="314" width="8" height="8" fill="#d29922"/>
-<text x="125" y="321">stubbed</text>
-<text x="186" y="321">forwarded exports are counted after the squares</text>
+<rect x="14" y="362" width="8" height="8" fill="#2ea043"/>
+<text x="26" y="369">implemented</text>
+<rect x="113" y="362" width="8" height="8" fill="#d29922"/>
+<text x="125" y="369">stubbed</text>
+<text x="186" y="369">forwarded exports are counted after the squares</text>
 </g>
 </g>
 </svg>

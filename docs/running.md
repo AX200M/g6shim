@@ -33,13 +33,18 @@ GDK titles call the PC's file functions directly, so they need the virtual drive
 g6shim-relink D:\original\Game.exe -o D:\work\Game\Game.exe ^
   --rename api-ms-win-core-file-l1-1-0.dll=g6shim_file.dll ^
   --rename api-ms-win-core-file-l2-1-0.dll=g6shim_file2.dll ^
+  --rename api-ms-win-core-libraryloader-l1-2-0.dll=g6shim_libloader.dll ^
+  --rename api-ms-win-core-libraryloader-l1-2-1.dll=g6shim_libloader2.dll ^
   --rename api-ms-win-crt-filesystem-l1-1-0.dll=g6shim_crtfs.dll ^
   --rename api-ms-win-crt-stdio-l1-1-0.dll=g6shim_crtstdio.dll ^
   --rename api-ms-win-crt-time-l1-1-0.dll=g6shim_crttime.dll ^
-  --rename kernel32.dll=g6shim_kernel32.dll
+  --rename kernel32.dll=g6shim_kernel32.dll ^
+  --rename advapi32.dll=g6shim_advapi32.dll
 ```
 
-Each forwarder re-exports the whole DLL it replaces: names it does not translate reach Windows unchanged, and the path-taking ones rewrite `G:\` to the folder of the executable. `G:\common.rpf` is `<exe folder>\common.rpf`. Build and deploy the forwarders like the other replacement DLLs.
+Each forwarder re-exports the whole DLL it replaces: names it does not translate reach Windows unchanged, and the path-taking ones rewrite `G:\` to the folder of the executable. `G:\common.rpf` is `<exe folder>\common.rpf`. Build and deploy the forwarders like the other replacement DLLs. `g6shim_advapi32.dll` reports the selected console model as the OEM `ConsoleMode` registry value, so code that reads it does not mistake the host for a PC.
+
+The two library-loader forwarders make `LoadLibraryExW`/`LoadLibraryW` of `xgameruntime.dll` load g6shim's offline runtime `g6shim_xgameruntime.dll` from the folder of the executable instead of the PC's runtime, so the title asks g6shim for its runtime services ([abi/xgameruntime.md](abi/xgameruntime.md)).
 
 ## Tools
 
@@ -48,35 +53,105 @@ Each forwarder re-exports the whole DLL it replaces: names it does not translate
 | `g6shim-scan <folder or files> [--hle <dir>] [--all] [--importers] [--json]` | Lists imports that neither Windows nor the game provides, with coverage `[x]` implemented, `[~]` stubbed, `[ ]` missing. Skips folders named `EmbeddedXvd`. |
 | `g6shim-stubgen <folder or files> -o <hle dir> [--dll <name>] [--forward <dll>]` | Creates or extends `hle/<name>/`. Never overwrites; appends what is missing. |
 | `g6shim-relink <input> -o <output> [--rename <dll>[=<new>]] [--keep-subsystem]` | Writes a patched copy with renamed imports and the Windows GUI subsystem. Refuses to write over its input. |
-| `g6shim-run <exe> [--timeout <s>] [-v] [--log <file>] [-- <args>]` | Starts the game under a minimal debugger and prints debug output, DLLs loaded from outside System32, exceptions as module+offset, stowed WinRT errors and the exit code. Default timeout 30 s. |
+| `g6shim-run <exe> [--timeout <s>] [-v] [--log <file>] [-- <args>]` | Starts the game under a minimal debugger and prints debug output, DLLs loaded from outside System32, exceptions as module+offset, stowed WinRT errors and the exit code. A fatal exception also prints the faulting thread's call stack as module+offset. Default timeout 30 s. The game gets the normal Windows heap: `g6shim-run` sets `_NO_DEBUG_HEAP=1` unless it is set already, because the debug heap Windows gives a program started by a debugger makes allocation-heavy work such as shader translation many times slower. `_NO_DEBUG_HEAP=0` keeps the debug heap. |
 | `g6shim-run -p <pid> -tid <tid> ...` | Attaches to a suspended process and resumes it, the way `plmdebug /enableDebug` starts a package debugger. |
-| `g6shim-shader <folder or files> [--json <out.json>] [--title-id <8 hex digits>] [-v]` | Finds the shader containers a game ships, counts unique shaders per stage and decodes their native programs. `--json` writes the unique per-stage counts for the progress maps. |
+| `g6shim-shader <folder or files> [--json <out.json>] [--title-id <8 hex digits>] [--out <dir>] [-v]` | Finds the shader containers a game ships, decodes their native programs, translates them and counts unique shaders per stage. `--json` writes the unique per-stage counts for the progress maps. `--out` writes each translated PC container as `<hash>.dxil` into that folder; a folder inside the repository is refused. |
 
-## Environment variables
+## Settings
 
-| Variable | Effect |
+`g6shim.ini` next to the executable is read once, as UTF-8. A missing file changes nothing. A set environment variable overrides the file, including a value of `0`; an unset or empty variable does not. A flag is on when its value is non-empty and does not start with `0`. Unknown sections, unknown keys and malformed lines are logged once and ignored. Section and key names are case-insensitive.
+
+| Section | Key | Variable | Default | Effect |
+|---|---|---|---|---|
+| `log` | `file` | `G6SHIM_LOG` | `g6shim.log` in the working directory | Log file. Under `g6shim-run` the working directory is the game folder. |
+| `log` | `stderr` | `G6SHIM_LOG_STDERR` | on | `0` stops copying the log to stderr. The log always goes to the debugger output too. |
+| `log` | `trace` | `G6SHIM_TRACE` | off | Verbose diagnostics: repeated activations and queries, first calls of fast-table entries and draws, packet kinds, topology values. Graphics objects also remember their last 32 calls, and a command list that fails to close logs them. |
+| `console` | `model` | `G6SHIM_CONSOLE` | `series-x` | Console model the title sees. `series-s` is the lighter console (7,776 MiB of title memory, Series S adapter memory and analytics). An unknown value is logged and the default used. |
+| `window` | `size` | `G6SHIM_WINDOW` | the title's size, fitted to the work area | Client size `widthxheight`, positive, at most 32767. The picture is scaled to it. A forced size is not fitted, and the window keeps its position. |
+| `window` | `fullscreen` | `G6SHIM_FULLSCREEN` | off | Borderless fullscreen: the presentation window covers the whole monitor it opens on, including the taskbar. |
+| `graphics` | `capture_frames` | `G6SHIM_CAPTURE_FRAMES` | none | Save the back buffer of those presented frames (counted from 1), comma-separated, as `g6shim_frame_<n>.bmp` next to the executable. Implemented by the `d3d11_x`, `d3d12_x` and `d3d12_xs` graphics modules. Works with the window hidden or the desktop locked. |
+| `graphics` | `gpu_capture` | `G6SHIM_GPU_CAPTURE` | none | Path of a GPU capture tool's in-application library, loaded before `d3d12_xs` creates its host device. Creating `g6shim_capture.trigger` next to the executable, or pressing the tool's capture key (F12) in the game window, captures the next presented frame into `g6shim_captures` next to the executable; the trigger is deleted and the capture's path logged. The tool's overlay is turned off, and it is asked to keep its memory overhead under 1000 MB by spilling to disk. |
+| `graphics` | `d3d_debug` | `G6SHIM_D3D_DEBUG` | off | Create the device with the Direct3D debug layer; invalid calls appear as debug output. The D3D11 device enables the layer only when the value is `1`. |
+| `graphics` | `d3d_dred` | `G6SHIM_D3D_DRED` | off | Record GPU progress and page faults, so the log says where the GPU stopped when the device is removed. The reason for a removal is logged without it. Implemented by `d3d12_x` and `d3d12_xs`: `d3d12_xs` names every host list, records a marker before each draw, dispatch and copy (including card hash, depth copy, indirect sanitize and present compose), and on removal logs unfinished lists even when none of their ops have completed, plus lists that recorded no breadcrumbs. A page fault logs the nearest tracked shadow, card buffer, texture or descriptor heap, including low addresses, or that none are tracked. |
+| `graphics` | `d3d_warp` | `G6SHIM_D3D_WARP` | the default adapter | Create the host device on the software adapter. |
+| `graphics` | `card_buffers` | `G6SHIM_CARD_BUFFERS` | on | Keep shader-visible copies of large title buffers in video memory. CPU changes are copied up before a submission; afterwards only 64 KiB pieces whose contents changed are copied back. `0` keeps every copy in system memory. The log reports the adapter's local video-memory budget and use. |
+| `graphics` | `frame_timing` | `G6SHIM_FRAME_TIMING` | off | Add GPU busy milliseconds to the periodic `d3d12_xs` frame-rate line. Timestamp queries bracket each submission and are read after the fence completes. The line always includes, since the previous line, submissions and total/max CPU milliseconds for deferred preparation (with bytes copied), the command-list execution call, the fence wait and copy-back (with bytes). |
+| `graphics` | `completion_thread` | `G6SHIM_COMPLETION_THREAD` | on | Copy shader writes back, including changed card-buffer pieces, and publish queue fence signals on a completion thread after the host fence. `0` waits and copies back on the submitting thread. At most 3 submissions stay in flight. |
+| `graphics` | `cache_dir` | `G6SHIM_CACHE_DIR` | `g6shim_cache` in the folder of the executable | Folder for translated shaders and compiled host pipelines. |
+| `graphics` | `lazy_descriptors` | `G6SHIM_LAZY_DESCRIPTORS` | on | Title descriptor writes mark a slot dirty. A draw materializes the slots it uses, and heaps shaders index are swept before submission. `0` mirrors each write immediately. |
+| `input` | `autopress` | `G6SHIM_INPUT_AUTOPRESS` | none | Hold buttons for 0.2 s at those seconds after the first controller read, for example `6:Menu,9:A`. Buttons: `Menu View A B X Y Up Down Left Right`. |
+| `storage` | `bcpack_tables` | `G6SHIM_BCPACK_TABLES` | `bcpack-tables.bin` next to `XCRDAPI.dll` | BCPack constant tables for DirectStorage texture decompression. Without a table file BCPack requests fail; zlib and plain requests still run. |
+| `saves` | `dir` | `G6SHIM_DATA_DIR` | `%LOCALAPPDATA%\g6shim\data\<title ID>` | Folder for game saves; the title ID is 8 uppercase hex digits. |
+| — | — | `G6SHIM_DXIL` | the newest `Windows Kits\10\bin\<version>\x64\dxil.dll` | Environment only, not read from `g6shim.ini`. `dxil.dll` the shader translator and its tests validate and sign DXIL with. Without one the validator tests are skipped; when the variable is set and the file cannot be loaded, they fail. CI sets it to the Windows SDK's copy. |
+
+```ini
+[window]
+size = 1920x1080
+fullscreen = 1
+
+[graphics]
+capture_frames = 300,600
+d3d_debug = 1
+frame_timing = 1
+
+[console]
+model = series-s
+
+[saves]
+dir = D:\g6shim-data
+```
+
+## Caches
+
+Translated shaders and compiled host pipelines are kept next to the executable, in the work copy:
+
+| Folder | Content |
 |---|---|
-| `G6SHIM_LOG=<path>` | Log file. Default `g6shim.log` in the working directory (the game folder under `g6shim-run`). |
-| `G6SHIM_LOG_STDERR=0` | Stop copying the log to stderr. The log always goes to the debugger output too. |
-| `G6SHIM_TRACE=1` | Verbose diagnostics: repeated activations and queries, first calls of fast-table entries and draws, packet kinds, topology values. Graphics objects also remember their last 32 calls, and a command list that fails to close logs them. |
-| `G6SHIM_CAPTURE_FRAMES=300,600` | Save the back buffer of those presented frames (counted from 1) as `g6shim_frame_<n>.bmp` next to the executable. Works with the window hidden or the desktop locked. |
-| `G6SHIM_D3D_DEBUG=1` | Create the device with the Direct3D debug layer; invalid calls appear as debug output. |
-| `G6SHIM_D3D_DRED=1` | Record GPU progress and page faults, so the log says where the GPU stopped when the device is removed. The reason for a removal is logged without it. |
-| `G6SHIM_INPUT_AUTOPRESS=6:Menu,9:A` | Hold buttons for 0.2 s at those seconds after the first controller read. Buttons: `Menu View A B X Y Up Down Left Right`. |
-| `G6SHIM_BCPACK_TABLES=<path>` | BCPack constant tables for DirectStorage texture decompression. Default: `bcpack-tables.bin` next to `XCRDAPI.dll`. Without a table file BCPack requests fail; zlib and plain requests still run. |
+| `<exe folder>\g6shim_cache\shaders` | one entry per shader container: its translation, or a mark that it does not translate, so later runs of the same build drop it without translating it again |
+| `<exe folder>\g6shim_cache\pipelines` | the host pipeline library and the list of title pipelines to start early |
+
+`G6SHIM_CACHE_DIR`, or `[graphics] cache_dir`, replaces the `g6shim_cache` folder. When the executable path cannot be read and neither is set, nothing is kept. A changed build, adapter or driver discards the entries it cannot use; deleting the folders is always safe.
+
+## Saves
+
+Game saves (`XGameSave`) are kept outside the game folder, under the data folder:
+
+| Folder | Content |
+|---|---|
+| `<data folder>\saves\<xuid>\<configuration>` | the user's saves for one service configuration (`default` when the title names none) |
+| `<data folder>\saves\...\v<N>` | one committed version of a save container; a new version is written beside it and renamed into place, so a kill leaves the old version or the new one |
+
+The xuid is 16 uppercase hex digits. Each version folder holds a `manifest` and one file per blob. `G6SHIM_DATA_DIR`, or `[saves] dir`, replaces the whole data folder; removing it discards the saves. Saves made by an older one-file layout in the same folder are converted on first use.
 
 ## Files next to the executable
 
 | File | Content |
 |---|---|
+| `g6shim.ini` | Settings. Environment variables override it. |
 | `g6shim.log` | The log, appended on every run. |
 | `g6shim_input.ini` | Keyboard and controller mapping, written with defaults on first start. XInput controllers need no mapping. |
-| `g6shim_saves\<container>\<blob>` | Saves. Files larger than 64 MiB are treated as damaged. |
+| `g6shim_cache\` | Translated shaders and compiled host pipelines. The folders are described under [Caches](#caches). |
+| `g6shim_saves\<container>\<blob>` | WinRT connected-storage saves. Files larger than 64 MiB are treated as damaged. |
+| `g6shim_persistent\` | Persistent local storage, made on the first request for it and mounted as its own drive on the highest letter of `D:`-`Z:` that neither the host nor another mount uses. The log names the letter. |
 | `g6shim_frame_<n>.bmp` | Captured frames. |
+| `bcpack-tables.bin` | Optional, next to `XCRDAPI.dll`: the BCPack constant tables (see [BCPack tables](#bcpack-tables)). |
 | `console_xg_x.dll` | Optional: a copy of the console's own `xg_x.dll` from your dump. When present, texture layouts come from it instead of g6shim's own code. |
+
+## BCPack tables
+
+BCPack-compressed textures can only be unpacked with the format's constant tables (entropy models, rank tables, control codes, dictionaries; 77,982 bytes). They are not g6shim's work and are not covered by its licence, so the repository does not contain them. Configure with `-DG6SHIM_FETCH_BCPACK_TABLES=ON` to download a pinned copy from the VIctory project (checked by SHA-256) into the build folder, next to `XCRDAPI.dll`; `g6shim_deploy` copies it into the game folder. The default build downloads nothing.
+
+```bat
+cmake --preset release -DG6SHIM_FETCH_BCPACK_TABLES=ON -DG6SHIM_GAME_DIR=D:\work\Game
+cmake --build --preset release --target g6shim_deploy
+```
 
 ## Notes
 
 - The console's game drive `G:\` is the game folder; for a GDK title it is the folder of the executable, and the file forwarders translate it.
+- The console's temporary drive is `%TEMP%\g6shim_temp_<process id>_<tick count>`, made on the first request for it and mounted on `T:`, or on the highest free letter when the host or another mount uses `T:`. It is deleted with everything in it when the process exits normally.
 - DLLs the game ships for its own WinRT classes are activated from the game folder. Some need the Visual C++ 2012 x64 runtime.
-- A window close ends the game.
+- A window close ends the game. A window larger than the monitor's work area is shrunk to fit it, keeping the title's aspect ratio. The title bar shows the render resolution, the window's client size when it differs, and the frame rate.
+- A present with more than one plane draws each later plane over the earlier ones, scaled to the first plane. That first plane still sizes the swap chain. One plane is copied unchanged. A captured frame of a multi-plane present is the composed back buffer.
+- On CPUs that lack the console's AMD-only instructions, the runtime emulates them (`clzero`, `monitorx`/`mwaitx`, `clwb` and SSE4a's `extrq`/`insertq`) instead of stopping at an illegal instruction; [docs/abi/cpu.md](abi/cpu.md) lists the encodings.
+- The runtime gives the game process 1 ms timer resolution, also while its window is in the background. The console's timed waits are short; at Windows' default 15.6 ms steps a title's audio thread that sends one 10 ms period per wake leaves gaps between periods.

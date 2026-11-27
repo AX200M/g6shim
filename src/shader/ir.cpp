@@ -382,6 +382,7 @@ std::optional<Effects> effects(const Instruction& inst, const Fields& fields, st
                 regs(*val->dst, w);
         }
         if (val->carry) regs(*val->carry, w);
+        if ((name == "v_dot4c_i32_i8" || name == "v_pk_fmac_f16") && val->dst) regs(*val->dst, r);
         if (name == "v_swap_b32") {
             regs(val->src[0], w);
             if (val->dst) regs(*val->dst, r);

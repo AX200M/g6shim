@@ -7,13 +7,16 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "g6shim/shader/error.hpp"
 #include "g6shim/shader/gfx10_fields.hpp"
+#include "g6shim/shader/structure.hpp"
 
 namespace g6shim::shader {
 
@@ -26,6 +29,8 @@ constexpr std::size_t kNoIndex = static_cast<std::size_t>(-1);
 struct TraceError {
     const char* what;
 };
+
+using Known = std::vector<std::pair<Bool, bool>>;
 
 struct Term {
     enum class Kind : std::uint8_t { Const, Value };
@@ -84,6 +89,18 @@ std::optional<Moved> copy_source(const Inst& inst, std::size_t k) {
     }
     if (fields->src.empty()) return std::nullopt;
     const Operand& src = fields->src.front();
+    if (name == "s_bfm_b32" && fields->src.size() >= 2) {
+        constexpr std::uint32_t kShiftMask = 31;
+        const auto immediate = [](const Operand& op) -> std::optional<std::uint32_t> {
+            if (const auto* constant = std::get_if<ConstantOperand>(&op)) return inline_constant(constant->code);
+            if (const auto* literal = std::get_if<LiteralOperand>(&op)) return literal->value;
+            return std::nullopt;
+        };
+        const auto count = immediate(fields->src[0]);
+        const auto offset = immediate(fields->src[1]);
+        if (!count || !offset) return std::nullopt;
+        return Moved::constant_value(((std::uint32_t{1} << (*count & kShiftMask)) - 1u) << (*offset & kShiftMask));
+    }
     if (name == "s_mov_b32" || name == "s_mov_b64") {
         if (const auto* scalar = std::get_if<ScalarOperand>(&src)) {
             if (scalar->code == kNull) return Moved::constant_value(0);
@@ -91,10 +108,8 @@ std::optional<Moved> copy_source(const Inst& inst, std::size_t k) {
             if (!value) return std::nullopt;
             return Moved::origin(*value);
         }
-        if (name == "s_mov_b32") {
-            if (const auto* literal = std::get_if<LiteralOperand>(&src))
-                return Moved::constant_value(literal->value);
-        }
+        if (const auto* literal = std::get_if<LiteralOperand>(&src))
+            return Moved::constant_value(k == 0 ? literal->value : 0);
         if (const auto* c = std::get_if<ConstantOperand>(&src)) {
             const auto low = inline_constant(c->code);
             if (!low) return std::nullopt;
@@ -114,10 +129,13 @@ std::optional<Moved> copy_source(const Inst& inst, std::size_t k) {
     return std::nullopt;
 }
 
+using RootWord = std::pair<std::size_t, std::uint32_t>;
+
 class Tracer {
 public:
-    Tracer(const Program& program, const std::vector<RootParam>& layout, HwStage stage)
-        : p_(&program), layout_(&layout), stage_(stage) {
+    Tracer(const Program& program, const std::vector<RootParam>& layout, HwStage stage,
+           const Structured* lanes, const ComputeIo* compute)
+        : p_(&program), layout_(&layout), stage_(stage), lanes_(lanes) {
         std::size_t n = 0;
         for (const auto& entry : program.inputs)
             n = std::max(n, static_cast<std::size_t>(entry.second.index) + 1);
@@ -138,18 +156,28 @@ public:
             for (std::size_t i = 0; i < block.insts.size(); ++i)
                 for (const auto& entry : block.insts[i].writes) defs_[entry.second.index] = Site{b, i};
         }
+        rpo_.assign(program.blocks.size(), kNoIndex);
+        const std::vector<std::size_t> order = reverse_postorder(program.blocks);
+        for (std::size_t position = 0; position < order.size(); ++position) rpo_[order[position]] = position;
         origin_ = propagate_copies(n);
+        if (compute != nullptr && stage == HwStage::Cs) find_spilled_roots(*compute);
     }
 
-    std::optional<std::pair<std::size_t, std::uint32_t>> param_of(Reg reg) const {
-        if (reg.kind != Reg::Kind::S) return std::nullopt;
-        for (std::size_t i = 0; i < layout_->size(); ++i) {
-            const std::uint8_t first = user_sgpr(stage_, (*layout_)[i].user_data);
-            if (reg.code < first) continue;
-            const std::uint32_t dword = static_cast<std::uint32_t>(reg.code) - first;
-            if (dword < (*layout_)[i].sgprs) return std::pair<std::size_t, std::uint32_t>{i, dword};
-        }
-        return std::nullopt;
+    const Inst& inst(Site site) const { return p_->blocks[site.block].insts[site.index]; }
+
+    Term origin(Value value) const {
+        return value.index < origin_.size() ? origin_[value.index] : Term::origin(value);
+    }
+
+    std::optional<RootWord> param_of(Reg reg) const {
+        if (reg.kind != Reg::Kind::S || !spill_loads_.empty()) return std::nullopt;
+        return root_word(reg.code);
+    }
+
+    void add_spilled_roots(Resources& resources) const {
+        resources.spilled_root_loads = spill_loads_;
+        for (const auto& [value, word] : spilled_words_)
+            resources.params.emplace_back(value, word.first, word.second);
     }
 
     Address flat_address(const Inst& inst, const Operand* addr, const Operand* saddr, std::int16_t offset) const {
@@ -203,7 +231,7 @@ public:
         return address(*low, *high, extra);
     }
 
-    Source descriptor(const Inst& inst, const Operand& op) const {
+    Source descriptor(const Inst& inst, const Operand& op, std::size_t at) const {
         const auto* scalar = std::get_if<ScalarOperand>(&op);
         if (scalar == nullptr) throw TraceError{"a descriptor not in SGPRs"};
         std::vector<Term> words;
@@ -213,11 +241,82 @@ public:
             if (!value) throw TraceError{"a descriptor not in SGPRs"};
             words.push_back(origin(*value));
         }
+        if (inst.name().find("format") == std::string_view::npos) {
+            if (const auto raw = made_raw(words)) words.assign(raw->begin(), raw->end());
+        }
+        Known known;
+        if (lanes_ != nullptr && at < lanes_->reach.size()) known.emplace_back(lanes_->reach[at], true);
         std::vector<std::size_t> joins;
-        return classify(words, joins);
+        return classify(words, joins, known);
     }
 
 private:
+    std::optional<RootWord> root_word(std::uint32_t sgpr) const {
+        for (std::size_t i = 0; i < layout_->size(); ++i) {
+            const std::uint8_t first = user_sgpr(stage_, (*layout_)[i].user_data);
+            if (sgpr >= first && sgpr - first < (*layout_)[i].sgprs)
+                return RootWord{i, sgpr - first};
+        }
+        return std::nullopt;
+    }
+
+    std::optional<RootWord> param_of(Value value) const {
+        const auto spilled = spilled_words_.find(value);
+        if (spilled != spilled_words_.end()) return spilled->second;
+        if (value.index < inputs_.size() && inputs_[value.index]) return param_of(*inputs_[value.index]);
+        return std::nullopt;
+    }
+
+    bool entry_sgpr(Term value, std::uint8_t code) const {
+        return value.kind == Term::Kind::Value && value.value.index < inputs_.size() &&
+               inputs_[value.value.index] == Reg::s(code);
+    }
+
+    void find_spilled_roots(const ComputeIo& compute) {
+        constexpr std::uint32_t kFirstSpilledRoot = 16;
+        constexpr std::uint8_t kSpillPointerUserSgprs = 4;
+        constexpr std::uint32_t kSpillPointerHighMask = 0xff;
+        if (compute.user_sgprs() != kSpillPointerUserSgprs || layout_->empty()) return;
+        std::uint32_t first_root = UINT32_MAX;
+        for (const RootParam& root : *layout_) first_root = std::min(first_root, std::uint32_t{root.user_data});
+        if (first_root != kFirstSpilledRoot) return;
+        for (std::size_t b = 0; b < p_->blocks.size(); ++b) {
+            const Block& block = p_->blocks[b];
+            for (std::size_t i = 0; i < block.insts.size(); ++i) {
+                const Inst& inst = block.insts[i];
+                const auto* fields = std::get_if<SmemFields>(&inst.fields);
+                if (!fields || !fields->data || !inst.name().starts_with("s_load_dword")) continue;
+                const auto* base = std::get_if<ScalarOperand>(&fields->base);
+                const auto* dest = std::get_if<ScalarOperand>(&*fields->data);
+                if (!base || base->dwords != 2 || !dest) continue;
+                const auto lo = inst.read(Reg::s(base->code));
+                const auto hi = inst.read(Reg::s(static_cast<std::uint8_t>(base->code + 1)));
+                const auto offset = term(inst, fields->soffset);
+                if (!lo || !hi || !offset || offset->kind != Term::Kind::Const || !entry_sgpr(origin(*lo), 0))
+                    continue;
+                const Term high = origin(*hi);
+                if (high.kind != Term::Kind::Value) continue;
+                const auto mask = sop2(high.value, {"s_and_b32"});
+                if (!mask) continue;
+                const auto& [a, c] = mask->second;
+                const Term high_mask = Term::constant_value(kSpillPointerHighMask);
+                if (!(entry_sgpr(a, 1) && c == high_mask) && !(entry_sgpr(c, 1) && a == high_mask)) continue;
+                const std::int64_t byte = std::int64_t{fields->offset} + offset->constant;
+                if (byte < 0 || byte % 4 != 0 || byte / 4 + first_root + dest->dwords > 256) continue;
+                const auto logical = first_root + static_cast<std::uint32_t>(byte / 4);
+                bool found = false;
+                for (std::uint8_t word = 0; word < dest->dwords; ++word) {
+                    const auto value = inst.write(Reg::s(static_cast<std::uint8_t>(dest->code + word)));
+                    const auto root = root_word(logical + word);
+                    if (!value || !root) continue;
+                    spilled_words_.emplace(*value, *root);
+                    found = true;
+                }
+                if (found) spill_loads_.push_back(Site{b, i});
+            }
+        }
+    }
+
     struct JoinGuard {
         std::vector<std::size_t>& joins;
         ~JoinGuard() { joins.pop_back(); }
@@ -236,8 +335,6 @@ private:
         if (value.index >= defs_.size()) return std::nullopt;
         return defs_[value.index];
     }
-
-    Term origin(Value value) const { return value.index < origin_.size() ? origin_[value.index] : Term::origin(value); }
 
     std::optional<Term> term(const Inst& inst, const Operand& op) const {
         if (const auto* scalar = std::get_if<ScalarOperand>(&op)) {
@@ -273,11 +370,14 @@ private:
         if (value.kind == Term::Kind::Const) return Sum{std::nullopt, value.constant, std::nullopt};
         const Value v = value.value;
         const Sum dynamic{std::nullopt, 0, v};
-        if (v.index < inputs_.size() && inputs_[v.index]) {
-            const auto found = param_of(*inputs_[v.index]);
-            if (found && found->second == 0) return Sum{v, 0, std::nullopt};
-            return dynamic;
+        const auto found = param_of(v);
+        if (found && found->second == 0) {
+            const RootType::Kind kind = (*layout_)[found->first].root.kind;
+            if (!spilled_words_.contains(v) || kind == RootType::Kind::Descriptor || kind == RootType::Kind::Table ||
+                kind == RootType::Kind::ResourceHeap || kind == RootType::Kind::SamplerHeap)
+                return Sum{v, 0, std::nullopt};
         }
+        if (v.index < inputs_.size() && inputs_[v.index]) return dynamic;
         if (getpc(v)) return Sum{v, 0, std::nullopt};
         std::optional<std::array<Term, 2>> add;
         if (const auto s = sop2(v, {"s_add_u32", "s_add_i32"})) add = s->second;
@@ -352,17 +452,23 @@ private:
                            static_cast<std::uint32_t>((*pc)->machine.offset) + 4u + s.offset + extra.offset,
                            s.dynamic ? s.dynamic : extra.dynamic};
         }
-        if (base.index >= inputs_.size() || !inputs_[base.index])
-            throw TraceError{"an address not from a root parameter"};
-        const auto found = param_of(*inputs_[base.index]);
+        const auto found = param_of(base);
         if (!found) throw TraceError{"an address not from a root parameter"};
         const std::size_t param = found->first;
         std::optional<Value> high_value;
+        const bool spilled = spilled_words_.contains(base);
         switch ((*layout_)[param].root.kind) {
             case RootType::Kind::Table:
             case RootType::Kind::ResourceHeap:
             case RootType::Kind::SamplerHeap: break;
             case RootType::Kind::Descriptor: {
+                if (spilled) {
+                    const auto load = def(base);
+                    if (load)
+                        for (const auto& write : (*load)->writes)
+                            if (param_of(write.second) == RootWord{param, 1}) high_value = write.second;
+                    break;
+                }
                 const Reg reg = Reg::s(static_cast<std::uint8_t>(
                     user_sgpr(stage_, (*layout_)[param].user_data) + 1));
                 std::optional<Value> input;
@@ -375,6 +481,10 @@ private:
             default: throw TraceError{"an address from a root parameter that is no address"};
         }
         const std::optional<Value> dynamic = s.dynamic ? s.dynamic : extra.dynamic;
+        if (spilled && high.kind == Term::Kind::Value && param_of(high.value) == RootWord{param, 1})
+            return Address{param, s.offset + extra.offset, dynamic};
+        if (spilled && (*layout_)[param].root.kind == RootType::Kind::Descriptor && !high_value)
+            throw TraceError{"a root descriptor without its high half"};
         if (!high_half(high, high_value) && !(dynamic && high_value && carried(high, *high_value)))
             throw TraceError{"an address with an untracked high half"};
         return Address{param, s.offset + extra.offset, dynamic};
@@ -413,6 +523,7 @@ private:
     const char* why_no_base(std::optional<Value> dynamic) const {
         if (!dynamic) return "a constant address";
         const Value v = *dynamic;
+        if (param_of(v)) return "an address held inside a root parameter";
         if (v.index < inputs_.size() && inputs_[v.index]) return "an address in an SGPR that is no root parameter";
         for (Value leaf : leaves(v)) {
             const auto inst = def(leaf);
@@ -440,8 +551,31 @@ private:
             if (t.kind == Term::Kind::Value) collect_leaves(t.value, out);
     }
 
-    Source classify(const std::vector<Term>& words, std::vector<std::size_t>& joins) const {
-        if (const auto source = phi(words, joins)) return *source;
+    Source classify(const std::vector<Term>& words, std::vector<std::size_t>& joins, Known& known) const {
+        if (const auto source = phi(words, joins, known)) return *source;
+        if (const auto source = select(words, joins, known)) return *source;
+        const auto read = [&](const Term& w) -> std::optional<Value> {
+            if (w.kind != Term::Kind::Value) return std::nullopt;
+            return first_lane_source(w.value);
+        };
+        std::vector<Value> first_lanes;
+        bool every = true;
+        for (const Term& word : words) {
+            const auto value = read(word);
+            if (!value) {
+                every = false;
+                break;
+            }
+            first_lanes.push_back(*value);
+        }
+        if (every) {
+            std::vector<Term> lanes;
+            lanes.reserve(first_lanes.size());
+            for (Value value : first_lanes) lanes.push_back(Term::origin(value));
+            return per_lane(lanes, joins, known);
+        }
+        for (const Term& word : words)
+            if (read(word)) throw TraceError{"a descriptor partly read from the first lane"};
         std::vector<std::uint32_t> constants;
         bool all_constant = true;
         for (const Term& word : words) {
@@ -475,7 +609,8 @@ private:
         throw TraceError{"a descriptor neither loaded nor built"};
     }
 
-    std::optional<Source> phi(const std::vector<Term>& words, std::vector<std::size_t>& joins) const {
+    std::optional<Source> phi(const std::vector<Term>& words, std::vector<std::size_t>& joins,
+                              Known& known) const {
         const auto phi_of = [&](const Term& word) -> std::optional<Site> {
             if (word.kind != Term::Kind::Value) return std::nullopt;
             if (word.value.index >= phis_.size()) return std::nullopt;
@@ -505,9 +640,632 @@ private:
                 const auto site = phi_of(word);
                 edge.push_back(site ? origin(phis[site->index].args[j]) : word);
             }
-            args.push_back(classify(edge, joins));
+            args.push_back(classify(edge, joins, known));
         }
         return Source::phi(*block, std::move(args));
+    }
+
+    std::optional<Source> select(const std::vector<Term>& words, std::vector<std::size_t>& joins,
+                                 Known& known) const {
+        std::vector<std::optional<std::tuple<Value, Term, Term>>> picks;
+        picks.reserve(words.size());
+        for (const Term& word : words) {
+            if (word.kind != Term::Kind::Value) {
+                picks.push_back(std::nullopt);
+                continue;
+            }
+            picks.push_back(picked(word.value));
+        }
+        std::optional<Value> scc;
+        for (const auto& pick : picks)
+            if (pick) {
+                scc = std::get<0>(*pick);
+                break;
+            }
+        if (!scc) return std::nullopt;
+        for (const auto& pick : picks)
+            if (pick && !(std::get<0>(*pick) == *scc))
+                throw TraceError{"a descriptor chosen by several conditions"};
+        if (joins.size() >= kMaxJoins) throw TraceError{"a descriptor joined too often"};
+        joins.push_back(kNoIndex);
+        const JoinGuard guard{joins};
+        std::vector<Source> args;
+        for (bool set : {true, false}) {
+            std::vector<Term> side;
+            side.reserve(words.size());
+            for (std::size_t k = 0; k < words.size(); ++k) {
+                if (picks[k]) {
+                    side.push_back(set ? std::get<1>(*picks[k]) : std::get<2>(*picks[k]));
+                } else {
+                    side.push_back(words[k]);
+                }
+            }
+            args.push_back(classify(side, joins, known));
+        }
+        return Source::select(*scc, std::move(args));
+    }
+
+    std::optional<std::tuple<Value, Term, Term>> picked(Value v) const {
+        const auto inst = def(v);
+        if (!inst) return std::nullopt;
+        const auto* fields = std::get_if<SopFields>(&(*inst)->fields);
+        if (fields == nullptr) return std::nullopt;
+        std::size_t k = kNoIndex;
+        for (std::size_t n = 0; n < (*inst)->writes.size(); ++n)
+            if ((*inst)->writes[n].second == v) {
+                k = n;
+                break;
+            }
+        if (k == kNoIndex || k > 1) return std::nullopt;
+        const std::string_view name = (*inst)->name();
+        const bool wide = name == "s_cselect_b64" || name == "s_cmov_b64";
+        if (!wide && name != "s_cselect_b32" && name != "s_cmov_b32") return std::nullopt;
+        const std::uint8_t dword_index = static_cast<std::uint8_t>(k);
+        const auto dword = [&](const Operand& op) -> std::optional<Term> {
+            if (const auto* scalar = std::get_if<ScalarOperand>(&op)) {
+                if (scalar->code == kNull) return Term::constant_value(0);
+                const auto value = (*inst)->read(Reg::s(static_cast<std::uint8_t>(scalar->code + dword_index)));
+                if (!value) return std::nullopt;
+                return origin(*value);
+            }
+            if (const auto* c = std::get_if<ConstantOperand>(&op)) {
+                if (!wide) {
+                    const auto value = inline_constant(c->code);
+                    if (!value) return std::nullopt;
+                    return Term::constant_value(*value);
+                }
+                if (c->code >= 128 && c->code <= 208) {
+                    const auto low = inline_constant(c->code);
+                    if (!low) return std::nullopt;
+                    return Term::constant_value(dword_index == 0
+                                                    ? *low
+                                                    : static_cast<std::uint32_t>(static_cast<std::int32_t>(*low) >> 31));
+                }
+                return std::nullopt;
+            }
+            if (const auto* literal = std::get_if<LiteralOperand>(&op)) {
+                if (wide) return std::nullopt;
+                return Term::constant_value(literal->value);
+            }
+            return std::nullopt;
+        };
+        if (fields->src.empty()) return std::nullopt;
+        const auto set = dword(fields->src.front());
+        if (!set) return std::nullopt;
+        std::optional<Term> clear;
+        if (name.starts_with("s_cmov")) {
+            if (!fields->dst) return std::nullopt;
+            clear = dword(*fields->dst);
+        } else {
+            if (fields->src.size() < 2) return std::nullopt;
+            clear = dword(fields->src[1]);
+        }
+        if (!clear) return std::nullopt;
+        const auto scc = (*inst)->read(Reg::scc());
+        if (!scc) return std::nullopt;
+        return std::tuple<Value, Term, Term>{*scc, *set, *clear};
+    }
+
+public:
+    std::optional<Value> first_lane_source(Value v) const {
+        const auto inst = def(v);
+        if (!inst) return std::nullopt;
+        const auto* fields = std::get_if<Valu>(&(*inst)->fields);
+        if (fields == nullptr) return std::nullopt;
+        if ((*inst)->name() != "v_readfirstlane_b32" || fields->sdwa || fields->dpp) return std::nullopt;
+        if (fields->src.empty()) return std::nullopt;
+        const auto* vec = std::get_if<VectorOperand>(&fields->src.front());
+        if (vec == nullptr) return std::nullopt;
+        return (*inst)->read(Reg::v(vec->reg));
+    }
+
+    std::optional<std::vector<Value>> first_lane_words(const Inst& inst, const Operand& op) const {
+        const auto* scalar = std::get_if<ScalarOperand>(&op);
+        if (scalar == nullptr) return std::nullopt;
+        std::vector<Value> out;
+        out.reserve(scalar->dwords);
+        for (std::uint8_t k = 0; k < scalar->dwords; ++k) {
+            const auto value = inst.read(Reg::s(static_cast<std::uint8_t>(scalar->code + k)));
+            if (!value) return std::nullopt;
+            const Term t = origin(*value);
+            if (t.kind != Term::Kind::Value) return std::nullopt;
+            if (!first_lane_source(t.value)) return std::nullopt;
+            out.push_back(t.value);
+        }
+        return out;
+    }
+
+    Term lane_term(Term t) const {
+        for (std::size_t i = 0; i < kMaxJoins * 2; ++i) {
+            if (t.kind != Term::Kind::Value) break;
+            const Term next = vorigin(t.value);
+            if (next == t) break;
+            t = next;
+        }
+        return t;
+    }
+
+    bool varies(const Term& t) const {
+        if (t.kind != Term::Kind::Value) return false;
+        const Value v = t.value;
+        std::optional<Reg> reg;
+        if (v.index < inputs_.size() && inputs_[v.index]) {
+            reg = inputs_[v.index];
+        } else if (v.index < phis_.size() && phis_[v.index]) {
+            const Site site = *phis_[v.index];
+            reg = p_->blocks[site.block].phis[site.index].reg;
+        } else if (const auto inst = def(v)) {
+            for (const auto& entry : (*inst)->writes)
+                if (entry.second == v) {
+                    reg = entry.first;
+                    break;
+                }
+        }
+        return reg && reg->kind == Reg::Kind::V;
+    }
+
+    Term lane_value(Term t, const Known& known) const {
+        for (std::size_t i = 0; i < kMaxJoins * 2; ++i) {
+            if (t.kind != Term::Kind::Value) break;
+            const Term next = vstep(t.value);
+            if (next == t) break;
+            if (varies(t)) {
+                if (const auto site = def_site(t.value)) runs(*site, known);
+            }
+            t = next;
+        }
+        return t;
+    }
+
+    Term vstep(Value v) const {
+        if (const auto inst = def(v)) {
+            if ((*inst)->name() == "v_mov_b32") {
+                const auto* fields = std::get_if<Valu>(&(*inst)->fields);
+                if (fields != nullptr && fields->abs == 0 && fields->neg == 0 && !fields->sdwa &&
+                    !fields->dpp && !fields->src.empty()) {
+                    if (const auto t = raw(**inst, fields->src.front())) return *t;
+                }
+            }
+        }
+        return origin(v);
+    }
+
+    std::optional<Term> raw(const Inst& inst, const Operand& op) const {
+        if (const auto* vec = std::get_if<VectorOperand>(&op)) {
+            const auto value = inst.read(Reg::v(vec->reg));
+            if (!value) return std::nullopt;
+            return Term::origin(*value);
+        }
+        return term(inst, op);
+    }
+
+    void runs(Site site, const Known& known) const {
+        if (lanes_ == nullptr) return;
+        if (site.block >= lanes_->guards.size()) return;
+        if (site.index >= lanes_->guards[site.block].size()) return;
+        const std::optional<Bool>& guard = lanes_->guards[site.block][site.index];
+        if (!guard) return;
+        Known skips = known;
+        skips.emplace_back(lanes_->reach[site.block], true);
+        skips.emplace_back(*guard, false);
+        if (lanes_->bools.meet(skips))
+            throw TraceError{"a per-lane descriptor written where some lanes may keep the old one"};
+    }
+
+    Source per_lane(const std::vector<Term>& words, std::vector<std::size_t>& joins,
+                    Known& known) const {
+        std::vector<Term> stepped;
+        stepped.reserve(words.size());
+        for (const Term& word : words) stepped.push_back(lane_value(word, known));
+        std::optional<Term> lane;
+        for (const Term& word : stepped)
+            if (varies(word)) {
+                lane = word;
+                break;
+            }
+        if (!lane) return classify(stepped, joins, known);
+        if (const auto source = fetched(stepped, known)) return *source;
+        if (const auto source = lane_select(stepped, joins, known)) return *source;
+        if (const auto source = lane_phi(stepped, joins, known)) return *source;
+        const Value v = lane->value;
+        if (v.index < inputs_.size() && inputs_[v.index])
+            throw TraceError{"a descriptor read from the first lane of an input VGPR"};
+        const auto inst = def(v);
+        if (!inst) throw TraceError{"a descriptor read from the first lane of a phi"};
+        const std::string_view name = (*inst)->name();
+        if (name.starts_with("ds_read"))
+            throw TraceError{"a descriptor read from the first lane of an LDS read"};
+        if (name.starts_with("buffer_load"))
+            throw TraceError{"a descriptor read from the first lane of a buffer load"};
+        if (name.starts_with("global_load") || name.starts_with("flat_load"))
+            throw TraceError{"a descriptor read from the first lane of a partial or mixed load"};
+        throw TraceError{"a descriptor read from the first lane of computed VGPRs"};
+    }
+
+    std::optional<Source> fetched(const std::vector<Term>& words, const Known& known) const {
+        const auto at = [&](const Term& w) -> std::optional<std::pair<Site, std::size_t>> {
+            if (w.kind != Term::Kind::Value) return std::nullopt;
+            const auto site = def_site(w.value);
+            if (!site) return std::nullopt;
+            const Inst& inst = inst_at(*site);
+            if (!inst.name().starts_with("global_load_dword")) return std::nullopt;
+            std::size_t dword = 0;
+            bool found = false;
+            for (const auto& entry : inst.writes) {
+                if (entry.first.kind != Reg::Kind::V) continue;
+                if (entry.second == w.value) {
+                    found = true;
+                    break;
+                }
+                ++dword;
+            }
+            if (!found) return std::nullopt;
+            return std::pair<Site, std::size_t>{*site, dword};
+        };
+        std::vector<std::pair<Site, std::size_t>> sites;
+        for (const Term& word : words) {
+            const auto site = at(word);
+            if (!site) return std::nullopt;
+            sites.push_back(*site);
+        }
+        const auto address = [&](Site site) {
+            const Inst& inst = inst_at(site);
+            const auto* fields = std::get_if<FlatFields>(&inst.fields);
+            if (fields == nullptr) throw TraceError{"a global load"};
+            return flat_address(inst, fields->addr ? &*fields->addr : nullptr,
+                                fields->saddr ? &*fields->saddr : nullptr, fields->offset);
+        };
+        const Site load = sites[0].first;
+        const std::size_t first = sites[0].second;
+        const Address a0 = address(load);
+        for (std::size_t k = 0; k < sites.size(); ++k) {
+            runs(sites[k].first, known);
+            const Address a = address(sites[k].first);
+            const std::uint32_t want = a0.offset + 4u * static_cast<std::uint32_t>(first + k);
+            if (a.param != a0.param || a.dynamic != a0.dynamic ||
+                a.offset + 4u * static_cast<std::uint32_t>(sites[k].second) != want)
+                throw TraceError{"a descriptor read from the first lane of loads that do not line up"};
+        }
+        return Source::fetched(load, static_cast<std::uint8_t>(first));
+    }
+
+    std::optional<Source> lane_select(const std::vector<Term>& words, std::vector<std::size_t>& joins,
+                                      Known& known) const {
+        std::vector<std::optional<std::tuple<Value, Term, Term>>> picks;
+        picks.reserve(words.size());
+        for (const Term& word : words) {
+            if (word.kind != Term::Kind::Value) {
+                picks.push_back(std::nullopt);
+                continue;
+            }
+            picks.push_back(lane_picked(word.value));
+        }
+        std::optional<Value> mask;
+        for (const auto& pick : picks)
+            if (pick) {
+                mask = std::get<0>(*pick);
+                break;
+            }
+        if (!mask) return std::nullopt;
+        for (const auto& pick : picks)
+            if (pick && !(std::get<0>(*pick) == *mask))
+                throw TraceError{"a descriptor chosen per lane by several masks"};
+        for (std::size_t k = 0; k < words.size(); ++k) {
+            if (words[k].kind != Term::Kind::Value || !picks[k]) continue;
+            if (const auto site = def_site(words[k].value)) runs(*site, known);
+        }
+        if (joins.size() >= kMaxJoins) throw TraceError{"a descriptor joined too often"};
+        joins.push_back(kNoIndex);
+        const JoinGuard guard{joins};
+        std::optional<Bool> bit;
+        if (lanes_ != nullptr) {
+            const auto found = lanes_->masks.find(*mask);
+            if (found != lanes_->masks.end()) bit = found->second;
+        }
+        std::vector<Source> args;
+        for (bool set : {true, false}) {
+            std::vector<Term> side;
+            side.reserve(words.size());
+            for (std::size_t k = 0; k < words.size(); ++k) {
+                if (picks[k]) {
+                    side.push_back(set ? std::get<1>(*picks[k]) : std::get<2>(*picks[k]));
+                } else {
+                    side.push_back(words[k]);
+                }
+            }
+            const std::size_t n = known.size();
+            if (bit) known.emplace_back(*bit, set);
+            std::optional<Source> arg;
+            try {
+                arg = per_lane(side, joins, known);
+            } catch (...) {
+                known.resize(n);
+                throw;
+            }
+            known.resize(n);
+            args.push_back(*arg);
+        }
+        return Source::lanes(*mask, std::move(args));
+    }
+
+    std::optional<std::tuple<Value, Term, Term>> lane_picked(Value v) const {
+        const auto inst = def(v);
+        if (!inst) return std::nullopt;
+        const auto* fields = std::get_if<Valu>(&(*inst)->fields);
+        if (fields == nullptr || !fields->dst) return std::nullopt;
+        const auto* target = std::get_if<VectorOperand>(&*fields->dst);
+        if (target == nullptr) return std::nullopt;
+        if ((*inst)->name() != "v_cndmask_b32" ||
+            (*inst)->write(Reg::v(target->reg)) != std::optional<Value>{v} || fields->abs != 0 ||
+            fields->neg != 0 || fields->clamp || fields->omod != 0 || fields->sdwa || fields->dpp)
+            return std::nullopt;
+        if (fields->src.size() != 3) return std::nullopt;
+        const auto* mask_op = std::get_if<ScalarOperand>(&fields->src[2]);
+        if (mask_op == nullptr) return std::nullopt;
+        const auto mask = (*inst)->read(Reg::s(mask_op->code));
+        if (!mask) return std::nullopt;
+        const auto set = raw(**inst, fields->src[1]);
+        if (!set) return std::nullopt;
+        const auto clear = raw(**inst, fields->src[0]);
+        if (!clear) return std::nullopt;
+        return std::tuple<Value, Term, Term>{*mask, *set, *clear};
+    }
+
+    std::optional<Source> lane_phi(const std::vector<Term>& words, std::vector<std::size_t>& joins,
+                                   Known& known) const {
+        const auto phi_of = [&](const Term& word) -> std::optional<Site> {
+            if (word.kind != Term::Kind::Value) return std::nullopt;
+            if (word.value.index >= phis_.size()) return std::nullopt;
+            return phis_[word.value.index];
+        };
+        std::optional<std::size_t> block;
+        for (const Term& word : words) {
+            const auto site = phi_of(word);
+            if (!site) continue;
+            if (block && *block != site->block) throw TraceError{"a descriptor joined in several blocks"};
+            block = site->block;
+        }
+        if (!block) return std::nullopt;
+        if (std::find(joins.begin(), joins.end(), *block) != joins.end())
+            throw TraceError{"a descriptor that changes in a loop"};
+        const std::vector<std::size_t>& preds = p_->blocks[*block].preds;
+        for (std::size_t q : preds)
+            if (rpo_[q] >= rpo_[*block])
+                throw TraceError{"a descriptor read from the first lane of a phi at a loop header"};
+        if (lanes_ == nullptr)
+            throw TraceError{"a descriptor read from the first lane of a phi, without the lanes' paths"};
+        const Structured& lanes = *lanes_;
+        for (const Term& word : words) {
+            if (word.kind != Term::Kind::Value || phi_of(word)) continue;
+            const auto site = def_site(word.value);
+            if (site && (site->block == *block || reaches(*block, site->block)))
+                throw TraceError{"a descriptor partly joined by control flow"};
+        }
+        if (joins.size() >= kMaxJoins) throw TraceError{"a descriptor joined too often"};
+        joins.push_back(*block);
+        const std::vector<Phi>& phis = p_->blocks[*block].phis;
+        std::vector<std::optional<Source>> args;
+        args.reserve(preds.size());
+        for (std::size_t j = 0; j < preds.size(); ++j) {
+            const std::size_t q = preds[j];
+            const std::size_t n = known.size();
+            known.emplace_back(lanes.reach[q], true);
+            const LaneExit& exit = lanes.exits[q];
+            if (exit.kind == LaneExit::Kind::Branch && exit.target != exit.not_taken)
+                known.emplace_back(exit.when, exit.target == *block);
+            std::optional<Source> arg;
+            if (lanes.bools.meet(known)) {
+                std::vector<Term> edge;
+                edge.reserve(words.size());
+                for (const Term& word : words) {
+                    const auto site = phi_of(word);
+                    edge.push_back(site ? Term::origin(phis[site->index].args[j]) : word);
+                }
+                try {
+                    arg = per_lane(edge, joins, known);
+                } catch (...) {
+                    known.resize(n);
+                    joins.pop_back();
+                    throw;
+                }
+            }
+            known.resize(n);
+            args.push_back(arg);
+        }
+        joins.pop_back();
+        return Source::lane_phi(*block, std::move(args));
+    }
+
+    bool reaches(std::size_t from, std::size_t to) const {
+        std::vector<bool> seen(p_->blocks.size(), false);
+        std::vector<std::size_t> stack = p_->blocks[from].exit.successors();
+        while (!stack.empty()) {
+            const std::size_t x = stack.back();
+            stack.pop_back();
+            if (x == to) return true;
+            if (seen[x]) continue;
+            seen[x] = true;
+            const std::vector<std::size_t> more = p_->blocks[x].exit.successors();
+            stack.insert(stack.end(), more.begin(), more.end());
+        }
+        return false;
+    }
+
+    Waterfall waterfall(std::size_t b, const std::vector<std::size_t>& accesses,
+                        const std::vector<Value>& reads) const {
+        constexpr const char* kLoop = "a descriptor read from the first lane outside a waterfall loop";
+        constexpr const char* kSplit = "a waterfall loop nested in another or split over blocks";
+        constexpr const char* kSelect = "a waterfall loop whose compares do not select the access's lanes";
+        constexpr const char* kRetry = "a waterfall loop whose retry does not keep the lanes still waiting";
+        if (accesses.empty() || reads.empty()) throw TraceError{kLoop};
+        const std::size_t access = accesses[0];
+        const Block& block = p_->blocks[b];
+        if (lanes_ == nullptr) throw TraceError{kLoop};
+        const Structured& lanes = *lanes_;
+        if (block.insts.empty()) throw TraceError{kLoop};
+        const Inst& exit = block.insts.back();
+        if (block.exit.kind != Exit::Kind::Branch || block.exit.target != b ||
+            block.exit.not_taken == b || exit.name() != "s_cbranch_execnz")
+            throw TraceError{kLoop};
+        const auto mask_of = [&](std::optional<Value> low, std::optional<Value> high) -> std::optional<Bool> {
+            std::optional<Value> pair = high;
+            if (!p_->wave64) pair = std::nullopt;
+            if (!low) return std::nullopt;
+            if (p_->wave64 && !pair) return std::nullopt;
+            return lanes.mask_bits(*low, pair);
+        };
+        const auto exec = [&](const Inst& inst) {
+            return mask_of(inst.read(Reg::s(kExec)), inst.read(Reg::s(static_cast<std::uint8_t>(kExec + 1))));
+        };
+        for (Value v : reads) {
+            const auto site = def_site(v);
+            if (!site || site->block != b) throw TraceError{kSplit};
+        }
+        if (access >= block.insts.size()) throw TraceError{kLoop};
+        const std::optional<Bool> selected = exec(block.insts[access]);
+        if (!selected) throw TraceError{kSelect};
+        for (std::size_t i : accesses)
+            if (i >= block.insts.size() || !(exec(block.insts[i]) == selected)) throw TraceError{kSelect};
+        const std::optional<Bool> retry = exec(exit);
+        if (!retry) throw TraceError{kRetry};
+        const auto first_site = def_site(reads[0]);
+        if (!first_site) throw TraceError{kLoop};
+        const std::optional<Bool> remaining = exec(inst_at(*first_site));
+        if (!remaining) throw TraceError{kSelect};
+        for (Value v : reads) {
+            const auto site = def_site(v);
+            if (!site || site->index >= access) throw TraceError{kSelect};
+            if (!(exec(inst_at(*site)) == remaining)) throw TraceError{kSelect};
+        }
+        const std::pair<Bool, bool> reach{lanes.reach[b], true};
+        const auto meet = [&](const Known& conditions) { return lanes.bools.meet(conditions); };
+        Waterfall out;
+        Known required{{*remaining, true}};
+        for (std::size_t i = 0; i < access; ++i) {
+            const Inst& inst = block.insts[i];
+            const auto* fields = std::get_if<Valu>(&inst.fields);
+            if (fields == nullptr) continue;
+            const std::string_view name = inst.name();
+            std::string_view ty;
+            if (name.starts_with("v_cmp_eq_")) {
+                ty = name.substr(9);
+            } else if (name.starts_with("v_cmpx_eq_")) {
+                ty = name.substr(10);
+            } else {
+                continue;
+            }
+            std::size_t dwords = 0;
+            if (ty == "u32" || ty == "i32") dwords = 1;
+            else if (ty == "u64" || ty == "i64") dwords = 2;
+            else continue;
+            if (fields->abs != 0 || fields->neg != 0 || fields->sdwa || fields->dpp) continue;
+            const auto pair = [&](const Operand& first, const Operand& own) -> std::optional<std::vector<Value>> {
+                const auto* scalar = std::get_if<ScalarOperand>(&first);
+                const auto* vec = std::get_if<VectorOperand>(&own);
+                if (scalar == nullptr || vec == nullptr) return std::nullopt;
+                std::vector<Value> xs;
+                xs.reserve(dwords);
+                for (std::size_t k = 0; k < dwords; ++k) {
+                    const auto read = inst.read(Reg::s(static_cast<std::uint8_t>(scalar->code + k)));
+                    if (!read) return std::nullopt;
+                    const Term term_value = origin(*read);
+                    if (term_value.kind != Term::Kind::Value) return std::nullopt;
+                    const Value x = term_value.value;
+                    const auto lane = inst.read(Reg::v(static_cast<std::uint8_t>(vec->reg + k)));
+                    if (!lane) return std::nullopt;
+                    const auto site_def = def_site(x);
+                    if (!site_def) return std::nullopt;
+                    const auto source = first_lane_source(x);
+                    if (!source) return std::nullopt;
+                    const bool same =
+                        std::find(reads.begin(), reads.end(), x) != reads.end() && site_def->index < i &&
+                        lane_term(Term::origin(*source)) == lane_term(Term::origin(*lane));
+                    if (!same) return std::nullopt;
+                    xs.push_back(x);
+                }
+                return xs;
+            };
+            if (fields->src.size() < 2) continue;
+            std::optional<std::vector<Value>> xs = pair(fields->src[0], fields->src[1]);
+            if (!xs) xs = pair(fields->src[1], fields->src[0]);
+            if (!xs) continue;
+            std::optional<std::uint8_t> code;
+            if (name.starts_with("v_cmpx_")) {
+                code = kExec;
+            } else if (fields->dst) {
+                if (const auto* scalar = std::get_if<ScalarOperand>(&*fields->dst)) code = scalar->code;
+            }
+            if (!code) continue;
+            const std::optional<Bool> matched =
+                mask_of(inst.write(Reg::s(*code)),
+                        inst.write(Reg::s(static_cast<std::uint8_t>(*code + 1))));
+            if (!matched) continue;
+            if (meet({reach, {*selected, true}, {*matched, false}})) continue;
+            required.emplace_back(*matched, true);
+            out.compares.push_back(Site{b, i});
+            for (Value x : *xs)
+                if (std::find(out.reads.begin(), out.reads.end(), x) == out.reads.end())
+                    out.reads.push_back(x);
+        }
+        for (Value v : reads)
+            if (std::find(out.reads.begin(), out.reads.end(), v) == out.reads.end())
+                throw TraceError{kSelect};
+        if (meet({reach, {*selected, true}, {*remaining, false}})) throw TraceError{kSelect};
+        required.push_back(reach);
+        required.emplace_back(*selected, false);
+        if (meet(required)) throw TraceError{kSelect};
+        if (meet({reach, {*retry, true}, {*remaining, false}}) ||
+            meet({reach, {*retry, true}, {*selected, true}}) ||
+            meet({reach, {*remaining, true}, {*selected, false}, {*retry, false}}))
+            throw TraceError{kRetry};
+        return out;
+    }
+
+private:
+    std::optional<Term> other_operand(Value value, std::string_view name, std::uint32_t constant) const {
+        const auto op = sop2(value, {name});
+        if (!op) return std::nullopt;
+        const Term& a = op->second[0];
+        const Term& b = op->second[1];
+        if (b.kind == Term::Kind::Const && b.constant == constant) return a;
+        if (a.kind == Term::Kind::Const && a.constant == constant) return b;
+        return std::nullopt;
+    }
+
+    std::optional<std::array<Term, 4>> made_raw(const std::vector<Term>& words) const {
+        constexpr std::uint32_t kStrideCleared = 0xC000'FFFF;
+        constexpr std::uint32_t kByteBounds = 0x3000'0000;
+        constexpr std::uint32_t kBoundsCleared = 0xCFFF'FFFF;
+        constexpr std::uint32_t kStrideField = 0x000E'0010;
+        constexpr std::uint32_t kLeastStride = 1;
+        if (words.size() != 4) return std::nullopt;
+        for (std::size_t k = 1; k < words.size(); ++k)
+            if (words[k].kind != Term::Kind::Value) return std::nullopt;
+        const auto stride_cleared = other_operand(words[1].value, "s_and_b32", kStrideCleared);
+        if (!stride_cleared) return std::nullopt;
+        const auto bounds_set = other_operand(words[3].value, "s_or_b32", kByteBounds);
+        if (!bounds_set || bounds_set->kind != Term::Kind::Value) return std::nullopt;
+        const auto bounds_word = other_operand(bounds_set->value, "s_and_b32", kBoundsCleared);
+        if (!bounds_word) return std::nullopt;
+        const auto bytes = sop2(words[2].value, {"s_mul_i32"});
+        if (!bytes) return std::nullopt;
+        const auto stride_of = [&](const Term& term) -> std::optional<Term> {
+            if (term.kind != Term::Kind::Value) return std::nullopt;
+            return other_operand(term.value, "s_max_u32", kLeastStride);
+        };
+        std::optional<Term> records;
+        std::optional<Term> stride = stride_of(bytes->second[1]);
+        if (stride) {
+            records = bytes->second[0];
+        } else if ((stride = stride_of(bytes->second[0]))) {
+            records = bytes->second[1];
+        }
+        if (!stride || !records || stride->kind != Term::Kind::Value) return std::nullopt;
+        const auto field = sop2(stride->value, {"s_bfe_u32"});
+        if (!field || field->second[1].kind != Term::Kind::Const || field->second[1].constant != kStrideField)
+            return std::nullopt;
+        if (field->second[0] != *stride_cleared) return std::nullopt;
+        return std::array<Term, 4>{words[0], *stride_cleared, *records, *bounds_word};
     }
 
     std::optional<std::pair<Term, std::uint32_t>> set_bits(Value value) const {
@@ -685,6 +1443,10 @@ private:
     std::vector<std::optional<Site>> phis_;
     std::vector<std::optional<Reg>> inputs_;
     std::vector<Term> origin_;
+    std::map<Value, RootWord> spilled_words_;
+    std::vector<Site> spill_loads_;
+    const Structured* lanes_;
+    std::vector<std::size_t> rpo_;
 };
 
 }  // namespace
@@ -739,62 +1501,219 @@ Source Source::phi(std::size_t block, std::vector<Source> args) {
     return source;
 }
 
+Source Source::select(Value scc, std::vector<Source> args) {
+    Source source;
+    source.kind = Kind::Select;
+    source.key = scc;
+    source.args = std::move(args);
+    return source;
+}
+
+Source Source::fetched(Site load, std::uint8_t first) {
+    Source source;
+    source.kind = Kind::Fetched;
+    source.load = load;
+    source.first = first;
+    return source;
+}
+
+Source Source::lanes(Value mask, std::vector<Source> args) {
+    Source source;
+    source.kind = Kind::Lanes;
+    source.key = mask;
+    source.args = std::move(args);
+    return source;
+}
+
+Source Source::lane_phi(std::size_t block, std::vector<std::optional<Source>> options) {
+    Source source;
+    source.kind = Kind::LanePhi;
+    source.block = block;
+    source.options = std::move(options);
+    return source;
+}
+
+Source Source::flat() {
+    Source source;
+    source.kind = Kind::Flat;
+    return source;
+}
+
 std::vector<const Source*> Source::leaves() const {
-    if (kind != Kind::Phi) return {this};
-    std::vector<const Source*> out;
-    for (const Source& arg : args)
-        for (const Source* leaf : arg.leaves()) out.push_back(leaf);
-    return out;
+    if (kind == Kind::Phi || kind == Kind::Select || kind == Kind::Lanes) {
+        std::vector<const Source*> out;
+        for (const Source& arg : args)
+            for (const Source* leaf : arg.leaves()) out.push_back(leaf);
+        return out;
+    }
+    if (kind == Kind::LanePhi) {
+        std::vector<const Source*> out;
+        for (const std::optional<Source>& arg : options)
+            if (arg)
+                for (const Source* leaf : arg->leaves()) out.push_back(leaf);
+        return out;
+    }
+    return {this};
 }
 
 bool operator==(const Source& a, const Source& b) {
     return a.kind == b.kind && a.load == b.load && a.first == b.first && a.address == b.address &&
            a.bits == b.bits && a.words == b.words && a.constants == b.constants && a.block == b.block &&
-           a.args == b.args;
+           a.key == b.key && a.args == b.args && a.options == b.options;
 }
 
-Resources track(const Program& program, const std::vector<RootParam>& layout, HwStage stage) {
-    const Tracer tracer(program, layout, stage);
+static bool runtime_address(const TraceError& error) {
+    constexpr std::string_view kUndefinedBase = "an address in an SGPR that is no root parameter";
+    return std::string_view(error.what) != kUndefinedBase;
+}
+
+static bool is_ray_node_test(std::string_view name) {
+    return name == "image_bvh_intersect_ray" || name == "image_bvh64_intersect_ray";
+}
+
+static Resources track_resources(const Program& program, const std::vector<RootParam>& layout, HwStage stage,
+                                 const Structured* lanes, std::span<const Site> ring_address_loads,
+                                 const ComputeIo* compute) {
+    const Tracer tracer(program, layout, stage, lanes, compute);
     Resources out;
+    tracer.add_spilled_roots(out);
     for (const auto& entry : program.inputs) {
         const auto found = tracer.param_of(entry.first);
         if (found) out.params.emplace_back(entry.second, found->first, found->second);
     }
+    std::map<std::size_t, std::pair<std::vector<std::size_t>, std::vector<Value>>> first_lane_at;
+    std::map<std::size_t, std::tuple<std::vector<std::size_t>, std::vector<Value>, std::vector<Site>>> offset_at;
     for (std::size_t b = 0; b < program.blocks.size(); ++b) {
         const Block& block = program.blocks[b];
         for (std::size_t i = 0; i < block.insts.size(); ++i) {
             const Inst& inst = block.insts[i];
             const Site site{b, i};
             const std::string_view name = inst.name();
-            const auto descriptor = [&](const Operand& op, Role role) {
-                out.descriptors.push_back(Descriptor{site, role, tracer.descriptor(inst, op)});
+            std::vector<Value> first_lane;
+            std::vector<std::pair<Value, Site>> offset;
+            const auto descriptor = [&](const Operand& op, Role role, bool flat_ok = false) {
+                Source source;
+                try {
+                    source = tracer.descriptor(inst, op, b);
+                } catch (const TraceError& error) {
+                    if (!flat_ok || !runtime_address(error)) throw;
+                    out.descriptors.push_back(Descriptor{site, role, Source::flat()});
+                    return;
+                }
+                const auto words = tracer.first_lane_words(inst, op);
+                if (words) first_lane.insert(first_lane.end(), words->begin(), words->end());
+                if (source.kind == Source::Kind::Loaded) {
+                    const auto entry = std::find_if(out.scalar.begin(), out.scalar.end(),
+                                                    [&](const std::pair<Site, Address>& s) {
+                                                        return s.first == source.load;
+                                                    });
+                    if (entry != out.scalar.end() && entry->second.dynamic) {
+                        const Term t = tracer.origin(*entry->second.dynamic);
+                        if (t.kind == Term::Kind::Value && tracer.first_lane_source(t.value))
+                            offset.emplace_back(t.value, source.load);
+                    }
+                }
+                out.descriptors.push_back(Descriptor{site, role, source});
             };
             try {
                 if (const auto* image = std::get_if<ImageFields>(&inst.fields)) {
+                    if (is_ray_node_test(name)) continue;
                     descriptor(image->rsrc, Role::Resource);
                     if (image->sampler) descriptor(*image->sampler, Role::Sampler);
                 } else if (const auto* buffer = std::get_if<BufferFields>(&inst.fields)) {
-                    descriptor(buffer->rsrc, Role::Resource);
+                    descriptor(buffer->rsrc, Role::Resource, true);
                 } else if (const auto* smem = std::get_if<SmemFields>(&inst.fields)) {
                     if (name.starts_with("s_buffer_")) {
                         descriptor(smem->base, Role::Resource);
                     } else if (name.find("_load_") != std::string_view::npos ||
                                name.find("_store_") != std::string_view::npos) {
-                        out.scalar.emplace_back(
-                            site, tracer.smem_address(inst, smem->base, smem->offset, smem->soffset));
+                        if (std::binary_search(out.spilled_root_loads.begin(), out.spilled_root_loads.end(), site))
+                            continue;
+                        if (stage == HwStage::Gs && name == "s_load_dword" &&
+                            std::binary_search(ring_address_loads.begin(), ring_address_loads.end(), site))
+                            continue;
+                        Address address{kFlat, 0, std::nullopt};
+                        try {
+                            address = tracer.smem_address(inst, smem->base, smem->offset, smem->soffset);
+                        } catch (const TraceError& error) {
+                            if (name.find("_store_") != std::string_view::npos || !runtime_address(error)) throw;
+                        }
+                        out.scalar.emplace_back(site, address);
                     }
                 } else if (const auto* flat = std::get_if<FlatFields>(&inst.fields)) {
-                    if (name.starts_with("global_"))
-                        out.scalar.emplace_back(site, tracer.flat_address(inst, flat->addr ? &*flat->addr : nullptr,
-                                                                          flat->saddr ? &*flat->saddr : nullptr,
-                                                                          flat->offset));
+                    if (name.starts_with("global_")) {
+                        Address address{kFlat, 0, std::nullopt};
+                        try {
+                            address = tracer.flat_address(inst, flat->addr ? &*flat->addr : nullptr,
+                                                          flat->saddr ? &*flat->saddr : nullptr, flat->offset);
+                        } catch (const TraceError& error) {
+                            if (!runtime_address(error)) throw;
+                        }
+                        out.scalar.emplace_back(site, address);
+                    }
                 }
             } catch (const TraceError& error) {
                 detail::fail_unsupported(inst.machine.offset, error.what);
             }
+            if (!first_lane.empty()) {
+                auto& entry = first_lane_at[b];
+                entry.first.push_back(i);
+                entry.second.insert(entry.second.end(), first_lane.begin(), first_lane.end());
+            }
+            if (!offset.empty()) {
+                auto& entry = offset_at[b];
+                std::get<0>(entry).push_back(i);
+                for (const auto& pair : offset) {
+                    std::get<1>(entry).push_back(pair.first);
+                    std::get<2>(entry).push_back(pair.second);
+                }
+            }
+        }
+    }
+    if (lanes == nullptr) return out;
+    for (auto& entry : first_lane_at) {
+        const std::size_t block = entry.first;
+        std::vector<std::size_t>& accesses = entry.second.first;
+        std::vector<Value>& reads = entry.second.second;
+        std::sort(reads.begin(), reads.end());
+        reads.erase(std::unique(reads.begin(), reads.end()), reads.end());
+        try {
+            const Waterfall proof = tracer.waterfall(block, accesses, reads);
+            out.waterfall.compares.insert(out.waterfall.compares.end(), proof.compares.begin(),
+                                          proof.compares.end());
+            out.waterfall.reads.insert(out.waterfall.reads.end(), proof.reads.begin(), proof.reads.end());
+        } catch (const TraceError& error) {
+            detail::fail_unsupported(tracer.inst(Site{block, accesses[0]}).machine.offset, error.what);
+        }
+    }
+    for (auto& entry : offset_at) {
+        const std::size_t block = entry.first;
+        std::vector<std::size_t>& accesses = std::get<0>(entry.second);
+        std::vector<Value>& reads = std::get<1>(entry.second);
+        const std::vector<Site>& loads = std::get<2>(entry.second);
+        std::sort(reads.begin(), reads.end());
+        reads.erase(std::unique(reads.begin(), reads.end()), reads.end());
+        try {
+            const Waterfall proof = tracer.waterfall(block, accesses, reads);
+            out.waterfall.compares.insert(out.waterfall.compares.end(), proof.compares.begin(),
+                                          proof.compares.end());
+            out.waterfall.reads.insert(out.waterfall.reads.end(), proof.reads.begin(), proof.reads.end());
+            out.waterfall.loads.insert(out.waterfall.loads.end(), loads.begin(), loads.end());
+        } catch (const TraceError&) {
         }
     }
     return out;
+}
+
+Resources track(const Program& program, const std::vector<RootParam>& layout, HwStage stage,
+                const Structured* lanes, std::span<const Site> ring_address_loads) {
+    return track_resources(program, layout, stage, lanes, ring_address_loads, nullptr);
+}
+
+Resources track(const Program& program, const NativeProgram& native, const Structured* lanes,
+                std::span<const Site> ring_address_loads) {
+    return track_resources(program, native.layout, native.stage, lanes, ring_address_loads,
+                           std::get_if<ComputeIo>(&native.io));
 }
 
 }  // namespace g6shim::shader

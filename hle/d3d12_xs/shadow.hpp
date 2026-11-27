@@ -1,0 +1,174 @@
+// SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+#include "host.hpp"
+#include "inplace.hpp"
+
+#include <windows.h>
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <span>
+#include <string>
+#include <tuple>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+namespace g6shim::d3d12_xs::card {
+class Side;
+}
+
+namespace g6shim::d3d12_xs::shadow {
+
+inline constexpr std::uint64_t kIdleSubmissions = 512;
+inline constexpr std::uint64_t kLooseBudgetBytes = 4ull << 30;
+
+enum class RamBand : std::uint8_t { kCalm, kWatch, kHigh };
+
+struct RamSample {
+    std::uint64_t working = 0;
+    std::uint64_t private_bytes = 0;
+    std::uint64_t free_physical = 0;
+    std::uint64_t commit_headroom = 0;
+    std::uint64_t total_physical = 0;
+    std::uint64_t commit_limit = 0;
+};
+
+RamBand ram_band(RamBand previous, const RamSample& sample);
+
+struct BackCounts {
+    std::uint64_t compared = 0;
+    std::uint64_t read = 0;
+    std::uint64_t written = 0;
+};
+
+struct CopyBackStats {
+    std::uint64_t nanoseconds = 0;
+    std::uint64_t ranges = 0;
+    std::uint64_t compared = 0;
+    std::uint64_t read = 0;
+    std::uint64_t written = 0;
+};
+
+struct LooseStats {
+    std::size_t windows = 0;
+    std::uint64_t bytes = 0;
+    std::uint64_t evicted = 0;
+};
+
+class Shadow : public std::enable_shared_from_this<Shadow> {
+public:
+    Shadow(Microsoft::WRL::ComPtr<ID3D12Resource> buffer, std::uint8_t* data, std::uint64_t gpu,
+           std::uint64_t start, std::uint64_t bytes);
+    ~Shadow();
+
+    std::uint64_t gpu(std::uint64_t address) const { return gpu_ + (address - start_); }
+    std::uint64_t left(std::uint64_t address) const;
+    std::uint64_t offset(std::uint64_t address) const {
+        return in_place_ ? address - in_place_->base() : address - start_;
+    }
+    std::uint64_t start() const { return start_; }
+    std::uint64_t bytes() const { return bytes_; }
+    std::uint8_t* data() const { return data_; }
+    ID3D12Resource* buffer() const { return buffer_.Get(); }
+    bool on_card() const { return card_ != nullptr; }
+    std::size_t fetched_pieces() const;
+    void bind_card(std::shared_ptr<g6shim::d3d12_xs::card::Side> side);
+    void place_in(std::shared_ptr<inplace::Region> region) { in_place_ = std::move(region); }
+    bool in_place() const { return in_place_ != nullptr; }
+    void arm_card(std::size_t address, std::size_t bytes);
+    void used(std::uint64_t submission) { last_used_.store(submission, std::memory_order_relaxed); }
+    std::uint64_t last_used() const { return last_used_.load(std::memory_order_relaxed); }
+
+    void refresh(host::HostList& list, std::uint64_t address, std::uint64_t bytes);
+    void gpu_writes(host::HostList& list, std::uint64_t address, std::uint64_t bytes);
+    std::size_t writing(std::size_t address, std::size_t bytes);
+    std::size_t copy_back(std::size_t address, std::size_t bytes);
+    BackCounts merge_back(std::size_t address, std::size_t bytes);
+    void finish_writes(const std::vector<std::pair<std::size_t, std::size_t>>& sorted_ranges);
+    void discard_write(std::size_t address, std::size_t bytes);
+    std::size_t update(std::size_t address, std::size_t bytes);
+
+private:
+    std::pair<std::size_t, std::size_t> inside(std::size_t address, std::size_t bytes) const;
+    std::size_t update_free(std::size_t from, std::size_t to);
+    std::size_t merge_card(std::size_t address, std::size_t bytes);
+    std::optional<std::vector<std::uint8_t>> before_of(std::size_t from, std::size_t to) const;
+    void drop_before();
+    std::size_t copy_stale(std::size_t from, std::size_t to, std::uint64_t now,
+                           const std::vector<std::pair<std::size_t, std::uint64_t>>& written);
+    std::size_t copy_range(std::size_t from, std::size_t to);
+    Microsoft::WRL::ComPtr<ID3D12Resource> buffer_;
+    std::uint8_t* data_ = nullptr;
+    std::uint64_t gpu_ = 0;
+    std::uint64_t start_ = 0;
+    std::uint64_t bytes_ = 0;
+    std::mutex copied_mutex_;
+    std::vector<std::uint64_t> copied_;
+    std::atomic<std::uint8_t> watched_{0};
+    std::mutex pending_mutex_;
+    std::vector<std::pair<std::size_t, std::size_t>> pending_;
+    std::mutex before_mutex_;
+    std::map<std::size_t, std::vector<std::uint8_t>> before_;
+    std::mutex echo_mutex_;
+    std::unordered_set<std::size_t> echo_;
+    std::atomic<std::uint64_t> last_used_{0};
+    std::shared_ptr<g6shim::d3d12_xs::card::Side> card_;
+    std::shared_ptr<inplace::Region> in_place_;
+};
+
+struct HostRange {
+    std::uint64_t gpu = 0;
+    std::uint64_t bytes = 0;
+    std::string label;
+};
+
+bool merge_written(std::uint8_t* title, std::uint8_t* host, const std::uint8_t* old, std::size_t bytes);
+std::optional<std::pair<std::size_t, std::size_t>> changed_span(const std::uint8_t* a, const std::uint8_t* b,
+                                                               std::size_t bytes);
+std::size_t put_changed(std::uint8_t* destination, const std::uint8_t* was, const std::uint8_t* now,
+                        std::size_t bytes);
+using WriteRange = std::tuple<std::shared_ptr<Shadow>, std::size_t, std::size_t>;
+void copy_back_all(std::span<const WriteRange> writes, CopyBackStats* stats);
+CopyBackStats take_copy_back_stats();
+
+struct UploadStats {
+    std::uint64_t fresh = 0;
+    std::uint64_t title = 0;
+    std::uint64_t echo = 0;
+    std::uint64_t unwatched = 0;
+};
+
+UploadStats take_upload_stats();
+void note_copy_back_stats(const CopyBackStats& stats);
+void title_memory_changed(std::uint64_t at, std::uint64_t bytes);
+void register_buffer(std::uintptr_t resource, std::uint64_t start, std::uint64_t bytes);
+void unregister_buffer(std::uintptr_t resource, std::uint64_t start);
+std::optional<std::shared_ptr<Shadow>> find(std::uint64_t address, std::uint64_t bytes);
+std::uint64_t buffers_generation();
+std::vector<std::shared_ptr<Shadow>> addressable();
+std::string nearest(std::uint64_t va);
+void collect_host_ranges(std::vector<HostRange>& out);
+void submission_completed();
+std::uint64_t eviction_generation();
+bool live_loose(ID3D12Resource* buffer);
+struct BufferStats {
+    std::size_t buffers = 0;
+    std::uint64_t bytes = 0;
+    std::size_t large = 0;
+    std::uint64_t large_bytes = 0;
+};
+
+LooseStats loose_stats();
+BufferStats buffer_stats();
+void set_loose_budget_for_test(std::uint64_t bytes);
+std::uint64_t card_minimum_bytes();
+
+}  // namespace g6shim::d3d12_xs::shadow

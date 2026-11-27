@@ -70,7 +70,7 @@ inline constexpr OpcodeEntry kSopp[] = {
     {0x018, "s_cbranch_cdbguser"}, {0x019, "s_cbranch_cdbgsys_or_user"}, {0x01a, "s_cbranch_cdbgsys_and_user"}, {0x01b, "s_endpgm_saved"},
     {0x01e, "s_endpgm_ordered_ps_done"}, {0x01f, "s_code_end"}, {0x020, "s_inst_prefetch"}, {0x021, "s_clause"},
     {0x022, "s_wait_idle"}, {0x023, "s_waitcnt_depctr"}, {0x024, "s_round_mode"}, {0x025, "s_denorm_mode"},
-    {0x026, "s_ttracedata_imm"},
+    {0x028, "s_ttracedata_imm"},
 };
 
 inline constexpr OpcodeEntry kSmem[] = {

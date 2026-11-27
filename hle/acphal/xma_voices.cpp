@@ -9,7 +9,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -18,6 +17,8 @@
 #include <span>
 #include <thread>
 #include <vector>
+
+#include <windows.h>
 
 namespace g6shim::acphal {
 
@@ -30,7 +31,7 @@ constexpr std::size_t kBlockBytes = 256;
 constexpr std::size_t kSamplesPerBlock = kBlockBytes / 2;
 constexpr std::uint32_t kInputInvalid = 4;
 constexpr std::uint32_t kFrameRates[4] = {24000, 32000, 44100, 48000};
-constexpr std::uint64_t kDecoderIntervalMs = 2;
+constexpr LONGLONG kDecoderInterval100ns = 20000;
 constexpr std::uint32_t kHeaderBits = 32;
 constexpr std::uint32_t kInputPacketAlignment = 0x800;
 
@@ -97,14 +98,9 @@ std::shared_mutex& state_mutex() {
     return *instance;
 }
 
-std::mutex& wait_mutex() {
-    static std::mutex* instance = new std::mutex();
-    return *instance;
-}
-
-std::condition_variable& wait_condition() {
-    static std::condition_variable* instance = new std::condition_variable();
-    return *instance;
+HANDLE wake_event() {
+    static const HANDLE instance = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    return instance;
 }
 
 std::once_flag& decoder_once() {
@@ -229,19 +225,34 @@ void pump_voice(Context context, Voice& voice) {
 }
 
 void decoder_loop() {
+    const HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
     for (;;) {
         xma_pump();
-        std::unique_lock<std::mutex> lock(wait_mutex());
-        wait_condition().wait_for(lock, std::chrono::milliseconds(kDecoderIntervalMs));
+        decoder_wait(timer, wake_event());
     }
 }
 
 void wake_decoder() {
     std::call_once(decoder_once(), [] { std::thread(decoder_loop).detach(); });
-    wait_condition().notify_all();
+    SetEvent(wake_event());
 }
 
 }  // namespace
+
+void decoder_wait(HANDLE timer, HANDLE wake) {
+    if (timer == nullptr) {
+        WaitForSingleObject(wake, 1);
+        return;
+    }
+    LARGE_INTEGER due{};
+    due.QuadPart = -kDecoderInterval100ns;
+    if (!SetWaitableTimerEx(timer, &due, 0, nullptr, nullptr, nullptr, 0)) {
+        WaitForSingleObject(wake, 1);
+        return;
+    }
+    const HANDLE handles[2] = {timer, wake};
+    WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+}
 
 void set_xma_context_array(std::uint8_t* array, std::uint32_t voices) {
     std::unique_lock<std::shared_mutex> lock(state_mutex());
@@ -307,7 +318,7 @@ void xma_advance_read(std::uint32_t index, std::uint32_t blocks) {
         VoiceSlot& slot = *state().voices[index];
         std::lock_guard<std::mutex> voice_lock(slot.mutex);
         const std::uint32_t size = std::max(context->field(0, 22, 5), 1u);
-        const std::uint32_t read = (context->field(9, 0, 5) + blocks) % size;
+        const std::uint32_t read = (context->field(9, 0, 5) + blocks % size) % size;
         context->set_field(9, 0, 5, read);
         if (blocks > 0) context->set_field(1, 31, 1, 1);
         if (slot.voice) {

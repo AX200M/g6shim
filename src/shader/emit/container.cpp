@@ -172,8 +172,8 @@ std::vector<std::uint8_t> signature(std::span<const SigElement> elements, bool i
     append_u32(out, static_cast<std::uint32_t>(elements.size()));
     append_u32(out, 8);
 
-    std::vector<std::uint32_t> offsets;
-    offsets.reserve(elements.size());
+    std::vector<std::uint32_t> name_offsets;
+    name_offsets.reserve(elements.size());
     std::uint32_t next = 8 + kSignatureRowSize * static_cast<std::uint32_t>(elements.size());
     std::vector<const std::string*> names;
     for (std::size_t i = 0; i < elements.size(); ++i) {
@@ -188,9 +188,9 @@ std::vector<std::uint8_t> signature(std::span<const SigElement> elements, bool i
             }
         }
         if (shared) {
-            offsets.push_back(offsets[*shared]);
+            name_offsets.push_back(name_offsets[*shared]);
         } else {
-            offsets.push_back(next);
+            name_offsets.push_back(next);
             next += static_cast<std::uint32_t>(element.name.size()) + 1;
             names.push_back(&element.name);
         }
@@ -198,16 +198,16 @@ std::vector<std::uint8_t> signature(std::span<const SigElement> elements, bool i
 
     std::vector<std::size_t> order(elements.size());
     std::iota(order.begin(), order.end(), 0);
-    std::stable_sort(order.begin(), order.end(), [&elements](std::size_t a, std::size_t b) {
+    std::stable_sort(order.begin(), order.end(), [&elements, &name_offsets](std::size_t a, std::size_t b) {
         const std::uint32_t row_a = elements[a].row.value_or(UINT32_MAX);
         const std::uint32_t row_b = elements[b].row.value_or(UINT32_MAX);
         if (row_a != row_b) return row_a < row_b;
-        return elements[a].col < elements[b].col;
+        return name_offsets[a] < name_offsets[b];
     });
 
     for (const std::size_t i : order) {
         const SigElement& element = elements[i];
-        const std::uint32_t offset = offsets[i];
+        const std::uint32_t offset = name_offsets[i];
         const std::uint8_t used = static_cast<std::uint8_t>(element.usage << element.col);
         const std::uint8_t rw = input ? used : static_cast<std::uint8_t>(~used & 0x0F);
         append_u32(out, 0);
@@ -234,9 +234,15 @@ std::vector<std::uint8_t> psv(const Psv& p) {
     const std::uint32_t out_vectors = vector_count(p.outputs);
 
     std::vector<std::uint8_t> out;
-    append_u32(out, 48);
     std::array<std::uint8_t, 48> info{};
     info[0] = p.flag ? 1 : 0;
+    if (p.stage == 0) {
+        info[1] = std::any_of(p.inputs.begin(), p.inputs.end(), [](const SigElement& e) {
+                     return e.interp == 6 || e.interp == 7 || e.kind == 12;
+                 })
+                     ? 1
+                     : 0;
+    }
     const std::uint32_t min_wave = p.wave_size.value_or(0);
     const std::uint32_t max_wave = p.wave_size.value_or(UINT32_MAX);
     info[16] = static_cast<std::uint8_t>(min_wave);
@@ -248,6 +254,15 @@ std::vector<std::uint8_t> psv(const Psv& p) {
     info[22] = static_cast<std::uint8_t>(max_wave >> 16);
     info[23] = static_cast<std::uint8_t>(max_wave >> 24);
     info[24] = p.stage;
+    if (p.geometry) {
+        const Geometry& geometry = *p.geometry;
+        write_u32(info, 0, geometry.input_primitive);
+        write_u32(info, 4, geometry.output_topology);
+        write_u32(info, 8, geometry.stream_mask);
+        write_u32(info, 12, p.flag ? 1u : 0u);
+        info[26] = static_cast<std::uint8_t>(geometry.max_vertices);
+        info[27] = static_cast<std::uint8_t>(geometry.max_vertices >> 8);
+    }
     for (std::size_t k = 0; k < p.threads.size(); ++k) {
         const std::uint32_t value = p.threads[k];
         for (std::size_t byte = 0; byte < 4; ++byte)
@@ -269,7 +284,13 @@ std::vector<std::uint8_t> psv(const Psv& p) {
         info[27] = mesh.topology;
         info[30] = static_cast<std::uint8_t>(p.prims.size());
     }
+    const bool named_entry = !p.entry_name.empty();
+    const std::uint32_t info_size = static_cast<std::uint32_t>(info.size()) +
+                                    (named_entry ? static_cast<std::uint32_t>(sizeof(std::uint32_t)) : 0u);
+    append_u32(out, info_size);
     out.insert(out.end(), info.begin(), info.end());
+    const std::size_t entry_offset = out.size();
+    if (named_entry) append_u32(out, 0);
 
     append_u32(out, static_cast<std::uint32_t>(p.bindings.size()));
     if (!p.bindings.empty()) {
@@ -325,6 +346,11 @@ std::vector<std::uint8_t> psv(const Psv& p) {
     for (const SigElement& element : p.outputs) add_element(element);
     for (const SigElement& element : p.prims) add_element(element);
 
+    if (named_entry) {
+        write_u32(out, entry_offset, static_cast<std::uint32_t>(strings.size()));
+        strings.insert(strings.end(), p.entry_name.begin(), p.entry_name.end());
+        strings.push_back(0);
+    }
     strings.resize((strings.size() + 3) / 4 * 4, 0);
     append_u32(out, static_cast<std::uint32_t>(strings.size()));
     out.insert(out.end(), strings.begin(), strings.end());

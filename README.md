@@ -26,7 +26,7 @@ g6shim runs games made for the Xbox One and Xbox Series X|S consoles on Windows 
 
 ## Progress
 
-**Target: the Series title 7952987A.** It starts, opens all its archives and stops where graphics begin (`D3D12XboxCreateDevice`). Next milestone: **the first frame**.
+**Target: the Series title 7952987A.** It starts, opens all its archives and renders about 12 frames per second up to its account picker. Next milestone: **an offline user, then the main menu**.
 
 | | Area | Progress |
 |:-:|---|---|
@@ -36,9 +36,9 @@ g6shim runs games made for the Xbox One and Xbox Series X|S consoles on Windows 
 | ✅ | Textures · `xg_xs` | `▰▰▰▰▰▰▰▰▱▱ 85 %` |
 | ✅ | Storage · `XCRDAPI` | `▰▰▰▰▰▰▰▰▱▱ 85 %` |
 | 🔨 | Shaders | `▰▰▰▰▰▰▰▱▱▱ 75 %` |
-| ⬜ | Graphics · `d3d12_xs` | `▱▱▱▱▱▱▱▱▱▱ 0 %` |
+| 🔨 | Graphics · `d3d12_xs` | `▰▰▰▰▰▰▰▱▱▱ 70 %` |
 | 🔨 | Runtime services | `▰▰▰▱▱▱▱▱▱▱ 35 %` |
-| ⬜ | Ray tracing | `▱▱▱▱▱▱▱▱▱▱ 0 %` |
+| 🔨 | Ray tracing | `▰▰▰▰▱▱▱▱▱▱ 40 %` |
 
 ✅ works · 🔨 in progress · ⬜ not started
 
@@ -49,13 +49,13 @@ g6shim runs games made for the Xbox One and Xbox Series X|S consoles on Windows 
 |---|---|---|
 | Loading | The executable and its DLLs load through the Windows loader; static initialisation runs | – |
 | Memory · `xmem` | All functions: the title's allocation hooks, address ranges, 64 KiB physical pages, budgets | GPU-side page mapping |
-| Audio · `AcpHal` `xapu` `chad` | Coprocessor queues, APU memory, shape contexts, XMA2 decoding, Opus and DSP queues | Opus decoding, DSP transforms, SHAPE units other than XMA |
+| Audio · `AcpHal` `xapu` `chad` | Coprocessor queues, APU memory, shape contexts, XMA2 decoding, Opus decoding, DSP queues | DSP transforms, SHAPE units other than XMA |
 | Textures · `xg_xs` | Tiled layouts of the Series GPU, texture computer, tiled and linear copies | XOR and MSAA addressing, metadata planes |
-| Storage · `XCRDAPI` | DirectStorage factory, files, queues and status arrays; zlib and BCPack decompression | BCPack needs the format tables supplied by the user (`G6SHIM_BCPACK_TABLES`); some interface slots |
-| Shaders | Decoding, containers, SSA, lane structurisation, resource and I/O tracking, DXIL emission for vertex, pixel, compute and mesh shaders | Checking the whole shader set; 64-bit image atomics, merged geometry stages |
-| Graphics · `d3d12_xs` | – | Device, resources, descriptors, command lists, pipelines, presentation |
+| Storage · `XCRDAPI` | DirectStorage factory, files, queues and status arrays; zlib and BCPack decompression | BCPack needs the format tables (`-DG6SHIM_FETCH_BCPACK_TABLES=ON` or `G6SHIM_BCPACK_TABLES`); some interface slots |
+| Shaders | Decoding, containers, SSA, lane structurisation, resource and I/O tracking, DXIL emission for vertex, pixel, compute and mesh shaders | Checking the whole shader set; merged geometry stages |
+| Graphics · `d3d12_xs` | Device creation, DXGI adapter, fences, heaps and resources, descriptor heaps, root signatures, samplers, queries, frame pacing; the host D3D12 device, host descriptor heaps, copies of title buffers, write tracking, texture uploads; command queues and lists, draws, dispatches, mesh and indirect execution, host pipelines from translated shaders with disk caches | Presentation to a window, queries, real-GPU checks |
 | Runtime services | The PC's own XGameRuntime starts; the package drive `G:\` for titles that call Windows file functions directly | Persistent storage drive, saves, input and lifecycle where the title needs them |
-| Ray tracing | – | Acceleration structures in the console's BVH layout |
+| Ray tracing | Acceleration-structure builder in the console's BVH4 layout: compute-shader builds, refits, copies and sizes, checked against a CPU reference | Calls from the command list; procedural geometry |
 
 </details>
 
@@ -68,14 +68,14 @@ Each square is one function: green implemented, blue forwarded, amber stubbed, g
 
 ![7952987A shader coverage](docs/progress/7952987A.shaders.svg)
 
-35/39 functions implemented, 0 forwarded, 4 stubbed, 0 missing; shaders: no data yet.
+39/39 functions implemented, 0 forwarded, 0 stubbed, 0 missing; shaders: 24043/25986 translated, 1910 decoded.
 
 ![Replacement DLL coverage](docs/progress/hle.svg)
 <!-- progress:end -->
 
 ## Build
 
-Windows with Visual Studio 2022 or newer (C++ desktop workload) and CMake 3.25 or newer:
+Windows with Visual Studio 2022 or newer (C++ desktop workload) and CMake 3.25 or newer. The first configure downloads libopus 1.6.1 for `xapu.dll`; offline, point `FETCHCONTENT_SOURCE_DIR_OPUS` at an unpacked copy.
 
 ```bat
 cmake --preset release

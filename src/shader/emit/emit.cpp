@@ -7,6 +7,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <optional>
 #include <span>
 #include <string>
@@ -155,26 +156,45 @@ std::uint32_t parse_loop_limit(std::optional<std::string_view> value) {
 
 std::uint32_t loop_limit() { return kLoopLimit; }
 
+std::uint32_t stage_loop_limit(std::uint32_t named, bool pixel, bool mesh, bool has_threads) {
+    if (named != kLoopLimit) return named;
+    if (pixel) return kPixelLoopLimit;
+    if (mesh || !has_threads) return kMeshLoopLimit;
+    return kComputeLoopLimit;
+}
+
 HostShader translate(std::span<const std::uint8_t> container) {
     const Container parsed = Container::parse(container);
     const Part* part = parsed.part(kDxil);
+    if (part == nullptr) part = parsed.part(kAccc);
     if (part == nullptr) detail::fail_malformed("no DXIL part");
     const std::vector<NativeProgram> programs = native_programs(part->data);
     const NativeProgram* native = nullptr;
     for (const NativeProgram& program : programs) {
         if (program.stage == HwStage::Vs || program.stage == HwStage::Ps ||
-            program.stage == HwStage::Cs || program.stage == HwStage::Ms) {
+            program.stage == HwStage::Cs || program.stage == HwStage::Ms ||
+            program.stage == HwStage::Gs) {
             native = &program;
             break;
         }
     }
     if (native == nullptr)
-        detail::fail_unsupported(0, "a container without a vertex, pixel, compute or mesh program");
+        detail::fail_unsupported(0, "a container without a vertex, pixel, compute, mesh or geometry program");
     const Program program = ::g6shim::shader::build(native->patched_code(), native->wave64, native->vgprs);
-    const Resources resources = track(program, native->layout, native->stage);
-    const Io io = raise(program, *native);
-    const Structured structured = structure(program);
-    return emit(parsed, *native, program, structured, io, resources);
+    std::exception_ptr structure_failure;
+    std::optional<Structured> structured;
+    try {
+        structured = structure(program);
+    } catch (...) {
+        structure_failure = std::current_exception();
+    }
+    Io io;
+    if (native->stage == HwStage::Gs) io = raise(program, *native);
+    const Resources resources = track(program, *native, structured ? &*structured : nullptr,
+                                      io.ring_address_loads);
+    if (native->stage != HwStage::Gs) io = raise(program, *native);
+    if (!structured) std::rethrow_exception(structure_failure);
+    return emit(parsed, *native, program, *structured, io, resources);
 }
 
 HostShader emit(const Container& container, const NativeProgram& native, const Program& program,
@@ -188,7 +208,7 @@ HostShader emit(const Container& container, const NativeProgram& native, const P
     std::vector<SigElement> inputs = sig(kIsg1);
     std::vector<SigElement> outputs = sig(kOsg1);
     std::vector<SigElement>& interpolated = pixel ? inputs : outputs;
-    for (SigElement& e : interpolated) {
+    const auto assign_interp = [](SigElement& e) {
         const std::uint8_t kind = e.kind;
         const std::uint8_t comp = e.comp;
         if (kind == 3) e.interp = 4;
@@ -196,6 +216,14 @@ HostShader emit(const Container& container, const NativeProgram& native, const P
         else if ((kind == 0 || kind == 6 || kind == 7) && comp == 9) e.interp = 2;
         else if (kind == 0) e.interp = 1;
         else e.interp = 0;
+    };
+    for (SigElement& e : interpolated) assign_interp(e);
+    if (native.stage == HwStage::Gs)
+        for (SigElement& e : inputs) assign_interp(e);
+    if (pixel && std::any_of(outputs.begin(), outputs.end(),
+                             [](const SigElement& e) { return e.kind == 18 || e.kind == 19; })) {
+        for (SigElement& e : inputs)
+            if (e.kind == 3) e.interp = 5;
     }
     std::vector<SigElement> prims = sig(kPsg1);
     prims.erase(std::remove_if(prims.begin(), prims.end(),
@@ -236,6 +264,7 @@ HostShader emit(const Container& container, const NativeProgram& native, const P
     }
     out.root_cbvs = std::move(lowered.root_cbvs);
     out.root_srvs = std::move(lowered.root_srvs);
+    out.descriptor_words = lowered.descriptor_words;
     return out;
 }
 

@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdlib>
 #include <cstdint>
 #include <optional>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -17,6 +19,33 @@ namespace g6shim::shader::emit {
 namespace {
 
 constexpr std::uint64_t kCodeCbvSize = 0x1'0000;
+constexpr std::pair<std::uint32_t, std::uint32_t> kRawBufferSrv{11, 0};
+constexpr std::uint32_t kResourceDescriptorBytes = 32;
+constexpr std::uint32_t kBufferRecordCountWord = 2;
+constexpr std::uint32_t kImageWidthLowWord = 1;
+constexpr std::uint32_t kImageDimensionsWord = 2;
+constexpr std::uint32_t kImageBaseMipWord = 3;
+constexpr std::uint32_t kSamplerDescriptorBytes = 16;
+constexpr std::uint32_t kSamplerLodWord = 1;
+constexpr std::uint32_t kImageWord5ReservedMask = 0xff00'0000;
+constexpr Why kDescriptorData = kDescriptorWordAsData;
+constexpr Why kStandaloneDescriptorData = "a descriptor read only as data";
+
+std::optional<std::uint32_t> operand_constant(const Operand& value) {
+    if (const auto* literal = std::get_if<LiteralOperand>(&value)) return literal->value;
+    if (const auto* encoded = std::get_if<ConstantOperand>(&value)) return inline_constant(encoded->code);
+    return std::nullopt;
+}
+
+std::uint32_t extract_mask(std::uint32_t control, bool is_signed) {
+    constexpr std::uint32_t kWordBits = 32;
+    const std::uint32_t offset = control & (kWordBits - 1);
+    const std::uint32_t width = (control >> 16) & 0x7f;
+    const std::uint32_t count = std::min(width, kWordBits - offset);
+    const std::uint32_t bits = count == kWordBits ? UINT32_MAX : (1u << count) - 1;
+    const std::uint32_t sign = is_signed && width > count ? 1u << (kWordBits - 1) : 0;
+    return (bits << offset) | sign;
+}
 
 bool strip(std::string_view text, std::string_view prefix, std::string_view* rest) {
     if (!text.starts_with(prefix)) return false;
@@ -49,17 +78,82 @@ void Lower::sop(const IrInst& inst) {
     }
     std::optional<Value> lo;
     if (dst_code) lo = inst.write(Reg::s(*dst_code));
-    if (inst.write(Reg::s(kExec)).has_value() || is_mask(lo)) fail(kLaneMask);
+    if (inst.write(Reg::s(kExec)).has_value() || is_mask(lo)) {
+        const std::optional<Value> exec = inst.write(Reg::s(kExec));
+        const std::optional<Value> mask = is_mask(lo) ? lo : exec;
+        const bool tests_result = name.starts_with("s_and") || name.starts_with("s_or") || name.starts_with("s_xor") ||
+                                  name.starts_with("s_nand") || name.starts_with("s_nor") ||
+                                  name.starts_with("s_xnor") || name.starts_with("s_not");
+        if (!scc || !tests_result || !is_mask(mask)) fail(kLaneMask);
+        const std::pair<V, V> words = combine_mask(x_->st->masks.at(*mask), cur_);
+        const V any = s_.m.bin(cur_, Bin::Or, words.first, words.second);
+        for (const auto& entry : inst.writes)
+            if (entry.second != *scc) vals_[entry.second] = Val::missing(kLaneMask);
+        set(scc, Val::bit(s_.m.cmp(cur_, pred::kNe, any, s_.m.i32(0))));
+        return;
+    }
+    if (lo && std::binary_search(x_->io->geometry_primitive_counts.begin(),
+                                 x_->io->geometry_primitive_counts.end(), *lo)) {
+        constexpr std::uint32_t kPrimitivesPerInvocation = 1;
+        set(lo, Val::i32(s_.m.i32(kPrimitivesPerInvocation)));
+        set(scc, Val::bit(s_.m.boolean(true)));
+        return;
+    }
     if (name == "s_setreg_imm32_b32" || name == "s_setreg_b32" || name == "s_swappc_b64" ||
         name == "s_version" || name.starts_with("s_waitcnt"))
         fail("a register the emitter does not model");
+    const auto scalar_value = [&](const Operand& op) -> std::optional<Value> {
+        const auto* reg = std::get_if<ScalarOperand>(&op);
+        if (reg == nullptr) return std::nullopt;
+        return inst.read(Reg::s(reg->code));
+    };
+    if (name == "s_getpc_b64" && dst_code) {
+        constexpr std::uint32_t kInstructionBytes = 4;
+        set(lo, Val::i32(s_.m.i32(static_cast<std::uint32_t>(inst.machine.offset) + kInstructionBytes)));
+        set(inst.write(Reg::s(static_cast<std::uint8_t>(*dst_code + 1))), Val::i32(s_.m.i32(kCodeAddressTag)));
+        return;
+    }
+    if (name == "s_mov_b32" && lo && src.size() == 1) {
+        const auto value = scalar_value(src[0]);
+        if (value && heap_pointer(*value)) {
+            heap_pointers_.insert(*lo);
+            vals_[*lo] = Val::missing("a descriptor heap pointer used as an address");
+            return;
+        }
+        if (value) {
+            const auto indexed = image_heap_words_.find(*value);
+            if (indexed != image_heap_words_.end()) {
+                image_heap_words_[*lo] = indexed->second;
+                vals_[*lo] = Val::missing(kDescriptorData);
+                return;
+            }
+            const auto zero_bits = descriptor_zero_bits_.find(*value);
+            const auto field = descriptor_addresses_.find(*value);
+            if (field != descriptor_addresses_.end() && field->second.accepts_mask()) {
+                const UserData data = field->second;
+                descriptor_addresses_[*lo] = data;
+                if (data.known_bits() != UINT32_MAX) vals_[*lo] = Val::missing(kDescriptorData);
+                if (zero_bits != descriptor_zero_bits_.end()) descriptor_zero_bits_[*lo] = zero_bits->second;
+                return;
+            }
+            if (zero_bits != descriptor_zero_bits_.end()) {
+                descriptor_zero_bits_[*lo] = zero_bits->second;
+                vals_[*lo] = Val::missing(kDescriptorData);
+                return;
+            }
+        }
+    }
     const std::size_t c = cur_;
-    const auto src32 = [&](std::size_t k) -> V {
+    const auto src32 = [&](std::size_t k, std::optional<std::uint32_t> mask = std::nullopt) -> V {
         if (k == 0 && (name == "s_addk_i32" || name == "s_mulk_i32")) {
             if (!dst) fail("a missing operand");
             return operand(inst, *dst);
         }
         if (k >= src.size()) fail("a missing operand");
+        if (mask) {
+            const auto value = scalar_value(src[k]);
+            if (value && has_partial_descriptor(*value)) return masked_descriptor_value(*value, *mask);
+        }
         return operand(inst, src[k]);
     };
     const auto sext16 = [&]() -> V {
@@ -145,8 +239,18 @@ void Lower::sop(const IrInst& inst) {
             a = src32(0);
         } else {
             if (cmp_op.ends_with("64")) fail("a 64-bit scalar compare");
-            a = src32(0);
-            b = src32(1);
+            const bool zero_test = cmp_op == "eq_u32" || cmp_op == "lg_u32";
+            const auto compared_mask = [&](std::size_t index) -> std::optional<std::uint32_t> {
+                if (src.size() != 2) return std::nullopt;
+                const auto constant = operand_constant(src[1 - index]);
+                if (zero_test && constant == 0u) return UserData::kStructuredBufferHighMask;
+                if (index == 0 && (cmp_op == "lt_u32" || cmp_op == "ge_u32") && constant &&
+                    std::has_single_bit(*constant))
+                    return ~(*constant - 1u);
+                return std::nullopt;
+            };
+            a = src32(0, compared_mask(0));
+            b = src32(1, compared_mask(1));
         }
         const bool is_signed = cmp_op.ends_with("_i32");
         const std::string_view kind = cmp_op.substr(0, std::min<std::size_t>(2, cmp_op.size()));
@@ -338,18 +442,22 @@ void Lower::sop(const IrInst& inst) {
         const std::uint32_t op = name == "s_ff1_i32_b32" ? 32 : 31;
         r = s_.op(c, "unaryBits.i32", Attr::ReadNone, s_.t.i32, op, {a});
     } else if (name == "s_bfe_u32" || name == "s_bfe_i32") {
-        const V a = src32(0);
+        const bool is_signed = name == "s_bfe_i32";
+        const auto control = src.size() == 2 ? operand_constant(src[1]) : std::nullopt;
+        const auto mask = control ? std::optional{extract_mask(*control, is_signed)} : std::nullopt;
+        const V a = src32(0, mask);
         const V b = src32(1);
         const V k16 = s_.m.i32(16);
         const V k127 = s_.m.i32(0x7F);
         V w = s_.m.bin(c, Bin::LShr, b, k16);
         w = s_.m.bin(c, Bin::And, w, k127);
-        r = bfe(a, b, w, name == "s_bfe_i32");
+        r = bfe(a, b, w, is_signed);
     } else if (name == "s_and_b32" || name == "s_or_b32" || name == "s_xor_b32" ||
                name == "s_andn2_b32" || name == "s_orn2_b32" || name == "s_nand_b32" ||
                name == "s_nor_b32" || name == "s_xnor_b32") {
-        const V a = src32(0);
-        V b = src32(1);
+        const bool and_mask = name == "s_and_b32" && src.size() == 2;
+        const V a = src32(0, and_mask ? operand_constant(src[1]) : std::nullopt);
+        V b = src32(1, and_mask ? operand_constant(src[0]) : std::nullopt);
         const V ones = s_.m.i32(UINT32_MAX);
         if (name.find("n2") != std::string_view::npos) b = s_.m.bin(c, Bin::Xor, b, ones);
         const std::string_view op = name.substr(2, 3);
@@ -360,12 +468,19 @@ void Lower::sop(const IrInst& inst) {
         if (name == "s_nand_b32" || name == "s_nor_b32" || name == "s_xnor_b32")
             r = s_.m.bin(c, Bin::Xor, r, ones);
     } else if (name == "s_lshl_b32" || name == "s_lshr_b32" || name == "s_ashr_i32") {
-        const V a = src32(0);
+        const auto shift = src.size() > 1 ? operand_constant(src[1]) : std::nullopt;
+        const bool left = name == "s_lshl_b32";
+        std::optional<std::uint32_t> mask;
+        if (shift) {
+            const std::uint32_t bits = *shift & 31u;
+            mask = left ? UINT32_MAX >> bits : UINT32_MAX << bits;
+        }
+        const V a = src32(0, mask);
         V b = src32(1);
         const V k31 = s_.m.i32(31);
         b = s_.m.bin(c, Bin::And, b, k31);
         Bin op = Bin::AShr;
-        if (name == "s_lshl_b32") op = Bin::Shl;
+        if (left) op = Bin::Shl;
         else if (name == "s_lshr_b32") op = Bin::LShr;
         r = s_.m.bin(c, op, a, b);
     } else if (name == "s_lshl1_add_u32" || name == "s_lshl2_add_u32" ||
@@ -463,12 +578,29 @@ V Lower::scc_in(const IrInst& inst) {
 }
 
 void Lower::smem(const IrInst& inst, Site site) {
+    const auto& spilled = x_->res->spilled_root_loads;
+    if (std::binary_search(spilled.begin(), spilled.end(), site)) {
+        for (const auto& write : inst.writes) {
+            const auto root = params_.find(write.second);
+            if (root == params_.end()) {
+                vals_[write.second] = Val::missing("an undeclared spilled root word");
+            } else if (root->second.second != 0 &&
+                       x_->native->layout[root->second.first].root.kind == RootType::Kind::Table) {
+                vals_[write.second] = Val::missing("a spilled table address high word read as data");
+            }
+        }
+        return;
+    }
     const auto* fields = std::get_if<SmemFields>(&inst.fields);
     if (fields == nullptr) std::abort();
     const std::string_view name = inst.name();
     const auto tracked = scalar_.find(site);
     if (tracked != scalar_.end() && tracked->second.param == kCode) {
         code_smem(inst, tracked->second);
+        return;
+    }
+    if (tracked != scalar_.end() && tracked->second.param == kFlat) {
+        flat_smem(inst);
         return;
     }
     std::string_view rest;
@@ -510,23 +642,29 @@ void Lower::smem(const IrInst& inst, Site site) {
         return;
     }
     if (kind != nullptr && kind->kind.kind == ResourceType::Kind::Srv) {
-        const V h = handle(site, src, false, {11, 0});
+        const V h = handle(site, src, false, kRawBufferSrv);
         for (std::uint32_t k = 0; k < count; ++k) {
             const V off = s_.m.i32(4 * k);
             const V at = s_.m.bin(c, Bin::Add, addr, off);
-            const V mask = s_.m.i8(1);
-            const V undef = s_.m.undef(s_.t.i32);
-            const V align = s_.m.i32(4);
-            const V r = s_.op(c, "rawBufferLoad.f32", Attr::ReadOnly, s_.t.res_ret, 139,
-                              {h, at, undef, mask, align});
-            const V x = as_int(s_.m.extract(c, r, 0));
-            write(inst, Reg::s(static_cast<std::uint8_t>(code + k)), x, std::nullopt);
+            const std::vector<V> words = bounded_raw_words(h, at, 1);
+            write(inst, Reg::s(static_cast<std::uint8_t>(code + k)), as_int(words[0]), std::nullopt);
+        }
+        return;
+    }
+    if (kind == nullptr && indexed_by_resource_heap(src)) {
+        constexpr std::uint32_t kLoadWords = 4;
+        for (std::uint32_t first = 0; first < count; first += kLoadWords) {
+            const std::uint32_t part = std::min(kLoadWords, count - first);
+            const V at = s_.m.bin(cur_, Bin::Add, addr, s_.m.i32(first * static_cast<std::uint32_t>(sizeof(std::uint32_t))));
+            const std::vector<V> words = load_indexed_heap_buffer(src, s_.m.i32(0), at, part, std::nullopt);
+            for (std::uint32_t k = 0; k < part; ++k)
+                write(inst, Reg::s(static_cast<std::uint8_t>(code + first + k)), words[k], std::nullopt);
         }
         return;
     }
     const V h = handle(site, src, false, {13, static_cast<std::uint32_t>(kCodeCbvSize)});
     std::optional<std::uint32_t> constant;
-    if (addr.kind == V::Kind::Const && is_null(fields->soffset) && !extra) constant = total;
+    if (addr.kind == V::Kind::Const && is_null(fields->soffset) && !extra && !root_cbv_slot(h)) constant = total;
     std::map<std::uint32_t, V> rows;
     for (std::uint32_t k = 0; k < count; ++k) {
         V x;
@@ -552,8 +690,101 @@ void Lower::smem(const IrInst& inst, Site site) {
     }
 }
 
+bool Lower::defer_descriptor_address(Value value, const Source& src, const UsedResource& used,
+                                    UserData::Source source) {
+    const auto tracked = scalar_.find(src.load);
+    if (tracked == scalar_.end()) return false;
+    const Address& address = tracked->second;
+    if (address.dynamic || address.param >= x_->native->layout.size()) return false;
+    const RootParam& root = x_->native->layout[address.param];
+    const std::uint64_t byte = address.offset + sizeof(std::uint32_t) * std::uint64_t{src.first};
+    if (root.root.kind != RootType::Kind::Table || byte % kResourceDescriptorBytes != 0 ||
+        byte / sizeof(std::uint32_t) != used.table_offset_dwords)
+        return false;
+    descriptor_addresses_[value] = {0, root.slot, root.root, used.table_offset_dwords, source};
+    return true;
+}
+
 void Lower::descriptor_data(const IrInst& inst, Site site) {
-    constexpr Why other = "a descriptor's address or format read as data";
+    try {
+        rebuilt_descriptor_data(inst, site);
+    } catch (const WhyError&) {
+        if (!read_as_data(inst) || !descriptor_words_data(inst, site, std::nullopt)) throw;
+    }
+}
+
+const std::unordered_set<Value, ValueHash>& Lower::data_reads() const {
+    if (!data_reads_) {
+        std::unordered_set<Value, ValueHash> reads;
+        for (const IrBlock& block : x_->p->blocks) {
+            for (const Phi& phi : block.phis)
+                for (const Value arg : phi.args) reads.insert(arg);
+            for (const IrInst& reader : block.insts) {
+                if (!std::holds_alternative<SopFields>(reader.fields) && !std::holds_alternative<Valu>(reader.fields))
+                    continue;
+                for (const auto& entry : reader.reads) reads.insert(entry.second);
+            }
+        }
+        data_reads_ = std::move(reads);
+    }
+    return *data_reads_;
+}
+
+bool Lower::value_read(Value value) const { return data_reads().contains(value); }
+
+bool Lower::read_as_data(const IrInst& inst) const {
+    const std::unordered_set<Value, ValueHash>& reads = data_reads();
+    for (const auto& entry : inst.writes)
+        if (reads.contains(entry.second)) return true;
+    return false;
+}
+
+bool Lower::descriptor_words_data(const IrInst& inst, Site site, std::optional<std::uint32_t> only) {
+    const auto tracked = scalar_.find(site);
+    if (tracked == scalar_.end()) return false;
+    const Address a = tracked->second;
+    if (a.param >= x_->native->layout.size()) return false;
+    const RootParam rp = x_->native->layout[a.param];
+    bool sampler = rp.root.kind == RootType::Kind::SamplerHeap;
+    if (rp.root.kind == RootType::Kind::Table) {
+        for (const UsedResource& used : x_->native->used)
+            if (used.user_data == rp.user_data && used.kind.kind == ResourceType::Kind::Sampler) sampler = true;
+    } else if (rp.root.kind != RootType::Kind::ResourceHeap && !sampler) {
+        return false;
+    }
+    const auto* fields = std::get_if<SmemFields>(&inst.fields);
+    if (fields == nullptr || !fields->data) return false;
+    const auto* data = std::get_if<ScalarOperand>(&*fields->data);
+    const auto* base = std::get_if<ScalarOperand>(&fields->base);
+    if (data == nullptr || base == nullptr) return false;
+    std::string_view rest;
+    if (!strip(inst.name(), "s_load_dword", &rest)) return false;
+    const std::optional<std::uint32_t> found_count = dword_count(rest);
+    const std::optional<Value> read = inst.read(Reg::s(base->code));
+    if (!found_count || !read) return false;
+    const std::size_t c = cur_;
+    V addr;
+    try {
+        addr = heap_pointer(*read) ? s_.m.i32(0) : i32_of(*read);
+        addr = s_.m.bin(c, Bin::Add, addr, s_.m.i32(static_cast<std::uint32_t>(fields->offset)));
+        const auto* soffset = std::get_if<ScalarOperand>(&fields->soffset);
+        if (!(soffset != nullptr && soffset->code == kNull))
+            addr = s_.m.bin(c, Bin::Add, addr, operand(inst, fields->soffset));
+    } catch (const WhyError&) {
+        return false;
+    }
+    const V h = s_.descriptor_words_handle(sampler);
+    for (std::uint32_t k = 0; k < *found_count; ++k) {
+        if (only && *only != k) continue;
+        const V at = s_.m.bin(c, Bin::Add, addr, s_.m.i32(4 * k));
+        const V r = s_.op(c, "rawBufferLoad.f32", Attr::ReadOnly, s_.t.res_ret, 139,
+                          {h, at, s_.m.undef(s_.t.i32), s_.m.i8(1), s_.m.i32(4)});
+        write(inst, Reg::s(static_cast<std::uint8_t>(data->code + k)), as_int(s_.m.extract(c, r, 0)), std::nullopt);
+    }
+    return true;
+}
+
+void Lower::rebuilt_descriptor_data(const IrInst& inst, Site site) {
     const auto* fields = std::get_if<SmemFields>(&inst.fields);
     if (fields == nullptr || !fields->data) fail("a scalar memory read as data");
     const auto* data = std::get_if<ScalarOperand>(&*fields->data);
@@ -575,7 +806,10 @@ void Lower::descriptor_data(const IrInst& inst, Site site) {
         }
         if (use_at) break;
     }
-    if (!use_at) fail("a descriptor read only as data");
+    if (!use_at) {
+        standalone_descriptor_data(inst, site, code, count);
+        return;
+    }
     const Site at = use_at->first;
     const std::uint8_t first = use_at->second;
     const Source src = Source::loaded(site, first);
@@ -588,7 +822,24 @@ void Lower::descriptor_data(const IrInst& inst, Site site) {
     const std::uint32_t u = uav ? 0x1000 : 0;
     std::pair<std::uint32_t, std::uint32_t> props;
     std::optional<std::uint32_t> image;
-    if (const auto* image_fields = std::get_if<ImageFields>(&ui.fields)) {
+    const bool scalar_buffer = std::holds_alternative<SmemFields>(ui.fields) && un.starts_with("s_buffer_load_dword");
+    const bool scalar_srv = scalar_buffer && used != nullptr && used->kind.kind == ResourceType::Kind::Srv;
+    if (scalar_buffer && used != nullptr && used->kind.kind == ResourceType::Kind::Cbv) {
+        using SourceKind = UserData::Source;
+        constexpr std::array kWords{SourceKind::ConstantBufferAddressLow, SourceKind::ConstantBufferHighWord,
+                                    SourceKind::ConstantBufferRecordCount, SourceKind::ConstantBufferFormatWord};
+        for (std::uint32_t k = 0; k < count; ++k) {
+            const auto v = inst.write(Reg::s(static_cast<std::uint8_t>(code + k)));
+            if (!v) continue;
+            const std::uint32_t word = k - first;
+            if (word < kWords.size() && defer_descriptor_address(*v, src, *used, kWords[word]))
+                continue;
+            vals_[*v] = Val::missing("a scalar memory read as data");
+        }
+        return;
+    }
+    const auto* image_fields = std::get_if<ImageFields>(&ui.fields);
+    if (image_fields != nullptr) {
         const std::uint8_t dim = image_fields->dim;
         std::uint32_t kind = 0;
         if (dim == 0) kind = 1;
@@ -611,11 +862,35 @@ void Lower::descriptor_data(const IrInst& inst, Site site) {
         }
         if (used != nullptr && used->kind.kind == ResourceType::Kind::Cbv)
             fail("a constant buffer's descriptor read as data");
+    } else if (scalar_srv) {
+        props = kRawBufferSrv;
     } else {
         fail("a scalar memory read as data");
     }
+    using SourceKind = UserData::Source;
+    const auto* buffer_fields = std::get_if<BufferFields>(&ui.fields);
+    const bool byte_addressed = buffer_fields != nullptr && !buffer_fields->idxen && buffer_fields->offen &&
+                                !buffer_fields->format;
+    const bool linear_raw = used != nullptr && used->kind.kind == ResourceType::Kind::Srv && used->stride <= 1 &&
+                            props == kRawBufferSrv && (scalar_srv || byte_addressed);
+    const bool structured = used != nullptr && used->kind.kind == ResourceType::Kind::Srv &&
+                            (scalar_srv || props.first == 12) && used->stride >= 4 && used->stride % 4 == 0 &&
+                            used->stride <= UserData::kBufferStrideMask;
+    const bool typed = used != nullptr && used->kind.kind == ResourceType::Kind::Srv && props.first == 10;
+    const auto tracked = scalar_.find(src.load);
+    const RootType::Kind root = tracked != scalar_.end() && tracked->second.param < x_->native->layout.size()
+                                   ? x_->native->layout[tracked->second.param].root.kind
+                                   : RootType::Kind::Other;
+    const bool image_has_no_metadata_plane = image_fields != nullptr && !image_fields->r128 && !uav &&
+                                             (root == RootType::Kind::Table || root == RootType::Kind::ResourceHeap);
+    const std::vector<Site>& waterfall_loads = x_->res->waterfall.loads;
+    const bool invariant = src.kind == Source::Kind::Loaded && tracked != scalar_.end() && !tracked->second.dynamic &&
+                           std::find(waterfall_loads.begin(), waterfall_loads.end(), src.load) == waterfall_loads.end();
+    const std::size_t resume = cur_;
+    if (invariant) cur_ = s_.entry;
     const V h = handle(site, src, false, props);
     const std::size_t c = cur_;
+    cur_ = resume;
     const Ty i32t = s_.t.i32;
     const Ty dims = s_.m.named_struct("dx.types.Dimensions", {i32t, i32t, i32t, i32t});
     const V mip = image && !uav ? s_.m.i32(0) : s_.m.undef(i32t);
@@ -668,15 +943,202 @@ void Lower::descriptor_data(const IrInst& inst, Site site) {
     }
     for (std::uint32_t k = 0; k < count; ++k) {
         const std::uint32_t rel = k - static_cast<std::uint32_t>(first);
+        if (rel == 7 && image_has_no_metadata_plane) {
+            write(inst, Reg::s(static_cast<std::uint8_t>(code + k)), s_.m.i32(0), std::nullopt);
+            continue;
+        }
         const auto found = std::find_if(words.begin(), words.end(),
                                         [rel](const auto& word) { return word.first == rel; });
         if (found != words.end()) {
             write(inst, Reg::s(static_cast<std::uint8_t>(code + k)), found->second, std::nullopt);
         } else {
-            if (const std::optional<Value> v = inst.write(Reg::s(static_cast<std::uint8_t>(code + k))))
-                vals_[*v] = Val::missing(other);
+            const auto v = inst.write(Reg::s(static_cast<std::uint8_t>(code + k)));
+            if (!v) continue;
+            if (rel == 0 && (scalar_srv || linear_raw || structured || typed) &&
+                defer_descriptor_address(*v, src, *used, SourceKind::ShaderBufferAddressLow))
+                continue;
+            if (rel == 0 && image && used != nullptr &&
+                defer_descriptor_address(*v, src, *used, UserData::Source::ImageBaseAddressLow))
+                continue;
+            if (rel == 5 && image_fields != nullptr && !image_fields->r128) {
+                descriptor_zero_bits_[*v] = kImageWord5ReservedMask;
+                if (!uav && image_fields->dim == 1 && used != nullptr && used->kind.kind == ResourceType::Kind::Srv)
+                    defer_descriptor_address(*v, src, *used, SourceKind::ImageSamplingFields);
+            }
+            if (linear_raw || structured) {
+                if (rel == 1 && defer_descriptor_address(*v, src, *used, structured ? SourceKind::StructuredBufferHighWord
+                                                                                  : SourceKind::LinearRawBufferHighWord))
+                    continue;
+                if (rel == 3 && defer_descriptor_address(*v, src, *used, structured ? SourceKind::StructuredBufferFormatWord
+                                                                                  : SourceKind::LinearRawBufferFormatWord))
+                    continue;
+            }
+            if (scalar_srv && rel == 1)
+                defer_descriptor_address(*v, src, *used, SourceKind::ShaderBufferAddressHigh);
+            if (scalar_srv && rel == 3)
+                defer_descriptor_address(*v, src, *used, SourceKind::ShaderBufferComponentMapping);
+            if (typed && (rel == 1 || rel == 3) && defer_descriptor_address(
+                    *v, src, *used, rel == 1 ? SourceKind::TypedBufferHighWord : SourceKind::TypedBufferFormatWord))
+                continue;
+            if (!descriptor_addresses_.contains(*v) && !descriptor_zero_bits_.contains(*v) && value_read(*v) &&
+                descriptor_words_data(inst, site, k))
+                continue;
+            vals_[*v] = Val::missing(kDescriptorData);
         }
     }
+}
+
+void Lower::standalone_descriptor_data(const IrInst& inst, Site site, std::uint8_t code, std::uint32_t count) {
+    constexpr std::uint32_t kDwordBytes = sizeof(std::uint32_t);
+    constexpr std::uint32_t kSlotDwords = kResourceDescriptorBytes / kDwordBytes;
+    constexpr std::uint32_t kSamplerSlotDwords = kSamplerDescriptorBytes / kDwordBytes;
+    const auto tracked = scalar_.find(site);
+    if (tracked == scalar_.end() ||
+        tracked->second.param >= x_->native->layout.size() || tracked->second.offset % kDwordBytes != 0)
+        fail(kStandaloneDescriptorData);
+    const Address& address = tracked->second;
+    const RootParam& root = x_->native->layout[address.param];
+    if (root.root.kind == RootType::Kind::ResourceHeap && count == kSlotDwords &&
+        address.offset % kResourceDescriptorBytes == 0) {
+        defer_image_heap_read(inst, site, code, root);
+        return;
+    }
+    if (address.dynamic) fail(kStandaloneDescriptorData);
+    const bool sampler = root.root.kind == RootType::Kind::SamplerHeap;
+    const std::uint32_t dword = address.offset / kDwordBytes;
+    const std::uint32_t first = dword % kSlotDwords;
+    const std::uint32_t slot_dword = dword - first;
+    const UsedResource* used = sampler ? nullptr : used_kind(Source::loaded(site, 0));
+    if (!sampler && (used == nullptr || used->kind.kind != ResourceType::Kind::Srv ||
+                     used->table_offset_dwords != slot_dword || root.root.kind != RootType::Kind::Table))
+        fail(kStandaloneDescriptorData);
+    const std::uint8_t resource_words = used == nullptr ? 0 : used->dwords;
+    using SourceKind = UserData::Source;
+    for (std::uint32_t k = 0; k < count; ++k) {
+        const auto value = inst.write(Reg::s(static_cast<std::uint8_t>(code + k)));
+        if (!value) continue;
+        const std::uint32_t word = first + k;
+        std::optional<SourceKind> source;
+        std::uint32_t descriptor_dword = slot_dword;
+        if (sampler && (dword + k) % kSamplerSlotDwords == kSamplerLodWord) {
+            source = SourceKind::SamplerLodWord;
+            descriptor_dword = dword + k - kSamplerLodWord;
+        } else if (resource_words == 4 && word == kBufferRecordCountWord)
+            source = SourceKind::ShaderBufferRecordCount;
+        else if (resource_words == 8 && word == kImageWidthLowWord)
+            source = SourceKind::ImageWidthLowBits;
+        else if (resource_words == 8 && word == kImageDimensionsWord)
+            source = SourceKind::ImageDimensions;
+        else if (resource_words == 8 && word == kImageBaseMipWord)
+            source = SourceKind::ImageBaseMip;
+        if (source) {
+            const UserData data{0, root.slot, root.root, descriptor_dword, *source};
+            descriptor_addresses_[*value] = data;
+            if (data.known_bits() != UINT32_MAX) vals_[*value] = Val::missing(kDescriptorData);
+        } else if (!value_read(*value) || !descriptor_words_data(inst, site, k)) {
+            vals_[*value] = Val::missing(kStandaloneDescriptorData);
+        }
+    }
+}
+
+void Lower::defer_image_heap_read(const IrInst& inst, Site site, std::uint8_t code, const RootParam& root) {
+    if (!image_heap_allowed_) {
+        const HwStage stage = x_->native->stage;
+        image_heap_allowed_ = stage == HwStage::Ps || stage == HwStage::Vs || stage == HwStage::Cs;
+        if (stage == HwStage::Cs) {
+            for (const IrBlock& block : x_->p->blocks) {
+                for (const IrInst& candidate : block.insts)
+                    if (candidate.name() == "s_barrier") image_heap_allowed_ = false;
+            }
+        }
+    }
+    if (!*image_heap_allowed_) fail(kStandaloneDescriptorData);
+    const V byte_address = heap_byte_address(site, 0);
+    const std::size_t read_index = image_heap_reads_.size();
+    const std::size_t read = s_.m.new_block();
+    const std::size_t load = s_.m.new_block();
+    const std::size_t next = s_.m.new_block();
+    const UserData binding{0, root.slot, root.root, 0, UserData::Source::ImageHeapData};
+    image_heap_reads_.push_back({read, next, byte_address, binding, std::nullopt, load});
+    s_.m.terminate(cur_, Term::br(read));
+    cur_ = next;
+    using Data = ImageHeapData;
+    constexpr std::array masks{UINT32_MAX << UserData::kImageWidthLowShift, UserData::kImageDimensionsMask,
+                               UserData::kImageBaseMipMask};
+    for (std::uint32_t k = 0; k < kResourceDescriptorBytes / sizeof(std::uint32_t); ++k) {
+        const auto value = inst.write(Reg::s(static_cast<std::uint8_t>(code + k)));
+        if (!value) continue;
+        if (k >= kImageWidthLowWord && k <= kImageBaseMipWord) {
+            const std::uint32_t channel = k - kImageWidthLowWord;
+            image_heap_words_[*value] = {read_index, channel, masks[channel]};
+        }
+        vals_[*value] = Val::missing(kStandaloneDescriptorData);
+    }
+    static_assert(Data::kWidthLow == 0 && Data::kDimensions == 1 && Data::kBaseMip == 2);
+}
+
+V Lower::read_image_heap_word(const ImageHeapWord& word) {
+    ImageHeapRead& read = image_heap_reads_[word.read];
+    const std::size_t c = read.block;
+    if (!read.shape) {
+        using Data = ImageHeapData;
+        const std::size_t saved = cur_;
+        cur_ = c;
+        const auto [h, count] = heap_records(read.binding);
+        constexpr std::uint32_t kRecordBytes = 16;
+        const V slot = s_.m.bin(c, Bin::LShr, read.byte_address, s_.m.i32(5));
+        const V in_range = s_.m.cmp(c, pred::kIult, slot, count);
+        const V low_bits = s_.m.bin(c, Bin::And, read.byte_address, s_.m.i32(31));
+        const V aligned = s_.m.cmp(c, pred::kEq, low_bits, s_.m.i32(0));
+        const V byte = s_.m.bin(c, Bin::Shl, slot, s_.m.i32(4));
+        const V fits = raw_byte_fits(h, byte, kRecordBytes);
+        cur_ = saved;
+        V gate = s_.m.bin(c, Bin::And, in_range, aligned);
+        gate = s_.m.bin(c, Bin::And, gate, fits);
+        const std::size_t load_block = read.defined;
+        const std::size_t abort = abort_block();
+        s_.m.terminate(c, Term::cond_br(gate, load_block, abort));
+        const auto [data, valid_slot] = read_heap_record(load_block, read.byte_address, read.binding);
+        const V present = s_.m.cmp(load_block, pred::kNe, s_.m.extract(load_block, data, Data::kPresent),
+                                   s_.m.i32(0));
+        const V valid = s_.m.bin(load_block, Bin::And, valid_slot, present);
+        read.shape = data;
+        read.defined = load_block;
+        s_.m.terminate(load_block, Term::cond_br(valid, read.next, abort));
+        cur_ = saved;
+    }
+    return s_.m.extract(read.defined, *read.shape, word.channel);
+}
+
+Lower::HeapRecords Lower::heap_records(const UserData& binding) {
+    constexpr std::uint32_t kRecordShift = 4;
+    static_assert(ImageHeapData::kBytes == (1u << kRecordShift) && ImageHeapData::kBytes == BufferHeapData::kBytes);
+    const V base = descriptor_address(binding).value;
+    if (const auto known = heap_records_.find(base); known != heap_records_.end()) return known->second;
+    const std::size_t entry = s_.entry;
+    const V h = s_.heap_handle(entry, base, false, false, kRawBufferSrv);
+    const Ty i32 = s_.t.i32;
+    const Ty dimensions = s_.m.named_struct("dx.types.Dimensions", {i32, i32, i32, i32});
+    const V dims = s_.op(entry, "getDimensions", Attr::ReadOnly, dimensions, 72, {h, s_.m.undef(i32)});
+    const V count = s_.m.bin(entry, Bin::LShr, s_.m.extract(entry, dims, 0), s_.m.i32(kRecordShift));
+    return heap_records_.emplace(base, HeapRecords{h, count}).first->second;
+}
+
+std::pair<V, V> Lower::read_heap_record(std::size_t c, V byte_address, const UserData& binding) {
+    const auto [h, count] = heap_records(binding);
+    constexpr std::uint32_t kDescriptorShift = 5;
+    constexpr std::uint32_t kRecordShift = 4;
+    static_assert(kResourceDescriptorBytes == (1u << kDescriptorShift));
+    const V slot = s_.m.bin(c, Bin::LShr, byte_address, s_.m.i32(kDescriptorShift));
+    const Ty i32 = s_.t.i32;
+    const V in_range = s_.m.cmp(c, pred::kIult, slot, count);
+    const V low_bits = s_.m.bin(c, Bin::And, byte_address, s_.m.i32(kResourceDescriptorBytes - 1));
+    const V aligned = s_.m.cmp(c, pred::kEq, low_bits, s_.m.i32(0));
+    const V byte = s_.m.bin(c, Bin::Shl, slot, s_.m.i32(kRecordShift));
+    const Ty result = s_.m.named_struct("dx.types.ResRet.i32", {i32, i32, i32, i32, i32});
+    const V data = s_.op(c, "rawBufferLoad.i32", Attr::ReadOnly, result, 139,
+                         {h, byte, s_.m.undef(i32), s_.m.i8(0xf), s_.m.i32(sizeof(std::uint32_t))});
+    return {data, s_.m.bin(c, Bin::And, in_range, aligned)};
 }
 
 void Lower::code_smem(const IrInst& inst, Address a) {
@@ -701,23 +1163,42 @@ void Lower::code_smem(const IrInst& inst, Address a) {
     }
 }
 
+std::optional<std::uint8_t> Lower::root_cbv_slot(const V& handle) const {
+    for (const auto& [slot, root_handle] : s_.root_cbvs)
+        if (root_handle.kind == handle.kind && root_handle.index == handle.index) return slot;
+    return std::nullopt;
+}
+
 V Lower::cbuffer_dword(V h, V a) {
+    const auto load = [this, h, a] {
+        const std::size_t c = cur_;
+        const V four = s_.m.i32(4);
+        const V ri = s_.m.bin(c, Bin::LShr, a, four);
+        const V r = s_.op(c, "cbufferLoadLegacy.i32", Attr::ReadOnly, s_.t.cbuf_ret, 59, {h, ri});
+        const V two = s_.m.i32(2);
+        const V three = s_.m.i32(3);
+        V comp = s_.m.bin(c, Bin::LShr, a, two);
+        comp = s_.m.bin(c, Bin::And, comp, three);
+        V x = s_.m.extract(c, r, 0);
+        for (std::uint32_t j = 1; j < 4; ++j) {
+            const V e = s_.m.extract(c, r, j);
+            const V jc = s_.m.i32(j);
+            const V is = s_.m.cmp(c, pred::kEq, comp, jc);
+            x = s_.m.select(c, is, e, x);
+        }
+        return x;
+    };
+    const std::optional<std::uint8_t> slot = root_cbv_slot(h);
+    if (!slot) return load();
     const std::size_t c = cur_;
-    const V four = s_.m.i32(4);
-    const V ri = s_.m.bin(c, Bin::LShr, a, four);
-    const V r = s_.op(c, "cbufferLoadLegacy.i32", Attr::ReadOnly, s_.t.cbuf_ret, 59, {h, ri});
-    const V two = s_.m.i32(2);
-    const V three = s_.m.i32(3);
-    V comp = s_.m.bin(c, Bin::LShr, a, two);
-    comp = s_.m.bin(c, Bin::And, comp, three);
-    V x = s_.m.extract(c, r, 0);
-    for (std::uint32_t j = 1; j < 4; ++j) {
-        const V e = s_.m.extract(c, r, j);
-        const V jc = s_.m.i32(j);
-        const V is = s_.m.cmp(c, pred::kEq, comp, jc);
-        x = s_.m.select(c, is, e, x);
-    }
-    return x;
+    const V size = root_view_bytes(*slot);
+    const V end = s_.m.bin(c, Bin::Add, a, s_.m.i32(4));
+    const V no_wrap = s_.m.cmp(c, pred::kIuge, end, a);
+    const V inside = s_.m.cmp(c, pred::kIule, end, size);
+    const V fits = s_.m.bin(c, Bin::And, no_wrap, inside);
+    const auto bounds = begin_guarded(fits);
+    const std::vector<V> safe = end_guarded(bounds, {{load(), s_.m.i32(0)}});
+    return safe[0];
 }
 
 std::pair<std::uint32_t, std::optional<V>> Lower::built_offset(const Source& src) {
@@ -730,9 +1211,16 @@ std::pair<std::uint32_t, std::optional<V>> Lower::built_offset(const Source& src
 }
 
 const UsedResource* Lower::used_kind(const Source& src) const {
-    if (src.kind == Source::Kind::Phi) {
+    if (src.kind == Source::Kind::Phi || src.kind == Source::Kind::Select ||
+        src.kind == Source::Kind::Lanes) {
         if (src.args.empty()) return nullptr;
         return used_kind(src.args.front());
+    }
+    if (src.kind == Source::Kind::LanePhi) {
+        for (const std::optional<Source>& arg : src.options)
+            if (arg)
+                if (const UsedResource* found = used_kind(*arg)) return found;
+        return nullptr;
     }
     if (src.kind == Source::Kind::Built) {
         if (src.address.param >= x_->native->layout.size()) return nullptr;
@@ -743,7 +1231,7 @@ const UsedResource* Lower::used_kind(const Source& src) const {
         }
         return nullptr;
     }
-    if (src.kind != Source::Kind::Loaded) return nullptr;
+    if (src.kind != Source::Kind::Loaded && src.kind != Source::Kind::Fetched) return nullptr;
     const auto scalar = scalar_.find(src.load);
     if (scalar == scalar_.end()) return nullptr;
     if (scalar->second.param >= x_->native->layout.size()) return nullptr;
@@ -769,8 +1257,10 @@ V Lower::handle(Site site, const Source& src, bool sampler,
                                                                              props.first};
         const auto found = handles_.find(key);
         if (found != handles_.end()) return found->second;
-        const V index = heap_index(src.load, src.first, sampler);
-        const V h = s_.heap_handle(cur_, index, sampler, props);
+        const V index = heap_index(src.load, src.first, sampler, props.first);
+        const std::vector<Site>& loads = x_->res->waterfall.loads;
+        const bool per_lane = std::find(loads.begin(), loads.end(), src.load) != loads.end();
+        const V h = s_.heap_handle(cur_, index, sampler, per_lane, props);
         handles_[key] = h;
         return h;
     }
@@ -812,37 +1302,138 @@ V Lower::handle(Site site, const Source& src, bool sampler,
             return s_.root_srv_handle(rp.slot);
         fail("a root UAV or typed root view");
     }
-    const std::size_t block = src.block;
-    std::vector<std::pair<V, std::size_t>> incoming;
-    const std::vector<std::size_t>& preds = x_->p->blocks[block].preds;
-    const std::size_t count = std::min(preds.size(), src.args.size());
-    for (std::size_t n = 0; n < count; ++n) {
-        const std::size_t q = preds[n];
-        const Source& arg = src.args[n];
-        if (!block_[q]) continue;
-        if (!tail_[q] || arg.kind != Source::Kind::Loaded)
-            fail("a descriptor chosen by control flow");
-        const std::size_t at =
-            edges_.contains({q, block}) ? edges_.at({q, block}) : *tail_[q];
-        const std::size_t here = cur_;
-        cur_ = at;
-        V index;
-        try {
-            index = heap_index(arg.load, arg.first, sampler);
-        } catch (...) {
+    if (src.kind == Source::Kind::Phi) {
+        const std::size_t block = src.block;
+        std::vector<std::pair<V, std::size_t>> incoming;
+        const std::vector<std::size_t>& preds = x_->p->blocks[block].preds;
+        const std::size_t count = std::min(preds.size(), src.args.size());
+        for (std::size_t n = 0; n < count; ++n) {
+            const std::size_t q = preds[n];
+            const Source& arg = src.args[n];
+            if (!block_[q]) continue;
+            if (!tail_[q] || arg.kind != Source::Kind::Loaded)
+                fail("a descriptor chosen by control flow");
+            const std::size_t at =
+                edges_.contains({q, block}) ? edges_.at({q, block}) : *tail_[q];
+            const std::size_t here = cur_;
+            cur_ = at;
+            V index;
+            try {
+                index = heap_index(arg.load, arg.first, sampler, props.first);
+            } catch (...) {
+                cur_ = here;
+                throw;
+            }
             cur_ = here;
-            throw;
+            incoming.emplace_back(index, at);
         }
-        cur_ = here;
-        incoming.emplace_back(index, at);
+        if (!block_[block]) fail("a descriptor chosen by control flow");
+        const V phi = s_.m.phi(*block_[block], s_.t.i32);
+        s_.m.set_phi(phi, incoming);
+        return s_.heap_handle(cur_, phi, sampler, false, props);
     }
-    if (!block_[block]) fail("a descriptor chosen by control flow");
-    const V phi = s_.m.phi(*block_[block], s_.t.i32);
-    s_.m.set_phi(phi, incoming);
-    return s_.heap_handle(cur_, phi, sampler, props);
+    if (src.kind == Source::Kind::Select) {
+        if (src.args.size() != 2 || src.args[0].kind != Source::Kind::Loaded ||
+            src.args[1].kind != Source::Kind::Loaded)
+            fail("a descriptor chosen by a condition");
+        const Val cond = get(src.key);
+        if (cond.kind != Val::Kind::Bit) fail("SCC without a value");
+        const V set = heap_index(src.args[0].load, src.args[0].first, sampler, props.first);
+        const V clear = heap_index(src.args[1].load, src.args[1].first, sampler, props.first);
+        const V index = s_.m.select(cur_, cond.value, set, clear);
+        return s_.heap_handle(cur_, index, sampler, false, props);
+    }
+    const V index = lane_heap_index(src, sampler, props.first);
+    return s_.heap_handle(cur_, index, sampler, true, props);
 }
 
-V Lower::heap_index(Site load, std::uint8_t first, bool sampler) {
+V Lower::lane_heap_index(const Source& src, bool sampler, std::uint32_t props) {
+    if (src.kind == Source::Kind::Loaded) return heap_index(src.load, src.first, sampler, props);
+    if (src.kind == Source::Kind::Fetched) return fetched_index(src.load, src.first, sampler, props);
+    if (src.kind == Source::Kind::Lanes || src.kind == Source::Kind::Select) {
+        if (src.args.size() != 2) fail("a descriptor chosen per lane");
+        V cond;
+        if (src.kind == Source::Kind::Lanes) {
+            const auto found = x_->st->masks.find(src.key);
+            if (found == x_->st->masks.end()) fail("a descriptor chosen per lane by an untracked mask");
+            cond = boolean(found->second, cur_);
+        } else {
+            const Val value = get(src.key);
+            if (value.kind != Val::Kind::Bit) fail("SCC without a value");
+            cond = value.value;
+        }
+        const V set = lane_heap_index(src.args[0], sampler, props);
+        const V clear = lane_heap_index(src.args[1], sampler, props);
+        return s_.m.select(cur_, cond, set, clear);
+    }
+    if (src.kind == Source::Kind::LanePhi) {
+        if (!block_[src.block]) fail("a per-lane descriptor chosen by control flow");
+        std::vector<std::pair<V, std::size_t>> incoming;
+        const std::vector<std::size_t>& preds = x_->p->blocks[src.block].preds;
+        const std::size_t count = std::min(preds.size(), src.options.size());
+        for (std::size_t n = 0; n < count; ++n) {
+            const std::size_t q = preds[n];
+            if (!block_[q]) continue;
+            if (!tail_[q]) fail("a per-lane descriptor joined from a later block");
+            const std::size_t at =
+                edges_.contains({q, src.block}) ? edges_.at({q, src.block}) : *tail_[q];
+            V index;
+            if (src.options[n]) {
+                const std::size_t here = cur_;
+                cur_ = at;
+                try {
+                    index = lane_heap_index(*src.options[n], sampler, props);
+                } catch (...) {
+                    cur_ = here;
+                    throw;
+                }
+                cur_ = here;
+            } else {
+                index = sampler ? s_.m.i32(0) : null_view_slot(props);
+            }
+            incoming.emplace_back(index, at);
+        }
+        const V phi = s_.m.phi(*block_[src.block], s_.t.i32);
+        s_.m.set_phi(phi, incoming);
+        return phi;
+    }
+    fail("a per-lane descriptor from neither a heap load nor a choice of them");
+}
+
+V Lower::fetched_index(Site load, std::uint8_t first, bool sampler, std::uint32_t props) {
+    const auto tracked = scalar_.find(load);
+    if (tracked == scalar_.end()) fail("an untracked descriptor load");
+    const Address a = tracked->second;
+    if (a.param >= x_->native->layout.size()) fail("a descriptor outside the heaps");
+    const RootType::Kind root = x_->native->layout[a.param].root.kind;
+    if (root != RootType::Kind::Table && root != RootType::Kind::ResourceHeap &&
+        root != RootType::Kind::SamplerHeap)
+        fail("a descriptor outside the heaps");
+    const IrInst& li = x_->p->blocks[load.block].insts[load.index];
+    const auto* fields = std::get_if<FlatFields>(&li.fields);
+    if (fields == nullptr || !fields->addr) fail("a per-lane descriptor load");
+    const auto* vec = std::get_if<VectorOperand>(&*fields->addr);
+    if (vec == nullptr) fail("a per-lane descriptor load");
+    const std::size_t c = cur_;
+    const std::optional<Value> low = li.read(Reg::v(vec->reg));
+    if (!low) fail("a per-lane descriptor load");
+    V at = i32_of(*low);
+    if (fields->saddr) {
+        const auto* scalar = std::get_if<ScalarOperand>(&*fields->saddr);
+        if (scalar != nullptr && scalar->code != kNull) {
+            const std::optional<Value> base = li.read(Reg::s(scalar->code));
+            if (!base) fail("a per-lane descriptor load");
+            at = s_.m.bin(c, Bin::Add, i32_of(*base), at);
+        }
+    }
+    const V k = s_.m.i32(static_cast<std::uint32_t>(fields->offset) +
+                         4u * static_cast<std::uint32_t>(first));
+    at = s_.m.bin(c, Bin::Add, at, k);
+    const V shift = s_.m.i32(sampler ? 4 : 5);
+    return bounded_heap_index(s_.m.bin(c, Bin::LShr, at, shift), sampler, props);
+}
+
+V Lower::heap_byte_address(Site load, std::uint8_t first) {
     const auto tracked = scalar_.find(load);
     if (tracked == scalar_.end()) fail("an untracked descriptor load");
     const Address a = tracked->second;
@@ -859,7 +1450,7 @@ V Lower::heap_index(Site load, std::uint8_t first, bool sampler) {
     const std::size_t c = cur_;
     const std::optional<Value> read = li.read(Reg::s(base->code));
     if (!read) fail("a descriptor load");
-    V addr = i32_of(*read);
+    V addr = heap_pointer(*read) ? s_.m.i32(0) : i32_of(*read);
     const V k = s_.m.i32(static_cast<std::uint32_t>(fields->offset) +
                          4u * static_cast<std::uint32_t>(first));
     addr = s_.m.bin(c, Bin::Add, addr, k);
@@ -868,8 +1459,81 @@ V Lower::heap_index(Site load, std::uint8_t first, bool sampler) {
         const V so = operand(li, fields->soffset);
         addr = s_.m.bin(c, Bin::Add, addr, so);
     }
-    const V shift = s_.m.i32(sampler ? 4 : 5);
-    return s_.m.bin(c, Bin::LShr, addr, shift);
+    return addr;
 }
+
+V Lower::heap_index(Site load, std::uint8_t first, bool sampler, std::uint32_t props) {
+    const V address = heap_byte_address(load, first);
+    const V index = s_.m.bin(cur_, Bin::LShr, address, s_.m.i32(sampler ? 4 : 5));
+    return bounded_heap_index(index, sampler, props);
+}
+
+V Lower::heap_limit(bool sampler) {
+    using SourceKind = UserData::Source;
+    const SourceKind source = sampler ? SourceKind::SamplerHeapCount : SourceKind::ViewHeapCount;
+    for (const auto& [index, entry] : user_reads_) {
+        if (entry.source == source) return user_dword(index).value;
+    }
+    constexpr std::uint32_t kRootDwords = 64;
+    std::uint32_t index = 0;
+    for (const RootParam& param : x_->native->layout) {
+        if (param.user_data >= kRootDwords || param.sgprs > kRootDwords - param.user_data)
+            fail("a descriptor heap limit beyond host root constants");
+        index = std::max(index, std::uint32_t{param.user_data} + param.sgprs);
+    }
+    for (const auto& used : user_reads_) index = std::max(index, used.first + 1);
+    if (index >= kRootDwords) fail("a descriptor heap limit beyond host root constants");
+    RootType root;
+    root.kind = sampler ? RootType::Kind::SamplerHeap : RootType::Kind::ResourceHeap;
+    user_reads_.emplace(index, UserData{index, 0, root, 0, source});
+    return user_dword(index).value;
+}
+
+V Lower::null_view_slot(std::uint32_t props) {
+    using Kind = NullView;
+    const bool uav = (props & 0x1000u) != 0;
+    Kind kind = Kind::Texture2DSrv;
+    switch (props & 0xffu) {
+    case 11: kind = uav ? Kind::RawUav : Kind::RawSrv; break;
+    case 10: kind = uav ? Kind::TypedUav : Kind::TypedSrv; break;
+    case 12: kind = uav ? Kind::StructuredUav : Kind::StructuredSrv; break;
+    case 4: kind = uav ? Kind::Texture3DUav : Kind::Texture3DSrv; break;
+    case 5: kind = uav ? Kind::TextureCubeUav : Kind::TextureCubeSrv; break;
+    default: kind = uav ? Kind::Texture2DUav : Kind::Texture2DSrv; break;
+    }
+    const std::size_t c = cur_;
+    using SourceKind = UserData::Source;
+    std::uint32_t index = 0;
+    bool found = false;
+    for (const auto& entry : user_reads_) {
+        if (entry.second.source == SourceKind::NullViewBase) {
+            index = entry.first;
+            found = true;
+            break;
+        }
+        index = std::max(index, entry.first + 1);
+    }
+    if (!found) {
+        for (const RootParam& param : x_->native->layout) {
+            if (param.user_data < 64 && param.sgprs <= 64u - param.user_data)
+                index = std::max(index, std::uint32_t{param.user_data} + param.sgprs);
+        }
+        if (index >= 64) fail("a null view slot beyond host root constants");
+        RootType root;
+        root.kind = RootType::Kind::ResourceHeap;
+        user_reads_.emplace(index, UserData{index, 0, root, 0, SourceKind::NullViewBase});
+    }
+    const V base = user_dword(index).value;
+    return s_.m.bin(c, Bin::Add, base, s_.m.i32(static_cast<std::uint32_t>(kind)));
+}
+
+V Lower::bounded_heap_index(V index, bool sampler, std::uint32_t props) {
+    if (index.kind == V::Kind::Const) return index;
+    const std::size_t c = cur_;
+    const V in_range = s_.m.cmp(c, pred::kIult, index, heap_limit(sampler));
+    const V fallback = sampler ? s_.m.i32(0) : null_view_slot(props);
+    return s_.m.select(c, in_range, index, fallback);
+}
+
 
 }  // namespace g6shim::shader::emit

@@ -479,6 +479,15 @@ TEST(shader_native_compute_dispatch_settings) {
     CHECK(cs2.lds_bytes() == 0);
 }
 
+TEST(shader_native_initialized_sgprs_covers_user_system_and_scratch) {
+    const ComputeIo cs = ComputeIo{0x1098A, {16, 16, 1}};
+    CHECK(cs.initialized_sgprs() == 7);
+    const ComputeIo all_three = ComputeIo{0x78C, {8, 8, 1}};
+    CHECK(all_three.initialized_sgprs() == 10);
+    const ComputeIo scratch = ComputeIo{0x78D, {8, 8, 1}};
+    CHECK(scratch.initialized_sgprs() == 11);
+}
+
 TEST(shader_native_reads_every_native_blob) {
     const std::vector<std::uint8_t> es = xbch(fssm({{HwStage::Es, kVsCode}}));
     const std::vector<std::uint8_t> vs = xbch(fssm({{HwStage::Vs, kVsCode}}));

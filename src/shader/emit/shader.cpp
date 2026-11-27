@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "g6shim/shader/emit/shader.hpp"
+#include "g6shim/shader/error.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -16,6 +18,7 @@ namespace g6shim::shader::emit {
 namespace {
 
 constexpr std::string_view kMagic = "DXIL";
+constexpr char kEntryName[] = "main";
 constexpr std::uint32_t kDxilHeaderSize = 24;
 constexpr std::uint32_t kDxilVersion = 0x106;
 constexpr std::uint32_t kBitcodeOffset = 16;
@@ -23,13 +26,22 @@ constexpr std::uint32_t kProgramKindShift = 16;
 constexpr std::uint32_t kProgramKindMask = 0x66;
 constexpr std::uint32_t kRootCbvSize = 65536;
 constexpr std::uint32_t kRootCbvBlobDwords = 16384;
+constexpr std::uint32_t kFeatureTiledResources = 0x100;
+constexpr std::uint32_t kFeatureStencilRef = 0x200;
 constexpr std::uint32_t kFeatureTypedUavLoads = 0x800;
 constexpr std::uint32_t kFeatureWaveOps = 0x4000;
 constexpr std::uint32_t kFeatureInt64 = 0x8000;
 constexpr std::uint32_t kFeatureResourceHeap = 0x200'0000;
 constexpr std::uint32_t kFeatureSamplerHeap = 0x400'0000;
+constexpr std::uint32_t kFeatureAtomicInt64OnTypedResource = 0x400000;
+constexpr std::uint32_t kFeatureAtomicInt64OnHeapResource = 0x10000000;
 constexpr std::uint32_t kComparisonSampler = 0x8000;
 constexpr std::uint32_t kUnallocatedRow = UINT32_MAX;
+constexpr std::uint32_t kSample = 60;
+constexpr std::uint32_t kSampleBias = 61;
+constexpr std::uint32_t kSampleCmp = 64;
+constexpr std::uint32_t kCalculateLod = 81;
+constexpr std::uint32_t kGsStateTag = 1;
 
 void append_u32(std::vector<std::uint8_t>& out, std::uint32_t value) {
     out.push_back(static_cast<std::uint8_t>(value));
@@ -66,7 +78,7 @@ Shader::Shader(bool pixel_shader) : pixel(pixel_shader) {
     const Ty res_ret = m.named_struct("dx.types.ResRet.f32", {f32, f32, f32, f32, i32});
     const Ty main_ty = m.func_ty(void_type, {});
     m.ptr(main_ty);
-    main = m.function("main", main_ty, std::nullopt, true);
+    main = m.function(kEntryName, main_ty, std::nullopt, true);
     entry = m.new_block();
     t = Types{void_type, i1, i32, f32, handle, props, bind, cbuf_ret, res_ret};
 }
@@ -81,6 +93,8 @@ V Shader::lds() {
 
 V Shader::op(std::size_t block, const std::string& name, Attr attr, Ty ret, std::uint32_t opcode,
              const std::vector<V>& args) {
+    if (opcode == kSample || opcode == kSampleBias || opcode == kSampleCmp || opcode == kCalculateLod)
+        uses_implicit_lod_ = true;
     std::vector<Ty> params = {t.i32};
     params.reserve(params.size() + args.size());
     for (const V arg : args) params.push_back(m.type_of(arg));
@@ -134,6 +148,27 @@ V Shader::root_srv_handle(std::uint8_t slot) {
     return handle;
 }
 
+V Shader::flat_table_handle() { return words_handle(kFlatTableRegister); }
+
+V Shader::descriptor_words_handle(bool sampler) {
+    return words_handle(sampler ? kSamplerWordsRegister : kViewWordsRegister);
+}
+
+V Shader::words_handle(std::uint8_t reg) {
+    for (const auto& entry_value : words_srvs)
+        if (entry_value.first == reg) return entry_value.second;
+    const V register_value = m.i32(reg);
+    const std::array<V, 4> bind = {register_value, register_value, m.i32(kDescriptorWordsSpace), m.i8(0)};
+    const V binding = m.aggregate(t.bind, bind);
+    const V non_uniform = m.boolean(false);
+    const V raw =
+        op(entry, "createHandleFromBinding", Attr::ReadNone, t.handle, 217, {binding, register_value, non_uniform});
+    const V handle = annotate(entry, raw, 11, 0);
+    flags |= feature::kRawBuffers;
+    words_srvs.emplace_back(reg, handle);
+    return handle;
+}
+
 V Shader::sampler_handle(std::size_t block, std::uint32_t n) {
     const std::array<V, 4> bind = {m.i32(n), m.i32(n), m.i32(kSamplerSpace), m.i8(3)};
     const V binding = m.aggregate(t.bind, bind);
@@ -151,11 +186,12 @@ V Shader::annotate(std::size_t block, V handle, std::uint32_t props0, std::uint3
     return op(block, "annotateHandle", Attr::ReadNone, t.handle, 216, {handle, props});
 }
 
-V Shader::heap_handle(std::size_t block, V index, bool sampler,
+V Shader::heap_handle(std::size_t block, V index, bool sampler, bool nonuniform,
                       std::pair<std::uint32_t, std::uint32_t> props) {
     flags |= sampler ? feature::kSamplerHeap : feature::kResourceHeap;
+    nonuniform_handles += nonuniform ? 1u : 0u;
     const V is_sampler = m.boolean(sampler);
-    const V non_uniform = m.boolean(false);
+    const V non_uniform = m.boolean(nonuniform);
     const V handle =
         op(block, "createHandleFromHeap", Attr::ReadNone, t.handle, 218, {index, is_sampler, non_uniform});
     return annotate(block, handle, props.first, props.second);
@@ -170,7 +206,7 @@ std::vector<std::uint8_t> Shader::finish() {
         const V constant = m.i32(value);
         return m.md_value(constant);
     };
-    if (user_data > 0 || samplers > 0 || !root_cbvs.empty() || !root_srvs.empty()) {
+    if (user_data > 0 || samplers > 0 || !root_cbvs.empty() || !root_srvs.empty() || !words_srvs.empty()) {
         const Md empty = m.md_str("");
         std::optional<Md> cbvs;
         std::vector<std::optional<Md>> cbv_list;
@@ -207,27 +243,28 @@ std::vector<std::uint8_t> Shader::finish() {
         if (!cbv_list.empty()) cbvs = m.md_node(std::move(cbv_list));
 
         std::optional<Md> srvs;
-        if (!root_srvs.empty()) {
+        if (!root_srvs.empty() || !words_srvs.empty()) {
             const Ty type = m.named_struct("struct.ByteAddressBuffer", {t.i32});
             const Ty pointer = m.ptr(type);
             const V undef = m.undef(pointer);
             std::vector<std::optional<Md>> list;
-            for (std::size_t n = 0; n < root_srvs.size(); ++n) {
-                const auto& slot = root_srvs[n];
+            const auto add = [&](std::uint32_t space, std::uint8_t reg) {
                 const std::vector<std::optional<Md>> ops = {
-                    i32c(static_cast<std::uint32_t>(n)),
+                    i32c(static_cast<std::uint32_t>(list.size())),
                     m.md_value(undef),
                     empty,
-                    i32c(kRootCbvSpace),
-                    i32c(slot.first),
+                    i32c(space),
+                    i32c(reg),
                     i32c(1),
                     i32c(11),
                     i32c(0),
                     std::nullopt,
                 };
                 list.push_back(m.md_node(ops));
-                bindings.push_back(Binding{4, kRootCbvSpace, slot.first, 11});
-            }
+                bindings.push_back(Binding{4, space, reg, 11});
+            };
+            for (const auto& slot : root_srvs) add(kRootCbvSpace, slot.first);
+            for (const auto& slot : words_srvs) add(kDescriptorWordsSpace, slot.first);
             srvs = m.md_node(std::move(list));
         }
 
@@ -264,13 +301,17 @@ std::vector<std::uint8_t> Shader::finish() {
     if (graphics) {
         const std::uint32_t ni = signature_width(inputs);
         const std::uint32_t no = signature_width(outputs);
-        std::vector<std::uint32_t> view = {ni, no};
+        std::vector<std::uint32_t> view{ni, no};
         if (mesh) view.push_back(signature_width(prims));
         for (std::uint32_t i = 0; i < ni; ++i) {
             for (std::uint32_t k = 0; k < (no + 31) / 32; ++k) {
                 const std::uint32_t bits = std::min(no - 32 * k, 32u);
                 view.push_back(bits == 32 ? UINT32_MAX : (1u << bits) - 1u);
             }
+        }
+        if (geometry) {
+            constexpr std::uint32_t kUnusedGeometryStreams = 3;
+            view.insert(view.end(), kUnusedGeometryStreams, 0u);
         }
         const Ty array = m.array(static_cast<std::uint32_t>(view.size()), t.i32);
         std::vector<V> elements;
@@ -289,6 +330,13 @@ std::vector<std::uint8_t> Shader::finish() {
         const std::optional<Md> prim_outputs = signature_md(prims);
         signatures = m.md_node({ins, outs, prim_outputs});
     }
+
+    constexpr std::uint32_t kComputeImplicitLodValidatorMinor = 8;
+    const bool compute_implicit_lod = threads && !mesh && uses_implicit_lod_;
+    if (uses_level_clamp && compute_implicit_lod) flags |= feature::kTiledResources;
+    if (pixel && std::any_of(outputs.begin(), outputs.end(),
+                             [](const SigElement& element) { return element.kind == 20; }))
+        flags |= feature::kStencilRef;
 
     std::vector<std::optional<Md>> props;
     if (flags != 0) {
@@ -314,6 +362,12 @@ std::vector<std::uint8_t> Shader::finish() {
             props.push_back(thread_group);
         }
     }
+    if (geometry) {
+        props.push_back(i32c(kGsStateTag));
+        props.push_back(m.md_node({i32c(geometry->input_primitive), i32c(geometry->max_vertices),
+                                   i32c(geometry->stream_mask), i32c(geometry->output_topology),
+                                   i32c(geometry->instances)}));
+    }
     if (wave_size) {
         props.push_back(i32c(11));
         props.push_back(m.md_node({i32c(*wave_size)}));
@@ -322,7 +376,7 @@ std::vector<std::uint8_t> Shader::finish() {
     if (!props.empty()) props_node = m.md_node(std::move(props));
 
     const Md main_md = m.md_value(main);
-    const Md name = m.md_str("main");
+    const Md name = m.md_str(kEntryName);
     const Md entry_node = m.md_node({main_md, name, signatures, resources, props_node});
 
     const Md ident_text = m.md_str("g6shim");
@@ -332,13 +386,19 @@ std::vector<std::uint8_t> Shader::finish() {
     const Md six = i32c(6);
     const Md version = m.md_node({one, six});
     m.named_md("dx.version", {version});
-    m.named_md("dx.valver", {version});
+    const Md validator_version = compute_implicit_lod
+                                     ? m.md_node({one, i32c(kComputeImplicitLodValidatorMinor)})
+                                     : version;
+    m.named_md("dx.valver", {validator_version});
 
     const char* program_name = "vs";
     std::uint32_t program_kind = 1;
     if (mesh) {
         program_name = "ms";
         program_kind = 13;
+    } else if (geometry) {
+        program_name = "gs";
+        program_kind = 2;
     } else if (threads) {
         program_name = "cs";
         program_kind = 5;
@@ -351,7 +411,12 @@ std::vector<std::uint8_t> Shader::finish() {
     m.named_md("dx.shaderModel", {shader_model});
     m.named_md("dx.entryPoints", {entry_node});
 
-    const std::vector<std::uint8_t> bitcode = m.write();
+    std::vector<std::uint8_t> bitcode;
+    try {
+        bitcode = m.write();
+    } catch (const std::logic_error& error) {
+        ::g6shim::shader::detail::fail_unsupported(0, error.what());
+    }
     std::vector<std::uint8_t> dxil;
     dxil.reserve(kDxilHeaderSize + bitcode.size());
     append_u32(dxil, program_kind << kProgramKindShift | kProgramKindMask);
@@ -363,11 +428,17 @@ std::vector<std::uint8_t> Shader::finish() {
     dxil.insert(dxil.end(), bitcode.begin(), bitcode.end());
 
     std::uint64_t features = 0;
+    if ((flags & feature::kStencilRef) != 0) features |= kFeatureStencilRef;
+    if ((flags & feature::kTiledResources) != 0) features |= kFeatureTiledResources;
     if ((flags & feature::kTypedUavLoads) != 0) features |= kFeatureTypedUavLoads;
     if ((flags & feature::kWaveOps) != 0) features |= kFeatureWaveOps;
     if ((flags & feature::kInt64) != 0) features |= kFeatureInt64;
     if ((flags & feature::kResourceHeap) != 0) features |= kFeatureResourceHeap;
     if ((flags & feature::kSamplerHeap) != 0) features |= kFeatureSamplerHeap;
+    if ((flags & feature::kAtomicInt64OnTypedResource) != 0)
+        features |= kFeatureAtomicInt64OnTypedResource;
+    if ((flags & feature::kAtomicInt64OnHeapResource) != 0)
+        features |= kFeatureAtomicInt64OnHeapResource;
     std::array<std::uint8_t, 8> sfi0{};
     for (std::size_t i = 0; i < sfi0.size(); ++i) sfi0[i] = static_cast<std::uint8_t>(features >> (8 * i));
     const std::vector<std::uint8_t> isg1 = signature(inputs, true);
@@ -393,9 +464,11 @@ std::vector<std::uint8_t> Shader::finish() {
         outputs,
         prims,
         mesh_psv,
+        geometry,
         bindings,
         threads.value_or(std::array<std::uint32_t, 3>{0, 0, 0}),
         wave_size,
+        compute_implicit_lod ? std::string_view{kEntryName} : std::string_view{},
     };
     const std::vector<std::uint8_t> psv0 = psv(psv_data);
     const std::array<std::uint8_t, 20> container_hash{};

@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -20,6 +21,7 @@ namespace g6shim::shader {
 namespace {
 
 constexpr std::size_t kMaxNodes = 1u << 21;
+constexpr std::size_t kMaxMeet = 1u << 16;
 constexpr int kMaxRounds = 256;
 constexpr std::size_t kNoIndex = static_cast<std::size_t>(-1);
 
@@ -43,6 +45,17 @@ bool ends_with_suffix(std::string_view text, std::string_view suffix) {
 }
 
 using Slot = std::pair<std::size_t, std::size_t>;
+
+std::optional<std::uint32_t> lane_index(const Operand& op) {
+    if (const auto* constant = std::get_if<ConstantOperand>(&op)) {
+        if (constant->code >= 128 && constant->code <= 192) return constant->code - 128u;
+        if (constant->code >= 193 && constant->code <= 208)
+            return static_cast<std::uint32_t>(192 - static_cast<int>(constant->code));
+        return std::nullopt;
+    }
+    if (const auto* literal = std::get_if<LiteralOperand>(&op)) return literal->value;
+    return std::nullopt;
+}
 
 struct MaskKey {
     Value low;
@@ -68,6 +81,14 @@ struct Join {
     std::size_t block = 0;
     Value id;
     bool value = false;
+    bool derived = false;
+    std::vector<MaskKey> args;
+};
+
+struct PhiJoin {
+    std::size_t block = 0;
+    Value id;
+    bool derived = false;
     std::vector<MaskKey> args;
 };
 
@@ -79,7 +100,9 @@ public:
     std::vector<std::vector<std::optional<Bool>>> masks_in_order();
     std::vector<Bool> paths();
     std::vector<Value> wrong_joins(const std::vector<Bool>& cond);
+    std::vector<Value> newly_derived();
     void mark_unresolved(const std::vector<Value>& wrong);
+    void mark_derived(const std::vector<Value>& derived);
     Structured finish(const std::vector<std::vector<std::optional<Bool>>>& execs, const std::vector<Bool>& cond);
 
 private:
@@ -103,6 +126,8 @@ private:
     Bool edge(Bool c, std::size_t q, bool taken);
     Bool exec(const Inst& inst);
     std::pair<Bool, bool> mask(MaskKey key);
+    std::optional<Value> restored_dword(Value value) const;
+    std::optional<Value> spilled_sgpr(Value vgpr, std::uint32_t lane, std::vector<Value>& seen) const;
     std::optional<std::pair<Bool, bool>> join(MaskKey key);
     std::optional<std::pair<Bool, bool>> operand(const Inst& inst, const Operand& op);
     std::optional<SopMasks> sop(const Inst& inst);
@@ -117,11 +142,14 @@ private:
     std::unordered_map<Value, Slot, ValueHash> defs_;
     std::unordered_map<Value, Slot, ValueHash> phis_;
     std::unordered_set<Value, ValueHash> unresolved_;
+    std::unordered_set<Value, ValueHash> derived_phis_;
     Bools b_;
     std::unordered_map<MaskKey, Bool, MaskKeyHash> masks_;
     std::unordered_map<MaskKey, Bool, MaskKeyHash> other_;
     std::unordered_map<Value, Bool, ValueHash> scc_lane_;
     std::vector<Join> joins_;
+    std::vector<PhiJoin> phi_joins_;
+    std::unordered_set<Value, ValueHash> phi_join_ids_;
     std::vector<Bool> first_;
     std::vector<std::optional<Bool>> when_;
     std::unordered_set<Value, ValueHash> active_;
@@ -201,6 +229,37 @@ std::pair<Bool, Bool> Bools::split(Bool value, std::uint32_t variable) const {
     const Node entry = nodes_[value.index];
     if (entry.variable == variable) return {entry.low, entry.high};
     return {value, value};
+}
+
+bool Bools::meet(const std::vector<std::pair<Bool, bool>>& all) const {
+    std::size_t budget = kMaxMeet;
+    return meet_in(all, budget);
+}
+
+bool Bools::meet_in(std::vector<std::pair<Bool, bool>> all, std::size_t& budget) const {
+    const auto fails = [](const std::pair<Bool, bool>& entry) {
+        return entry.first == (entry.second ? kFalse : kTrue);
+    };
+    if (std::any_of(all.begin(), all.end(), fails)) return false;
+    all.erase(std::remove_if(all.begin(), all.end(),
+                             [](const std::pair<Bool, bool>& entry) {
+                                 return entry.first == kFalse || entry.first == kTrue;
+                             }),
+              all.end());
+    if (all.empty() || budget == 0) return true;
+    --budget;
+    std::uint32_t variable = UINT32_MAX;
+    for (const auto& entry : all) variable = std::min(variable, nodes_[entry.first.index].variable);
+    for (bool value : {false, true}) {
+        std::vector<std::pair<Bool, bool>> next;
+        next.reserve(all.size());
+        for (const auto& entry : all) {
+            const auto [low, high] = split(entry.first, variable);
+            next.emplace_back(value ? high : low, entry.second);
+        }
+        if (meet_in(std::move(next), budget)) return true;
+    }
+    return false;
 }
 
 Bool Bools::ite(Bool f, Bool g, Bool h) {
@@ -311,6 +370,8 @@ void Lanes::reset() {
     other_.clear();
     scc_lane_.clear();
     joins_.clear();
+    phi_joins_.clear();
+    phi_join_ids_.clear();
     std::fill(first_.begin(), first_.end(), kFalse);
     std::fill(when_.begin(), when_.end(), std::nullopt);
     active_.clear();
@@ -400,6 +461,55 @@ Bool Lanes::exec(const Inst& inst) {
     return kTrue;
 }
 
+std::optional<Value> Lanes::spilled_sgpr(Value vgpr, std::uint32_t lane, std::vector<Value>& seen) const {
+    if (const auto phi = phi_site(vgpr)) {
+        if (std::find(seen.begin(), seen.end(), vgpr) != seen.end()) return std::nullopt;
+        seen.push_back(vgpr);
+        std::optional<Value> found;
+        for (Value arg : p_->blocks[phi->first].phis[phi->second].args) {
+            const auto next = spilled_sgpr(arg, lane, seen);
+            if (!next) continue;
+            if (found && !(*found == *next)) return std::nullopt;
+            found = next;
+        }
+        return found;
+    }
+    const auto site = def_site(vgpr);
+    if (!site) return std::nullopt;
+    const Inst& inst = inst_at(*site);
+    if (inst.name() != "v_writelane_b32") return std::nullopt;
+    const auto* fields = std::get_if<Valu>(&inst.fields);
+    if (fields == nullptr || !fields->dst || fields->src.size() != 2) return std::nullopt;
+    const auto* dst = std::get_if<VectorOperand>(&*fields->dst);
+    if (dst == nullptr) return std::nullopt;
+    const auto at = lane_index(fields->src[1]);
+    if (!at) return std::nullopt;
+    if (*at != lane) {
+        const auto previous = inst.read(Reg::v(dst->reg));
+        if (!previous) return std::nullopt;
+        return spilled_sgpr(*previous, lane, seen);
+    }
+    const auto* scalar = std::get_if<ScalarOperand>(&fields->src[0]);
+    if (scalar == nullptr || scalar->code == kNull) return std::nullopt;
+    return inst.read(Reg::s(scalar->code));
+}
+
+std::optional<Value> Lanes::restored_dword(Value value) const {
+    const auto site = def_site(value);
+    if (!site) return std::nullopt;
+    const Inst& inst = inst_at(*site);
+    if (inst.name() != "v_readlane_b32") return std::nullopt;
+    const auto* fields = std::get_if<Valu>(&inst.fields);
+    if (fields == nullptr || fields->src.size() != 2) return std::nullopt;
+    const auto* vec = std::get_if<VectorOperand>(&fields->src[0]);
+    const auto lane = lane_index(fields->src[1]);
+    if (vec == nullptr || !lane) return std::nullopt;
+    const auto vgpr = inst.read(Reg::v(vec->reg));
+    if (!vgpr) return std::nullopt;
+    std::vector<Value> seen;
+    return spilled_sgpr(*vgpr, *lane, seen);
+}
+
 std::pair<Bool, bool> Lanes::mask(MaskKey key) {
     if (const auto it = masks_.find(key); it != masks_.end()) return {it->second, true};
     if (const auto it = other_.find(key); it != other_.end()) return {it->second, false};
@@ -407,16 +517,34 @@ std::pair<Bool, bool> Lanes::mask(MaskKey key) {
     if (const auto found = join(key)) {
         result = *found;
     } else {
-        const auto low = def_site(key.low);
-        const auto high = def_site(key.high);
-        std::optional<Bool> m;
-        if (low && high && *low == *high) {
-            const auto sop_result = sop(inst_at(*low));
-            if (sop_result && sop_result->dst) m = sop_result->dst->second;
+        MaskKey src = key;
+        bool restored = false;
+        if (const auto low = restored_dword(key.low)) {
+            src.low = *low;
+            restored = true;
         }
-        const bool derived = exec_write(low, key.low) || exec_write(high, key.high);
-        if (!m) m = b_.atom(Atom::opaque(key.low), born(key.low));
-        result = {*m, derived};
+        if (key.low != key.high) {
+            if (const auto high = restored_dword(key.high)) {
+                src.high = *high;
+                restored = true;
+            }
+        } else if (restored) {
+            src.high = src.low;
+        }
+        if (restored && !(src == key)) {
+            result = mask(src);
+        } else {
+            const auto low = def_site(key.low);
+            const auto high = def_site(key.high);
+            std::optional<Bool> m;
+            if (low && high && *low == *high) {
+                const auto sop_result = sop(inst_at(*low));
+                if (sop_result && sop_result->dst) m = sop_result->dst->second;
+            }
+            const bool derived = exec_write(low, key.low) || exec_write(high, key.high);
+            if (!m) m = b_.atom(Atom::opaque(key.low), born(key.low));
+            result = {*m, derived};
+        }
     }
     if (result.second)
         masks_.insert_or_assign(key, result.first);
@@ -448,7 +576,7 @@ std::optional<std::pair<Bool, bool>> Lanes::join(MaskKey key) {
     for (std::size_t n = 0; n < target.preds.size(); ++n)
         args.push_back(MaskKey{arg(low, key.low, n), arg(high, key.high, n)});
     const Value id = low ? key.low : key.high;
-    bool derived = false;
+    bool derived = derived_phis_.contains(id);
     std::vector<std::pair<Bool, Bool>> forward;
     for (std::size_t n = 0; n < args.size(); ++n) {
         const auto [q, taken] = incoming_[block][n];
@@ -476,11 +604,12 @@ std::optional<std::pair<Bool, bool>> Lanes::join(MaskKey key) {
                 }
             }
             if (holds) {
-                joins_.push_back(Join{block, id, value, args});
+                joins_.push_back(Join{block, id, value, derived, args});
                 return std::pair<Bool, bool>{value ? kTrue : kFalse, derived};
             }
         }
     }
+    if (phi_join_ids_.insert(id).second) phi_joins_.push_back(PhiJoin{block, id, derived, args});
     return std::pair<Bool, bool>{b_.atom(Atom::phi(id), index_[block]), derived};
 }
 
@@ -771,6 +900,39 @@ void Lanes::mark_unresolved(const std::vector<Value>& wrong) {
     for (Value value : wrong) unresolved_.insert(value);
 }
 
+std::vector<Value> Lanes::newly_derived() {
+    std::vector<Value> found;
+    std::unordered_set<Value, ValueHash> seen;
+    std::size_t joins = 0;
+    std::size_t phis = 0;
+    const auto consider = [&](Value id, bool was_derived, const std::vector<MaskKey>& args) {
+        if (was_derived || derived_phis_.contains(id) || !seen.insert(id).second) return;
+        for (const MaskKey& arg : args) {
+            if (mask(arg).second) {
+                found.push_back(id);
+                return;
+            }
+        }
+    };
+    while (joins < joins_.size() || phis < phi_joins_.size()) {
+        while (joins < joins_.size()) {
+            const Join entry = joins_[joins];
+            ++joins;
+            consider(entry.id, entry.derived, entry.args);
+        }
+        while (phis < phi_joins_.size()) {
+            const PhiJoin entry = phi_joins_[phis];
+            ++phis;
+            consider(entry.id, entry.derived, entry.args);
+        }
+    }
+    return found;
+}
+
+void Lanes::mark_derived(const std::vector<Value>& derived) {
+    for (Value value : derived) derived_phis_.insert(value);
+}
+
 Structured Lanes::finish(const std::vector<std::vector<std::optional<Bool>>>& execs,
                          const std::vector<Bool>& cond) {
     const std::vector<Block>& blocks = p_->blocks;
@@ -807,14 +969,42 @@ Structured Lanes::finish(const std::vector<std::vector<std::optional<Bool>>>& ex
         }
     }
     if (b_.overflow()) detail::fail_isa(0, "lane conditions too large");
+    std::unordered_map<Value, std::vector<Bool>, ValueHash> phi_masks;
+    std::size_t recorded = 0;
+    while (recorded < phi_joins_.size()) {
+        const PhiJoin entry = phi_joins_[recorded];
+        ++recorded;
+        std::vector<Bool> incoming;
+        incoming.reserve(entry.args.size());
+        for (std::size_t n = 0; n < entry.args.size(); ++n) {
+            const auto [q, taken] = incoming_[entry.block][n];
+            const Bool reach = edge(cond[q], q, taken);
+            incoming.push_back(b_.given(mask(entry.args[n]).first, reach));
+        }
+        phi_masks.insert_or_assign(entry.id, std::move(incoming));
+    }
     Structured result;
     for (const auto& entry : masks_) result.masks.emplace(entry.first.low, entry.second);
+    if (p_->wave64) {
+        for (const auto& entry : masks_)
+            result.paired_masks.emplace(std::pair<Value, Value>{entry.first.low, entry.first.high},
+                                        entry.second);
+    }
     for (const auto& entry : masks_)
         if (entry.first.low != entry.first.high) result.highs.emplace(entry.first.high, entry.first.low);
     result.active = std::move(active_);
     result.bools = std::move(b_);
+    result.phi_masks = std::move(phi_masks);
+    for (const auto& entry : result.masks) {
+        bool sound = true;
+        for (const Atom& atom : result.bools.support(entry.second)) {
+            if (atom.kind == Atom::Kind::Opaque || atom.kind == Atom::Kind::Quad) sound = false;
+        }
+        if (sound) result.lane_data.insert(entry.first);
+    }
     result.exits = std::move(exits);
     result.guards = std::move(guards);
+    result.reach = cond;
     return result;
 }
 
@@ -824,10 +1014,23 @@ Structured structure(const Program& program) {
         const auto execs = lanes.masks_in_order();
         const auto cond = lanes.paths();
         const auto wrong = lanes.wrong_joins(cond);
-        if (wrong.empty()) return lanes.finish(execs, cond);
+        const auto derived = lanes.newly_derived();
+        if (wrong.empty() && derived.empty()) return lanes.finish(execs, cond);
         lanes.mark_unresolved(wrong);
+        lanes.mark_derived(derived);
         lanes.reset();
     }
+}
+
+std::optional<Bool> Structured::mask_bits(Value low, std::optional<Value> high) const {
+    if (high) {
+        const auto found = paired_masks.find(std::pair<Value, Value>{low, *high});
+        if (found != paired_masks.end()) return found->second;
+        return std::nullopt;
+    }
+    const auto found = masks.find(low);
+    if (found != masks.end()) return found->second;
+    return std::nullopt;
 }
 
 }  // namespace g6shim::shader

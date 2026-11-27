@@ -7,6 +7,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -35,6 +36,16 @@ struct Mesh {
     friend bool operator==(const Mesh&, const Mesh&) = default;
 };
 
+struct Geometry {
+    std::uint32_t input_primitive = 3;
+    std::uint32_t max_vertices = 1024;
+    std::uint32_t stream_mask = 1;
+    std::uint32_t output_topology = 5;
+    std::uint32_t instances = 1;
+
+    friend bool operator==(const Geometry&, const Geometry&) = default;
+};
+
 std::vector<std::uint8_t> signature(std::span<const SigElement> elements, bool input);
 
 struct Binding {
@@ -53,9 +64,11 @@ struct Psv {
     std::span<const SigElement> outputs;
     std::span<const SigElement> prims;
     std::optional<std::pair<Mesh, std::uint32_t>> mesh;
+    std::optional<Geometry> geometry;
     std::span<const Binding> bindings;
     std::array<std::uint32_t, 3> threads{};
     std::optional<std::uint32_t> wave_size;
+    std::string_view entry_name{};
 };
 
 std::vector<std::uint8_t> psv(const Psv& p);

@@ -34,6 +34,10 @@ std::uint32_t width_of(std::string_view name) {
 }  // namespace
 
 void Lower::ds(const IrInst& inst, std::size_t b, std::size_t i) {
+    if (x_->native->stage == HwStage::Gs) {
+        geometry_ring(inst, b, i);
+        return;
+    }
     const auto* fields = std::get_if<DsFields>(&inst.fields);
     if (fields == nullptr) std::abort();
     if (fields->gds) fail("GDS");
@@ -75,7 +79,7 @@ void Lower::ds(const IrInst& inst, std::size_t b, std::size_t i) {
             t = s_.m.bin(c, Bin::Or, t, or_value);
             src = s_.m.bin(c, Bin::Xor, t, xor_value);
         }
-        const V r = mesh_quad ? quad_pick(x, src) : read_lane(x, src);
+        const V r = mesh_quad || (s_.pixel && quad) ? quad_pick(x, src) : read_lane(x, src);
         if (!dst_reg) fail("a swizzle result");
         write(inst, Reg::v(*dst_reg), r, guard_value);
         return;
@@ -202,14 +206,11 @@ std::vector<V> Lower::format_load(V h, V off, std::uint8_t format, std::uint32_t
     const std::size_t c = cur_;
     std::uint32_t total = 0;
     for (std::uint32_t bit : bits) total += bit;
-    const V u = s_.m.undef(s_.t.i32);
-    const V align = s_.m.i32(4);
     const auto load = [&](V at, std::uint32_t n) {
-        const V mask = s_.m.i8(static_cast<std::uint8_t>((1u << n) - 1));
-        const V r =
-            s_.op(c, "rawBufferLoad.f32", Attr::ReadOnly, s_.t.res_ret, 139, {h, at, u, mask, align});
+        const std::vector<V> loaded = bounded_raw_words(h, at, n);
         std::vector<V> out;
-        for (std::uint32_t k = 0; k < n; ++k) out.push_back(as_int(s_.m.extract(c, r, k)));
+        out.reserve(n);
+        for (const V word : loaded) out.push_back(as_int(word));
         return out;
     };
     std::vector<V> words;
@@ -218,9 +219,9 @@ std::vector<V> Lower::format_load(V h, V off, std::uint8_t format, std::uint32_t
         const V three = s_.m.i32(3);
         const V at = s_.m.bin(c, Bin::And, off, not3);
         const V w = load(at, 1)[0];
-        const V byte = s_.m.bin(c, Bin::And, off, three);
-        const V sh = s_.m.bin(c, Bin::Shl, byte, three);
-        words.push_back(s_.m.bin(c, Bin::LShr, w, sh));
+        const V byte = s_.m.bin(cur_, Bin::And, off, three);
+        const V sh = s_.m.bin(cur_, Bin::Shl, byte, three);
+        words.push_back(s_.m.bin(cur_, Bin::LShr, w, sh));
     } else {
         words = load(off, total / 32);
     }
@@ -233,46 +234,46 @@ std::vector<V> Lower::format_load(V h, V off, std::uint8_t format, std::uint32_t
             field = word;
         } else {
             const V sh = s_.m.i32(at % 32);
-            const V t = s_.m.bin(c, Bin::LShr, word, sh);
+            const V t = s_.m.bin(cur_, Bin::LShr, word, sh);
             const V m = s_.m.i32(static_cast<std::uint32_t>((std::uint64_t{1} << w) - 1));
-            field = s_.m.bin(c, Bin::And, t, m);
+            field = s_.m.bin(cur_, Bin::And, t, m);
         }
         at += w;
         const auto signed_field = [&]() {
             if (w == 32) return field;
             const V k = s_.m.i32(32 - w);
-            const V t = s_.m.bin(c, Bin::Shl, field, k);
-            return s_.m.bin(c, Bin::AShr, t, k);
+            const V t = s_.m.bin(cur_, Bin::Shl, field, k);
+            return s_.m.bin(cur_, Bin::AShr, t, k);
         };
         const Ty f32t = s_.t.f32;
         V x;
         switch (numeric) {
             case Numeric::Unorm: {
-                const V f = s_.m.cast(c, Cast::UiToFp, field, f32t);
+                const V f = s_.m.cast(cur_, Cast::UiToFp, field, f32t);
                 const V max = s_.m.f32(std::bit_cast<std::uint32_t>(
                     static_cast<float>((std::uint64_t{1} << w) - 1)));
-                const V q = s_.m.bin(c, Bin::SDiv, f, max);
+                const V q = s_.m.bin(cur_, Bin::SDiv, f, max);
                 x = as_int(q);
                 break;
             }
             case Numeric::Snorm: {
                 const V s = signed_field();
-                const V f = s_.m.cast(c, Cast::SiToFp, s, f32t);
+                const V f = s_.m.cast(cur_, Cast::SiToFp, s, f32t);
                 const V max = s_.m.f32(std::bit_cast<std::uint32_t>(
                     static_cast<float>((std::uint64_t{1} << (w - 1)) - 1)));
-                const V q = s_.m.bin(c, Bin::SDiv, f, max);
+                const V q = s_.m.bin(cur_, Bin::SDiv, f, max);
                 const V lo = s_.m.f32(std::bit_cast<std::uint32_t>(-1.0f));
                 x = as_int(binary(35, q, lo));
                 break;
             }
             case Numeric::Uscaled: {
-                const V f = s_.m.cast(c, Cast::UiToFp, field, f32t);
+                const V f = s_.m.cast(cur_, Cast::UiToFp, field, f32t);
                 x = as_int(f);
                 break;
             }
             case Numeric::Sscaled: {
                 const V s = signed_field();
-                x = as_int(s_.m.cast(c, Cast::SiToFp, s, f32t));
+                x = as_int(s_.m.cast(cur_, Cast::SiToFp, s, f32t));
                 break;
             }
             case Numeric::Uint: x = field; break;
@@ -285,9 +286,9 @@ std::vector<V> Lower::format_load(V h, V off, std::uint8_t format, std::uint32_t
                     const std::uint32_t shift = half_shift(w);
                     if (shift != 0) {
                         const V sh = s_.m.i32(shift);
-                        half_bits = s_.m.bin(c, Bin::Shl, field, sh);
+                        half_bits = s_.m.bin(cur_, Bin::Shl, field, sh);
                     }
-                    x = as_int(s_.op(c, "legacyF16ToF32", Attr::ReadNone, f32t, 131, {half_bits}));
+                    x = as_int(s_.op(cur_, "legacyF16ToF32", Attr::ReadNone, f32t, 131, {half_bits}));
                 }
                 break;
         }
@@ -329,6 +330,15 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
         else if (op == "cmpswap") atomic = UINT32_MAX;
         else fail(name);
     }
+    struct Narrow {
+        std::uint32_t bits = 0;
+        bool sign = false;
+    };
+    std::optional<Narrow> narrow;
+    if (name == "buffer_load_ubyte" || name == "buffer_store_byte") narrow = Narrow{8, false};
+    else if (name == "buffer_load_sbyte") narrow = Narrow{8, true};
+    else if (name == "buffer_load_ushort" || name == "buffer_store_short") narrow = Narrow{16, false};
+    else if (name == "buffer_load_sshort") narrow = Narrow{16, true};
     const bool d16 =
         name.starts_with("buffer_") && name.find("_format_d16_") != std::string_view::npos;
     std::string plain(name);
@@ -337,7 +347,7 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
     const std::string_view plain_view(plain);
     bool typed = false;
     std::uint32_t count = 0;
-    if (atomic) {
+    if (atomic || narrow) {
         typed = false;
         count = 1;
     } else {
@@ -368,21 +378,84 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
     std::optional<V> index;
     if (fields->idxen) index = vaddr(0);
     V off = s_.m.i32(fields->offset);
-    if (fields->offen) off = s_.m.bin(c, Bin::Add, off, vaddr(fields->idxen ? 1 : 0));
+    std::optional<V> vector_offset;
+    if (fields->offen) {
+        vector_offset = vaddr(fields->idxen ? 1 : 0);
+        off = s_.m.bin(c, Bin::Add, off, *vector_offset);
+    }
+    const V before_scalar_offset = off;
     bool soffset_null = false;
     if (const auto* scalar = std::get_if<ScalarOperand>(&fields->soffset))
         soffset_null = scalar->code == kNull;
     if (const auto* constant = std::get_if<ConstantOperand>(&fields->soffset))
         if (constant->code == 128) soffset_null = true;
-    if (!soffset_null) off = s_.m.bin(c, Bin::Add, off, operand(inst, fields->soffset));
+    std::optional<V> scalar_offset;
+    if (!soffset_null) {
+        scalar_offset = operand(inst, fields->soffset);
+        off = s_.m.bin(c, Bin::Add, off, *scalar_offset);
+    }
+    const V after_scalar_offset = off;
     const auto descriptor = descriptors_.find({site, false});
     if (descriptor == descriptors_.end()) fail("an untracked buffer");
     const Source& src = *descriptor->second;
     const UsedResource* used = used_kind(src);
+    if (flat_buffer(src, used)) {
+        if ((typed && !fields->format) || d16) fail("a typed buffer access through a runtime address");
+        if (narrow) fail("a byte or 16-bit buffer access through a runtime address");
+        const FlatTarget target = flat_buffer_target(inst, *fields, index, after_scalar_offset, 4 * count);
+        const V undef = s_.m.undef(s_.t.i32);
+        const V align = s_.m.i32(4);
+        if (!fields->data) fail("a buffer result");
+        const auto* data = std::get_if<VectorOperand>(&*fields->data);
+        if (data == nullptr) fail("a buffer result");
+        if (atomic || store) flat_writes_ = true;
+        if (atomic) {
+            const bool exchange = *atomic == UINT32_MAX;
+            const std::vector<V> vals = vgprs(inst, *fields->data, exchange ? 2 : 1);
+            bool returns = false;
+            if (const auto* cache_fields = std::get_if<BufferFields>(&inst.fields)) returns = cache_fields->cache.glc;
+            V old = s_.m.i32(0);
+            if (returns) {
+                if (const std::optional<Value> read = inst.read(Reg::v(data->reg))) old = i32_of(*read);
+            }
+            const auto at = begin_guarded(guard_value);
+            V r;
+            if (exchange) {
+                r = s_.op(cur_, "atomicCompareExchange.i32", Attr::NoUnwind, s_.t.i32, 79,
+                          {target.handle, target.byte, undef, undef, vals[1], vals[0]});
+            } else {
+                r = s_.op(cur_, "atomicBinOp.i32", Attr::NoUnwind, s_.t.i32, 78,
+                          {target.handle, s_.m.i32(*atomic), target.byte, undef, undef, vals[0]});
+            }
+            const V result = end_guarded(at, {{r, old}})[0];
+            if (returns) write(inst, Reg::v(data->reg), result, std::nullopt);
+            return;
+        }
+        if (store) {
+            const std::vector<V> vals = vgprs(inst, *fields->data, static_cast<std::uint8_t>(count));
+            std::vector<V> args{target.handle, target.byte, undef};
+            args.insert(args.end(), vals.begin(), vals.end());
+            args.resize(3 + 4, undef);
+            args.push_back(s_.m.i8(static_cast<std::uint8_t>((1u << count) - 1u)));
+            args.push_back(align);
+            const auto at = begin_guarded(guard_value);
+            s_.op(cur_, "rawBufferStore.i32", Attr::NoUnwind, s_.t.void_type, 140, args);
+            end_guarded(at, {});
+            return;
+        }
+        const std::vector<V> loaded = fields->format ? format_load(target.handle, target.byte, *fields->format, count)
+                                                     : bounded_raw_words(target.handle, target.byte, count);
+        for (std::size_t k = 0; k < loaded.size(); ++k) {
+            const V x = fields->format ? loaded[k] : as_int(loaded[k]);
+            write(inst, Reg::v(static_cast<std::uint8_t>(data->reg + k)), x, guard_value);
+        }
+        return;
+    }
     const auto [base, extra] = built_offset(src);
     if (base != 0) off = s_.m.bin(c, Bin::Add, off, s_.m.i32(base));
     if (extra) off = s_.m.bin(c, Bin::Add, off, *extra);
     if (used != nullptr && used->kind.kind == ResourceType::Kind::Cbv && !typed) {
+        if (narrow) fail("a byte or 16-bit constant buffer read");
         const V h = handle(site, src, false, {13, static_cast<std::uint32_t>(0x1'0000)});
         V byte = off;
         if (index) {
@@ -405,6 +478,10 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
                      (used != nullptr && used->kind.kind == ResourceType::Kind::Uav);
     const std::uint32_t u = uav ? 0x1000 : 0;
     const V iu = s_.m.undef(s_.t.i32);
+    if (narrow) {
+        narrow_buffer(inst, *fields, site, src, used, index, off, u, narrow->bits, narrow->sign, store, guard_value);
+        return;
+    }
     if (atomic) {
         const std::uint32_t op = *atomic;
         if (!fields->data) fail("buffer atomic data");
@@ -429,6 +506,16 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
         if (returns) {
             if (const std::optional<Value> read = inst.read(Reg::v(data->reg))) old = i32_of(*read);
         }
+        V bounds = s_.m.boolean(true);
+        if (index) {
+            const Ty i32t = s_.t.i32;
+            const Ty dims = s_.m.named_struct("dx.types.Dimensions", {i32t, i32t, i32t, i32t});
+            const V d = s_.op(cur_, "getDimensions", Attr::ReadOnly, dims, 72, {h, iu});
+            bounds = s_.m.cmp(cur_, pred::kIult, *index, s_.m.extract(cur_, d, 0));
+        } else {
+            bounds = raw_byte_fits(h, off, static_cast<std::uint32_t>(sizeof(std::uint32_t)));
+        }
+        const auto bounded = begin_guarded(bounds);
         const auto at = begin_guarded(guard_value);
         const Ty i32t = s_.t.i32;
         V r;
@@ -439,7 +526,8 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
             const std::vector<V> args = {h, s_.m.i32(op), coords[0], coords[1], coords[2], vals[0]};
             r = s_.op(cur_, "atomicBinOp.i32", Attr::NoUnwind, i32t, 78, args);
         }
-        const V result = end_guarded(at, {{r, old}})[0];
+        const V executed = end_guarded(at, {{r, old}})[0];
+        const V result = end_guarded(bounded, {{executed, s_.m.i32(0)}})[0];
         if (returns) write(inst, Reg::v(data->reg), result, std::nullopt);
         return;
     }
@@ -493,7 +581,21 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
         args.push_back(
             s_.m.i8(static_cast<std::uint8_t>(typed ? 0xF : (1u << count) - 1u)));
         if (!typed) args.push_back(s_.m.i32(4));
-        const auto at = begin_guarded(guard_value);
+        std::optional<V> store_guard = guard_value;
+        if (!typed) {
+            const V resource = args[0];
+            V fits = s_.m.boolean(true);
+            if (index) {
+                const Ty i32t = s_.t.i32;
+                const Ty dims = s_.m.named_struct("dx.types.Dimensions", {i32t, i32t, i32t, i32t});
+                const V d = s_.op(cur_, "getDimensions", Attr::ReadOnly, dims, 72, {resource, iu});
+                fits = s_.m.cmp(cur_, pred::kIult, *index, s_.m.extract(cur_, d, 0));
+            } else {
+                fits = raw_byte_fits(resource, off, count * static_cast<std::uint32_t>(sizeof(std::uint32_t)));
+            }
+            store_guard = store_guard ? s_.m.bin(cur_, Bin::And, *store_guard, fits) : fits;
+        }
+        const auto at = begin_guarded(store_guard);
         s_.op(cur_, op_name, Attr::NoUnwind, s_.t.void_type, opcode, args);
         end_guarded(at, {});
         return;
@@ -509,6 +611,25 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
             write(inst, Reg::v(static_cast<std::uint8_t>(data->reg + k)), loaded[k], guard_value);
         return;
     }
+    const std::uint32_t stride = used != nullptr ? used->stride : 0;
+    if (index && !typed && !uav && !d16 && (stride < 4 || stride % 4 != 0)) {
+        if (!fields->data) fail("a buffer result");
+        const auto* data = std::get_if<VectorOperand>(&*fields->data);
+        if (data == nullptr) fail("a buffer result");
+        if (vector_offset || scalar_offset) {
+            V valid = s_.m.boolean(true);
+            if (vector_offset) valid = s_.m.cmp(c, pred::kIuge, before_scalar_offset, *vector_offset);
+            if (scalar_offset) {
+                const V scalar_fits = s_.m.cmp(c, pred::kIuge, after_scalar_offset, *scalar_offset);
+                valid = s_.m.bin(c, Bin::And, valid, scalar_fits);
+            }
+            off = s_.m.select(c, valid, off, s_.m.i32(UINT32_MAX));
+        }
+        const auto loaded = load_indexed_heap_buffer(src, *index, off, count, guard_value);
+        for (std::uint32_t k = 0; k < count; ++k)
+            write(inst, Reg::v(static_cast<std::uint8_t>(data->reg + k)), loaded[k], guard_value);
+        return;
+    }
     V r;
     if (typed) {
         if (fields->offen || off.kind == V::Kind::Inst || fields->offset != 0)
@@ -517,20 +638,56 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
         const V h = handle(site, src, false, {10 | u, 0x409});
         const V at = index.value_or(s_.m.i32(0));
         r = s_.op(c, "bufferLoad.f32", Attr::ReadOnly, s_.t.res_ret, 68, {h, at, iu});
-    } else {
+    } else if (index) {
+        if (stride < 4 || stride % 4 != 0) fail("a structured buffer of unknown stride");
+        const V h = handle(site, src, false, {12 | u, stride});
+        const Ty i32t = s_.t.i32;
+        const Ty dims = s_.m.named_struct("dx.types.Dimensions", {i32t, i32t, i32t, i32t});
+        const V d = s_.op(cur_, "getDimensions", Attr::ReadOnly, dims, 72, {h, iu});
+        const V fits = s_.m.cmp(cur_, pred::kIult, *index, s_.m.extract(cur_, d, 0));
+        const auto bounds = begin_guarded(fits);
         const V mask = s_.m.i8(static_cast<std::uint8_t>((1u << count) - 1));
-        const V align = s_.m.i32(4);
-        if (index) {
-            const std::uint32_t stride = used != nullptr ? used->stride : 0;
-            if (stride < 4 || stride % 4 != 0) fail("a structured buffer of unknown stride");
-            const V h = handle(site, src, false, {12 | u, stride});
-            r = s_.op(c, "rawBufferLoad.f32", Attr::ReadOnly, s_.t.res_ret, 139,
-                      {h, *index, off, mask, align});
-        } else {
-            const V h = handle(site, src, false, {11 | u, 0});
-            r = s_.op(c, "rawBufferLoad.f32", Attr::ReadOnly, s_.t.res_ret, 139,
-                      {h, off, iu, mask, align});
+        const V loaded = s_.op(cur_, "rawBufferLoad.f32", Attr::ReadOnly, s_.t.res_ret, 139,
+                               {h, *index, off, mask, s_.m.i32(4)});
+        std::vector<std::pair<V, V>> words;
+        const V zero = s_.m.f32(0);
+        for (std::uint32_t k = 0; k < count; ++k)
+            words.emplace_back(s_.m.extract(cur_, loaded, k), zero);
+        const std::vector<V> safe = end_guarded(bounds, words);
+        if (!fields->data) fail("a buffer result");
+        const auto* data = std::get_if<VectorOperand>(&*fields->data);
+        if (data == nullptr) fail("a buffer result");
+        for (std::uint32_t k = 0; k < count; ++k)
+            write(inst, Reg::v(static_cast<std::uint8_t>(data->reg + k)), as_int(safe[k]), guard_value);
+        return;
+    } else {
+        const V h = handle(site, src, false, {11 | u, 0});
+        const std::vector<V> safe = bounded_raw_words(h, off, count);
+        if (!fields->data) fail("a buffer result");
+        const auto* data = std::get_if<VectorOperand>(&*fields->data);
+        if (data == nullptr) fail("a buffer result");
+        if (d16) {
+            const V k16 = s_.m.i32(16);
+            const Ty i32t = s_.t.i32;
+            for (std::uint32_t k = 0; k < (count + 1) / 2; ++k) {
+                std::optional<V> x;
+                const std::uint32_t worst = std::min(2 * k + 2, count);
+                for (std::uint32_t ch = worst; ch-- > 2 * k;) {
+                    const V packed = s_.op(cur_, "legacyF32ToF16", Attr::ReadNone, i32t, 130, {safe[ch]});
+                    if (x) {
+                        const V up = s_.m.bin(cur_, Bin::Shl, *x, k16);
+                        x = s_.m.bin(cur_, Bin::Or, packed, up);
+                    } else {
+                        x = packed;
+                    }
+                }
+                write(inst, Reg::v(static_cast<std::uint8_t>(data->reg + k)), *x, guard_value);
+            }
+            return;
         }
+        for (std::uint32_t k = 0; k < count; ++k)
+            write(inst, Reg::v(static_cast<std::uint8_t>(data->reg + k)), as_int(safe[k]), guard_value);
+        return;
     }
     if (!fields->data) fail("a buffer result");
     const auto* data = std::get_if<VectorOperand>(&*fields->data);
@@ -559,6 +716,195 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
         const V x = as_int(s_.m.extract(c, r, k));
         write(inst, Reg::v(static_cast<std::uint8_t>(data->reg + k)), x, guard_value);
     }
+}
+
+bool Lower::indexed_by_resource_heap(const Source& src) const {
+    if (src.kind != Source::Kind::Loaded) return false;
+    const auto address = scalar_.find(src.load);
+    if (address == scalar_.end() || address->second.param >= x_->native->layout.size()) return false;
+    return x_->native->layout[address->second.param].root.kind == RootType::Kind::ResourceHeap;
+}
+
+std::vector<V> Lower::load_indexed_heap_buffer(const Source& src, V index, V offset, std::uint32_t count,
+                                               std::optional<V> guard_value) {
+    constexpr Why unknown = "a structured buffer of unknown stride";
+    if (!indexed_by_resource_heap(src)) fail(unknown);
+    const RootParam& root = x_->native->layout[scalar_.find(src.load)->second.param];
+
+    using Data = BufferHeapData;
+    const V byte_address = heap_byte_address(src.load, src.first);
+    const std::size_t c = cur_;
+    const UserData binding{0, root.slot, root.root, 0, UserData::Source::BufferHeapData};
+    const auto [records_handle, record_count] = heap_records(binding);
+    const V record_slot = s_.m.bin(c, Bin::LShr, byte_address, s_.m.i32(5));
+    const V in_range = s_.m.cmp(c, pred::kIult, record_slot, record_count);
+    const V low_bits = s_.m.bin(c, Bin::And, byte_address, s_.m.i32(31));
+    const V record_aligned = s_.m.cmp(c, pred::kEq, low_bits, s_.m.i32(0));
+    const V record_byte = s_.m.bin(c, Bin::Shl, record_slot, s_.m.i32(4));
+    const V record_fits = raw_byte_fits(records_handle, record_byte, Data::kBytes);
+    V gate = s_.m.bin(c, Bin::And, in_range, record_aligned);
+    gate = s_.m.bin(c, Bin::And, gate, record_fits);
+    if (guard_value) gate = s_.m.bin(c, Bin::And, gate, *guard_value);
+    const auto outer = begin_guarded(gate);
+    const auto [record, valid_slot] = read_heap_record(cur_, byte_address, binding);
+    const V zero = s_.m.i32(0);
+    const V descriptor = s_.m.extract(cur_, record, Data::kDescriptor);
+    const V stride = s_.m.extract(cur_, record, Data::kStride);
+    const V prefix = s_.m.extract(cur_, record, Data::kPrefix);
+    const V records = s_.m.extract(cur_, record, Data::kRecords);
+    const V raw = s_.m.cmp(cur_, pred::kEq, stride, zero);
+    const V in_records = s_.m.cmp(cur_, pred::kIult, index, records);
+    const V valid_index = s_.m.bin(cur_, Bin::Or, raw, in_records);
+    const V row = s_.m.bin(cur_, Bin::Mul, index, stride);
+    const V bytes = s_.m.select(cur_, raw, records, s_.m.bin(cur_, Bin::Mul, records, stride));
+    const V remaining = s_.m.bin(cur_, Bin::Sub, bytes, row);
+    constexpr std::uint32_t kWordBytes = sizeof(std::uint32_t);
+    const V payload = s_.m.i32(count * kWordBytes);
+    const V fits = s_.m.cmp(cur_, pred::kIuge, remaining, payload);
+    const V max_offset = s_.m.bin(cur_, Bin::Sub, remaining, payload);
+    const V in_bytes = s_.m.cmp(cur_, pred::kIule, offset, max_offset);
+    const V unaligned = s_.m.bin(cur_, Bin::And, offset, s_.m.i32(kWordBytes - 1));
+    const V aligned = s_.m.cmp(cur_, pred::kEq, unaligned, zero);
+    const V present = s_.m.cmp(cur_, pred::kNe, descriptor, zero);
+    V valid = s_.m.bin(cur_, Bin::And, valid_slot, present);
+    for (const V test : {valid_index, fits, in_bytes, aligned}) valid = s_.m.bin(cur_, Bin::And, valid, test);
+    const auto guarded = begin_guarded(valid);
+    const V slot = s_.m.bin(cur_, Bin::Sub, descriptor, s_.m.i32(1));
+    const V h = s_.heap_handle(cur_, slot, false, true, {11, 0});
+    const V start = s_.m.bin(cur_, Bin::Add, prefix, row);
+    const V at = s_.m.bin(cur_, Bin::Add, start, offset);
+    const V mask = s_.m.i8(static_cast<std::uint8_t>((1u << count) - 1));
+    const V r = s_.op(cur_, "rawBufferLoad.f32", Attr::ReadOnly, s_.t.res_ret, 139,
+                      {h, at, s_.m.undef(s_.t.i32), mask, s_.m.i32(kWordBytes)});
+    std::vector<std::pair<V, V>> values;
+    values.reserve(count);
+    for (std::uint32_t k = 0; k < count; ++k) values.emplace_back(as_int(s_.m.extract(cur_, r, k)), zero);
+    const std::vector<V> loaded = end_guarded(guarded, values);
+    std::vector<std::pair<V, V>> missed;
+    missed.reserve(loaded.size());
+    for (const V value : loaded) missed.emplace_back(value, zero);
+    return end_guarded(outer, missed);
+}
+
+V Lower::root_view_bytes(std::uint8_t slot) {
+    using SourceKind = UserData::Source;
+    constexpr Why beyond = "a root view size beyond host root constants";
+    for (const auto& [index, entry] : user_reads_)
+        if (entry.source == SourceKind::RootViewBytes && entry.slot == slot) return user_dword(index).value;
+    constexpr std::uint32_t kRootDwords = 64;
+    std::uint32_t index = 0;
+    for (const RootParam& param : x_->native->layout) {
+        if (param.user_data >= kRootDwords || param.sgprs > kRootDwords - param.user_data) fail(beyond);
+        index = std::max(index, std::uint32_t{param.user_data} + param.sgprs);
+    }
+    for (const auto& used : user_reads_) index = std::max(index, used.first + 1);
+    if (index >= kRootDwords) fail(beyond);
+    RootType root;
+    root.kind = RootType::Kind::Descriptor;
+    user_reads_.emplace(index, UserData{index, slot, root, 0, SourceKind::RootViewBytes});
+    return user_dword(index).value;
+}
+
+V Lower::raw_byte_fits(V handle, V byte, std::uint32_t bytes) {
+    const std::size_t c = cur_;
+    const Ty i32 = s_.t.i32;
+    std::optional<std::uint8_t> root_slot;
+    for (const auto& [slot, root_handle] : s_.root_srvs)
+        if (root_handle.kind == handle.kind && root_handle.index == handle.index) root_slot = slot;
+    V size;
+    if (root_slot) {
+        size = root_view_bytes(*root_slot);
+    } else {
+        const Ty dims = s_.m.named_struct("dx.types.Dimensions", {i32, i32, i32, i32});
+        const V d = s_.op(c, "getDimensions", Attr::ReadOnly, dims, 72, {handle, s_.m.undef(i32)});
+        size = s_.m.extract(c, d, 0);
+    }
+    const V width = s_.m.i32(bytes == 0 ? 1 : bytes);
+    const V end = s_.m.bin(c, Bin::Add, byte, width);
+    const V no_wrap = s_.m.cmp(c, pred::kIuge, end, byte);
+    const V inside = s_.m.cmp(c, pred::kIule, end, size);
+    return s_.m.bin(c, Bin::And, no_wrap, inside);
+}
+
+void Lower::narrow_buffer(const IrInst& inst, const BufferFields& fields, Site site, const Source& src,
+                          const UsedResource* used, std::optional<V> index, V off, std::uint32_t uav_flag,
+                          std::uint32_t bits, bool sign, bool store, std::optional<V> guard_value) {
+    constexpr std::uint32_t kAtomicAnd = 1;
+    constexpr std::uint32_t kAtomicOr = 2;
+    constexpr std::uint32_t kLastByte = 3;
+    constexpr std::uint32_t kBitsPerByte = 8;
+    const std::size_t c = cur_;
+    V byte = off;
+    if (index) {
+        if (used == nullptr || used->stride != 1) fail("a byte or 16-bit buffer access by index");
+        byte = s_.m.bin(c, Bin::Add, *index, off);
+    }
+    if (!fields.data) fail("a buffer result");
+    const auto* data = std::get_if<VectorOperand>(&*fields.data);
+    if (data == nullptr) fail("a buffer result");
+    const V h = handle(site, src, false, {11 | uav_flag, 0});
+    const V k3 = s_.m.i32(kLastByte);
+    const V within = s_.m.bin(c, Bin::And, byte, k3);
+    const V aligned = s_.m.bin(c, Bin::Sub, byte, within);
+    const V shift = s_.m.bin(c, Bin::Shl, within, k3);
+    const V next = s_.m.bin(c, Bin::Add, aligned, s_.m.i32(sizeof(std::uint32_t)));
+    const V ones = s_.m.i32(bits == 8 ? 0xFFu : 0xFFFFu);
+    const V k8 = s_.m.i32(kBitsPerByte);
+    const V straddles = s_.m.cmp(c, pred::kEq, within, k3);
+    if (!store) {
+        const V low = as_int(bounded_raw_words(h, aligned, 1)[0]);
+        V x = s_.m.bin(cur_, Bin::LShr, low, shift);
+        if (bits == 16) {
+            V high = as_int(bounded_raw_words(h, next, 1)[0]);
+            high = s_.m.bin(cur_, Bin::Shl, high, k8);
+            high = s_.m.select(cur_, straddles, high, s_.m.i32(0));
+            x = s_.m.bin(cur_, Bin::Or, x, high);
+        }
+        x = s_.m.bin(cur_, Bin::And, x, ones);
+        if (sign) {
+            const V up = s_.m.i32(32 - bits);
+            x = s_.m.bin(cur_, Bin::Shl, x, up);
+            x = s_.m.bin(cur_, Bin::AShr, x, up);
+        }
+        write(inst, Reg::v(data->reg), x, guard_value);
+        return;
+    }
+    const V value = s_.m.bin(c, Bin::And, vgprs(inst, *fields.data, 1)[0], ones);
+    const V clear = s_.m.bin(c, Bin::Shl, ones, shift);
+    const V keep = s_.m.bin(c, Bin::Xor, clear, s_.m.i32(0xFFFF'FFFFu));
+    const V set = s_.m.bin(c, Bin::Shl, value, shift);
+    const V keep_next = s_.m.i32(0xFFFF'FF00u);
+    const V set_next = s_.m.bin(c, Bin::LShr, value, k8);
+    const V iu = s_.m.undef(s_.t.i32);
+    const Ty i32t = s_.t.i32;
+    const auto change = [&](V at, V keep_bits, V set_bits) {
+        for (const auto& [op, x] : {std::pair{kAtomicAnd, keep_bits}, std::pair{kAtomicOr, set_bits}})
+            s_.op(cur_, "atomicBinOp.i32", Attr::NoUnwind, i32t, 78, {h, s_.m.i32(op), at, iu, iu, x});
+    };
+    const V fits = raw_byte_fits(h, aligned, sizeof(std::uint32_t));
+    const V allowed = guard_value ? s_.m.bin(c, Bin::And, *guard_value, fits) : fits;
+    const auto at = begin_guarded(allowed);
+    change(aligned, keep, set);
+    if (bits == 16) {
+        const V next_fits = raw_byte_fits(h, next, sizeof(std::uint32_t));
+        const auto second = begin_guarded(s_.m.bin(cur_, Bin::And, straddles, next_fits));
+        change(next, keep_next, set_next);
+        end_guarded(second, {});
+    }
+    end_guarded(at, {});
+}
+
+std::vector<V> Lower::bounded_raw_words(V handle, V byte, std::uint32_t count) {
+    const V fits = raw_byte_fits(handle, byte, count * static_cast<std::uint32_t>(sizeof(std::uint32_t)));
+    const V zero = s_.m.f32(0);
+    const auto bounds = begin_guarded(fits);
+    const V mask = s_.m.i8(static_cast<std::uint8_t>((1u << count) - 1));
+    const V loaded = s_.op(cur_, "rawBufferLoad.f32", Attr::ReadOnly, s_.t.res_ret, 139,
+                           {handle, byte, s_.m.undef(s_.t.i32), mask, s_.m.i32(sizeof(std::uint32_t))});
+    std::vector<std::pair<V, V>> words;
+    words.reserve(count);
+    for (std::uint32_t k = 0; k < count; ++k) words.emplace_back(s_.m.extract(cur_, loaded, k), zero);
+    return end_guarded(bounds, words);
 }
 
 }  // namespace g6shim::shader::emit

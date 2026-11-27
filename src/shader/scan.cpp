@@ -16,10 +16,15 @@
 #include <vector>
 
 #include "g6shim/shader/dxbc.hpp"
+#include "g6shim/shader/emit/emit.hpp"
 #include "g6shim/shader/error.hpp"
 #include "g6shim/shader/gfx10.hpp"
 #include "g6shim/shader/inflate.hpp"
+#include "g6shim/shader/io.hpp"
+#include "g6shim/shader/ir.hpp"
 #include "g6shim/shader/native.hpp"
+#include "g6shim/shader/resource.hpp"
+#include "g6shim/shader/structure.hpp"
 #include "reader.hpp"
 
 namespace g6shim::shader {
@@ -27,11 +32,14 @@ namespace g6shim::shader {
 namespace {
 
 constexpr std::array<std::uint8_t, 4> kDxbcMagic{'D', 'X', 'B', 'C'};
+constexpr std::array<std::uint8_t, 4> kDxilMagic{'D', 'X', 'I', 'L'};
 constexpr std::array<std::uint8_t, 4> kMarkerMagic{0xE7, 0xDC, 0x0D, 0x00};
 constexpr std::size_t kMarkerLeading = 6;
 constexpr std::size_t kRecordHeader = 12;
 constexpr std::size_t kMinimumRecord = 12;
 constexpr std::size_t kContainerSizeOffset = 0x18;
+constexpr std::size_t kProgramHeader = 24;
+constexpr std::size_t kDxilMagicOffset = 8;
 constexpr std::uint64_t kFnvOffset = 14695981039346656037ull;
 constexpr std::uint64_t kFnvPrime = 1099511628211ull;
 constexpr std::uint64_t kSecondOffset = 0x9E3779B97F4A7C15ull;
@@ -39,14 +47,24 @@ constexpr std::uint64_t kSecondPrime = 0x9E3779B185EBCA87ull;
 constexpr char kPackedFailure[] = "packed shader record";
 constexpr char kContainerFailure[] = "container";
 constexpr char kDxilFailure[] = "DXIL";
+constexpr char kNativeOnlyStage[] = "cs";
 constexpr char kNativeFailure[] = "native";
 constexpr char kDecodeFailure[] = "instruction";
+constexpr char kTranslationPrefix[] = "translation: ";
+constexpr char kIsaPrefix[] = "GFX10 code at ";
+
+struct Failure {
+    std::string reason;
+    std::string message;
+};
 
 struct Outcome {
     std::string stage = "unknown";
     bool decoded = false;
-    const char* reason = "";
+    bool translated = false;
+    std::string reason;
     std::string message;
+    std::vector<Failure> translation_failures;
 };
 
 template <typename OnMatch>
@@ -150,22 +168,59 @@ std::optional<PackedShaderRecord> record_at(std::span<const std::uint8_t> file, 
     return record;
 }
 
-Outcome analyze(std::span<const std::uint8_t> bytes) {
+std::optional<ShaderKind> header_kind(std::span<const std::uint8_t> part) {
+    const auto version = u32_at(part, 0);
+    const auto dwords = u32_at(part, 4);
+    if (!version || !dwords || part.size() < kDxilMagicOffset + kDxilMagic.size()) return std::nullopt;
+    const std::uint64_t size = static_cast<std::uint64_t>(*dwords) * 4;
+    if (size > part.size() || size < kProgramHeader) return std::nullopt;
+    if (std::memcmp(part.data() + kDxilMagicOffset, kDxilMagic.data(), kDxilMagic.size()) != 0)
+        return std::nullopt;
+    return shader_kind_from_raw(static_cast<std::uint16_t>(*version >> 16));
+}
+
+std::vector<std::uint8_t> translate_program(const Container& container, const NativeProgram& native) {
+    const Program program = build(native.patched_code(), native.wave64, native.vgprs);
+    const Structured structured = structure(program);
+    Io io;
+    if (native.stage == HwStage::Gs) io = raise(program, native);
+    const Resources resources = track(program, native, &structured, io.ring_address_loads);
+    if (native.stage != HwStage::Gs) io = raise(program, native);
+    emit::HostShader shader = emit::emit(container, native, program, structured, io, resources);
+    return std::move(shader.dxil);
+}
+
+std::string translation_reason(const ParseError& error) {
+    std::string reason = error.what();
+    if (reason.rfind(kIsaPrefix, 0) == 0) {
+        const std::size_t colon = reason.find(": ");
+        if (colon != std::string::npos) reason = reason.substr(colon + 2);
+    }
+    return kTranslationPrefix + reason;
+}
+
+Outcome analyze(std::span<const std::uint8_t> bytes, const std::string& hash,
+                const ShaderScanner::TranslatedWriter& writer) {
     Outcome outcome;
     try {
         const Container container = Container::parse(bytes);
-        const Part* const dxil = container.part(kDxil);
+        const Part* const native_only = container.part(kAccc);
+        const Part* const dxil = container.part(kDxil) != nullptr ? container.part(kDxil) : native_only;
         if (dxil == nullptr) {
             outcome.reason = kDxilFailure;
             outcome.message = "no DXIL part";
             return outcome;
         }
-        try {
-            outcome.stage = shader_stage(DxilProgram::parse(dxil->data).kind);
-        } catch (const ParseError& error) {
-            outcome.reason = kDxilFailure;
-            outcome.message = error.what();
-            return outcome;
+        if (dxil == native_only) {
+            outcome.stage = kNativeOnlyStage;
+        } else {
+            const std::optional<ShaderKind> kind = header_kind(dxil->data);
+            if (!kind) {
+                outcome.reason = kDxilFailure;
+                outcome.message = "program header does not parse";
+                return outcome;
+            }
+            outcome.stage = shader_stage(*kind);
         }
         std::vector<NativeProgram> programs;
         try {
@@ -190,11 +245,28 @@ Outcome analyze(std::span<const std::uint8_t> bytes) {
             }
         }
         outcome.decoded = true;
+        for (const NativeProgram& program : programs) {
+            try {
+                std::vector<std::uint8_t> dxil_bytes = translate_program(container, program);
+                outcome.translated = true;
+                if (writer) writer(hash, dxil_bytes);
+            } catch (const ParseError& error) {
+                outcome.translation_failures.push_back({translation_reason(error), error.what()});
+            }
+        }
     } catch (const ParseError& error) {
         outcome.reason = kContainerFailure;
         outcome.message = error.what();
     }
     return outcome;
+}
+
+std::string hash_hex(std::uint64_t value) {
+    constexpr char kDigits[] = "0123456789abcdef";
+    std::string out(16, '0');
+    for (std::size_t index = 0; index < out.size(); ++index)
+        out[out.size() - 1 - index] = kDigits[(value >> (4 * index)) & 0xF];
+    return out;
 }
 
 }  // namespace
@@ -250,17 +322,19 @@ std::size_t ShaderScanner::KeyHash::operator()(const Key& key) const {
     return hash;
 }
 
-bool ShaderScanner::remember(std::span<const std::uint8_t> bytes) {
+bool ShaderScanner::remember(std::span<const std::uint8_t> bytes, std::string& hash) {
     std::uint64_t first = kFnvOffset;
     std::uint64_t second = kSecondOffset;
     for (const std::uint8_t byte : bytes) {
         first = (first ^ byte) * kFnvPrime;
         second = (second ^ byte) * kSecondPrime;
     }
-    return seen_.insert(Key{first, second, bytes.size()}).second;
+    if (!seen_.insert(Key{first, second, bytes.size()}).second) return false;
+    hash = hash_hex(first);
+    return true;
 }
 
-void ShaderScanner::add_failure(const char* reason, const std::string& message) {
+void ShaderScanner::add_failure(const std::string& reason, const std::string& message) {
     FailureCount& failure = totals_.failures[reason];
     if (failure.count == 0) failure.first = message;
     ++failure.count;
@@ -268,11 +342,14 @@ void ShaderScanner::add_failure(const char* reason, const std::string& message) 
 
 FileCounts ShaderScanner::add_file(std::span<const std::uint8_t> file) {
     FileCounts counts;
+    std::vector<std::string> hashes;
     std::vector<std::vector<std::uint8_t>> fresh;
 
     const auto take = [&](std::span<const std::uint8_t> bytes) {
         ++counts.containers;
-        if (!remember(bytes)) return;
+        std::string hash;
+        if (!remember(bytes, hash)) return;
+        hashes.push_back(std::move(hash));
         fresh.emplace_back(bytes.begin(), bytes.end());
         ++counts.unique;
     };
@@ -298,8 +375,12 @@ FileCounts ShaderScanner::add_file(std::span<const std::uint8_t> file) {
     for (const StoredShaderContainer& container : stored_shader_containers(file)) take(container.bytes);
 
     std::vector<Outcome> outcomes(fresh.size());
+    const auto visit = [this](const std::vector<std::uint8_t>& bytes) {
+        if (visitor_) visitor_(std::span<const std::uint8_t>(bytes));
+    };
     if (fresh.size() == 1) {
-        outcomes[0] = analyze(fresh[0]);
+        outcomes[0] = analyze(fresh[0], hashes[0], writer_);
+        visit(fresh[0]);
     } else if (!fresh.empty()) {
         const unsigned cores = std::max(1u, std::thread::hardware_concurrency());
         const unsigned workers = static_cast<unsigned>(std::min<std::size_t>(cores, fresh.size()));
@@ -311,21 +392,32 @@ FileCounts ShaderScanner::add_file(std::span<const std::uint8_t> file) {
                 for (;;) {
                     const std::size_t job = next.fetch_add(1);
                     if (job >= fresh.size()) break;
-                    outcomes[job] = analyze(fresh[job]);
+                    outcomes[job] = analyze(fresh[job], hashes[job], writer_);
+                    visit(fresh[job]);
                 }
             });
         }
     }
 
-    for (const Outcome& outcome : outcomes) {
+    for (std::size_t index = 0; index < outcomes.size(); ++index) {
+        const Outcome& outcome = outcomes[index];
+        if (!outcome.translated && reporter_) {
+            const std::string& why =
+                outcome.translation_failures.empty() ? outcome.message : outcome.translation_failures.front().message;
+            reporter_(std::span<const std::uint8_t>(fresh[index]), outcome.stage, why);
+        }
         StageCounts& stage = totals_.stages[outcome.stage];
         ++stage.total;
-        if (outcome.decoded) {
+        if (outcome.translated) {
+            ++stage.translated;
+        } else if (outcome.decoded) {
             ++stage.decoded;
         } else {
             ++stage.failed;
             add_failure(outcome.reason, outcome.message);
         }
+        for (const Failure& failure : outcome.translation_failures)
+            add_failure(failure.reason, failure.message);
     }
 
     totals_.containers += counts.containers;

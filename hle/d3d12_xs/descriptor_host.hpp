@@ -1,0 +1,206 @@
+// SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+#include "descriptor.hpp"
+#include "descriptor_words.hpp"
+#include "host.hpp"
+#include "object.hpp"
+#include "resource.hpp"
+
+#include <windows.h>
+#include <d3d12.h>
+#include <wrl/client.h>
+
+#include <array>
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <span>
+#include <unordered_set>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace g6shim::d3d12_xs::descriptor_host {
+
+inline constexpr std::uint32_t kPortableViews = 1'000'000;
+inline constexpr std::uint32_t kDynamicSlots = 1 << 18;
+inline constexpr std::uint32_t kLargeHeapDynamicSlots = 1 << 20;
+inline constexpr std::uint32_t kMinDynamicSlots = 1 << 16;
+inline constexpr std::uint8_t kBufferSlotKind = 1;
+inline constexpr std::uint8_t kTextureSlotKind = 2;
+inline constexpr std::uint64_t kMaxRawViewElements = std::uint64_t{1} << 27;
+
+descriptor_words::Words console_words_of(const descriptor::View& view);
+std::uint64_t raw_view_elements(std::uint64_t bytes);
+
+class HostHeap {
+public:
+    static std::unique_ptr<HostHeap> create(bool sampler, std::uint32_t count);
+
+    std::uint32_t count() const { return count_; }
+    std::uint32_t null_base() const;
+    std::uint32_t dynamic_slots() const { return dynamic_; }
+    bool samplers() const { return sampler_; }
+    std::uint32_t step() const { return step_; }
+    std::uint64_t gpu_start() const { return gpu_; }
+    ID3D12DescriptorHeap* heap() const { return heap_.Get(); }
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu(std::uint32_t index) const;
+
+    std::optional<std::uint32_t> dynamic(std::uint32_t count);
+    void release(std::uint32_t first, std::uint32_t count);
+    void make_at(std::uint32_t index, const descriptor::View& view);
+    void make_null(std::uint32_t index);
+    void constant_at(std::uint32_t index, std::uint64_t gpu, std::uint32_t bytes);
+    void raw_at(std::uint32_t index, Microsoft::WRL::ComPtr<ID3D12Resource> buffer, std::uint64_t offset,
+                std::uint64_t bytes);
+    void raw_unordered_at(std::uint32_t index, Microsoft::WRL::ComPtr<ID3D12Resource> buffer, std::uint64_t offset,
+                          std::uint64_t bytes);
+    ID3D12Resource* console_words() const { return words_.Get(); }
+    std::uint64_t console_words_bytes() const;
+    std::uint32_t console_slot_bytes() const;
+    std::optional<descriptor::View> mirror(std::uint32_t index, std::uint64_t handle, bool for_draw);
+    std::uint64_t window_stamp(std::uint32_t index) const;
+    std::uint8_t kind_at(std::uint32_t index) const;
+    void note_kind(std::uint32_t index, bool buffer);
+    std::uint32_t stride_word(std::uint32_t index) const;
+    std::uint64_t rebuilds() const;
+    bool shows_none(std::uint32_t index) const;
+    std::uint64_t shown_key(std::uint32_t index) const;
+    Microsoft::WRL::ComPtr<ID3D12Resource> kept(std::uint32_t index);
+    std::uint32_t clear_showing(const std::unordered_set<const ID3D12Resource*>& gone);
+
+private:
+    HostHeap(Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap, std::uint64_t cpu, std::uint64_t gpu,
+             std::uint32_t step, std::uint32_t count, std::uint32_t dynamic, bool sampler);
+
+    bool fill_null(D3D12_DESCRIPTOR_HEAP_TYPE kind, std::uint32_t total);
+    void place_nulls();
+    void null_sampler(std::uint32_t index);
+    void keep(std::uint32_t index, Microsoft::WRL::ComPtr<ID3D12Resource> resource);
+    bool window_evicted(std::uint32_t index);
+    std::mutex& stripe(std::uint32_t index);
+    void write_console_words(std::uint32_t index, const std::optional<descriptor::View>& view);
+
+    static constexpr std::uint64_t kNoWindow = 0;
+    static constexpr std::uint32_t kStripes = 512;
+
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap_;
+    std::uint64_t cpu_ = 0;
+    std::uint64_t gpu_ = 0;
+    std::uint32_t step_ = 0;
+    std::uint32_t count_ = 0;
+    std::uint32_t dynamic_ = 0;
+    bool sampler_ = false;
+    std::unique_ptr<std::mutex[]> stripes_;
+    std::vector<std::uint64_t> made_;
+    std::vector<std::atomic<std::uint64_t>> quick_;
+    std::vector<std::uint32_t> strides_;
+    std::vector<std::uint8_t> slot_kind_;
+    std::atomic<std::uint64_t> rebuilds_{0};
+    std::mutex kept_mutex_;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> kept_;
+    std::vector<std::atomic<std::uint64_t>> window_generation_;
+    Microsoft::WRL::ComPtr<ID3D12Resource> words_;
+    std::uint8_t* words_data_ = nullptr;
+    std::mutex next_mutex_;
+    std::uint32_t next_ = 0;
+    std::vector<bool> taken_;
+};
+
+void register_heap(Object* heap, std::uint64_t start, std::uint64_t end);
+void drop_heap(Object* heap);
+void mirror(std::uint64_t handle);
+void release_dynamic(Object* heap, std::uint32_t first, std::uint32_t count);
+void note_draw_table(Object* heap, std::uint32_t index);
+HostHeap* for_heap(Object* heap);
+
+struct DescriptorStats {
+    std::uint64_t marked = 0;
+    std::uint64_t materialized = 0;
+    std::uint64_t skipped = 0;
+};
+
+bool lazy_descriptors();
+void refresh_descriptor_settings();
+void sweep_before_submission(std::span<host::HostList* const> lists);
+void refresh_heap(Object* heap);
+std::optional<descriptor::View> materialize_for_draw(Object* heap, std::uint32_t index, std::uint64_t handle);
+void release_retired_views();
+std::uint64_t retired_view_count();
+std::size_t placed_texture_count();
+
+inline constexpr std::size_t kMipBuckets = 6;
+
+struct PlacedStats {
+    std::uint64_t replaced = 0;
+    std::uint64_t slots_cleared = 0;
+    std::array<std::uint64_t, kMipBuckets> view_base_mip{};
+    std::array<std::uint64_t, kMipBuckets> first_resident_mip{};
+    std::uint64_t unknown_layout = 0;
+};
+
+PlacedStats placed_stats();
+std::size_t expire_placed_textures();
+DescriptorStats take_descriptor_stats();
+
+bool view_is_buffer(const descriptor::View& view);
+bool view_shows_buffer(const descriptor::View& view);
+std::optional<std::pair<std::uint64_t, std::uint64_t>> buffer_range(const descriptor::View& view);
+std::optional<std::uint64_t> table_buffer_address(const descriptor::Heap& heap, std::uint64_t table,
+                                                  std::uint32_t dword, bool constant_buffer);
+std::optional<std::array<std::uint32_t, 3>> table_constant_buffer_words(const descriptor::Heap& heap,
+                                                                       std::uint64_t table, std::uint32_t dword);
+std::optional<std::uint32_t> table_buffer_record_count(const descriptor::Heap& heap, std::uint64_t table,
+                                                       std::uint32_t dword);
+std::optional<std::uint32_t> table_linear_raw_buffer_high_word(const descriptor::Heap& heap, std::uint64_t table,
+                                                              std::uint32_t dword);
+std::optional<std::uint32_t> table_structured_buffer_high_word(const descriptor::Heap& heap, std::uint64_t table,
+                                                              std::uint32_t dword);
+std::optional<std::uint32_t> table_untyped_buffer_format_word(const descriptor::Heap& heap, std::uint64_t table,
+                                                              std::uint32_t dword, bool structured);
+std::optional<std::uint32_t> table_typed_buffer_word(const descriptor::Heap& heap, std::uint64_t table,
+                                                     std::uint32_t dword, bool high_address);
+std::optional<std::uint32_t> table_buffer_component_mapping(const descriptor::Heap& heap, std::uint64_t table,
+                                                            std::uint32_t dword);
+std::optional<std::uint32_t> table_image_base_word(const descriptor::Heap& heap, std::uint64_t table,
+                                                 std::uint32_t dword);
+struct ImageShapeWords {
+    std::uint32_t width_low;
+    std::uint32_t dimensions;
+    std::uint32_t base_mip;
+
+    friend bool operator==(const ImageShapeWords&, const ImageShapeWords&) = default;
+};
+
+std::optional<ImageShapeWords> table_image_shape(const descriptor::Heap& heap, std::uint64_t table,
+                                                 std::uint32_t dword);
+struct HeapDataBinding {
+    std::uint32_t index;
+    Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+};
+
+std::optional<HeapDataBinding> image_heap_data(Object* heap);
+std::optional<HeapDataBinding> buffer_heap_data(Object* heap, host::HostList& list,
+                                                std::span<const std::uint32_t> named = {});
+Object* largest_heap(bool samplers);
+std::optional<std::uint32_t> sampler_lod_word(const descriptor::Heap& heap, std::uint32_t dword);
+std::optional<std::uint32_t> table_image_sampling_fields(const descriptor::Heap& heap, std::uint64_t table,
+                                                        std::uint32_t dword);
+std::optional<descriptor::View> placed_texture(const descriptor::View& view);
+std::string near_heaps(std::uint64_t va);
+
+struct ShaderHeapRange {
+    std::uint64_t gpu = 0;
+    std::uint64_t bytes = 0;
+    bool sampler = false;
+};
+
+void note_shader_heap(std::uint64_t start, std::uint64_t bytes, std::uint64_t step, bool sampler);
+void collect_shader_heaps(std::vector<ShaderHeapRange>& out);
+D3D12_UNORDERED_ACCESS_VIEW_DESC null_uav_desc(std::optional<std::uint32_t> dimension);
+
+}  // namespace g6shim::d3d12_xs::descriptor_host

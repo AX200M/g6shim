@@ -306,6 +306,25 @@ TEST(xcrdapi_raw_and_zlib_reads_from_a_file) {
     close_queue(queue);
 }
 
+TEST(xcrdapi_concurrent_reads_of_one_file_each_get_their_own_bytes) {
+    constexpr std::size_t kReads = 512;
+    constexpr std::size_t kReadBytes = 4096;
+    constexpr std::size_t kStride = 1531;
+    const std::vector<std::uint8_t> plain = pattern(kReads * kStride + kReadBytes);
+    OpenSource source = file_with(plain);
+    void* queue = new_queue(0x400, 0, 0);
+    void* array = status_array(1);
+    std::vector<std::vector<std::uint8_t>> reads(kReads, std::vector<std::uint8_t>(kReadBytes, 0));
+    for (std::size_t i = 0; i < kReads; ++i)
+        enqueue(queue, request(0, reads[i].data(), kReadBytes, source.file, i * kStride, kReadBytes));
+    enqueue_status(queue, array, 0);
+    submit(queue);
+    CHECK(wait(array, 0) == kSucceeded);
+    for (std::size_t i = 0; i < kReads; ++i)
+        CHECK(std::equal(reads[i].begin(), reads[i].end(), plain.begin() + static_cast<std::ptrdiff_t>(i * kStride)));
+    close_queue(queue);
+}
+
 TEST(xcrdapi_memory_sources_inflate_too) {
     const std::vector<std::uint8_t> plain = pattern(70'000);
     const std::vector<std::uint8_t> packed = zlib_stored(plain);

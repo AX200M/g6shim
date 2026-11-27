@@ -21,6 +21,7 @@
 namespace g6shim::shader::emit {
 
 using Why = std::string_view;
+using DescriptorMask = std::pair<Value, std::uint32_t>;
 
 using IrInst = ::g6shim::shader::Inst;
 using IrBlock = ::g6shim::shader::Block;
@@ -30,6 +31,8 @@ struct WhyError {
 };
 
 [[noreturn]] inline void fail(Why why) { throw WhyError{why}; }
+
+inline constexpr Why kDescriptorWordAsData = "a descriptor's address or format read as data";
 
 struct Val {
     enum class Kind : std::uint8_t { I32, Bit, Missing };
@@ -65,14 +68,24 @@ struct Stop {
     Value value{};
     Why why{};
     std::size_t offset = 0;
+    std::optional<std::uint32_t> mask;
 
-    static Stop retry(Value value, Why why) { return {Kind::Retry, value, why, 0}; }
-    static Stop failure(std::size_t offset, Why what) { return {Kind::Fail, Value{}, what, offset}; }
+    static Stop retry(Value value, Why why) { return {Kind::Retry, value, why, 0, std::nullopt}; }
+    static Stop retry_masked(Value value, std::uint32_t mask, Why why) { return {Kind::Retry, value, why, 0, mask}; }
+    static Stop failure(std::size_t offset, Why what) { return {Kind::Fail, Value{}, what, offset, std::nullopt}; }
 };
 
 enum class MaskData : std::uint8_t { Console, Host, None };
 
 inline constexpr Why kLaneMask = "a lane mask read as data";
+inline constexpr Why kUnfollowedSection = "a whole-wave section step the simulation does not follow";
+inline constexpr Why kLaneMaskElsewhere = "a lane mask holding lanes elsewhere read as data";
+inline constexpr Why kQuadMask = "a whole-quad lane mask read as data";
+inline constexpr Why kOpaqueMask = "an opaque lane mask read as data";
+inline constexpr Why kUntrackedMaskJoin = "a lane-mask join of an untracked mask";
+
+inline constexpr std::array<std::uint32_t, 9> kHalfConstants = {0x3800, 0xB800, 0x3C00, 0xBC00, 0x4000,
+                                                               0xC000, 0x4400, 0xC400, 0x3118};
 
 bool reads_mask_as_data(const Structured& st, const IrInst& inst);
 
@@ -80,20 +93,70 @@ std::optional<std::pair<std::uint8_t, std::uint8_t>> packed_half(
     const std::vector<SigElement>& elements, std::uint8_t a, std::optional<std::uint8_t> b,
     std::uint8_t h);
 
+inline constexpr std::uint32_t kCodeAddressTag = 0xFFFF;
+
+struct FlatTarget {
+    V handle;
+    V byte;
+    V found;
+};
+
+struct BvhNode {
+    V handle;
+    V byte;
+    V low;
+    V high;
+    V found;
+};
+
+struct BvhRay {
+    V extent;
+    std::array<V, 3> origin;
+    std::array<V, 3> direction;
+    std::array<V, 3> inverse;
+};
+
 std::map<std::uint8_t, std::pair<bool, std::optional<std::uint8_t>>> half_outputs(
     const StageIo& io, const std::vector<SigElement>& outputs);
 
 class Lower {
 public:
-    Lower(const Parts& parts, const std::unordered_map<Value, Why, ValueHash>& bad);
+    Lower(const Parts& parts, const std::unordered_map<Value, Why, ValueHash>& bad,
+          const std::map<DescriptorMask, Why>& bad_masked);
 
     Lowered run();
 
     std::vector<UserData> user_reads() const;
 
 private:
+    struct ImageHeapRead {
+        std::size_t block;
+        std::size_t next;
+        V byte_address;
+        UserData binding;
+        std::optional<V> shape;
+        std::size_t defined = 0;
+    };
+
+    struct ImageHeapWord {
+        std::size_t read;
+        std::uint32_t channel;
+        std::uint32_t known_bits;
+    };
+
     V code_dword(V byte);
     void flat(const IrInst& inst, std::size_t b, std::size_t i);
+    std::vector<V> flat_table_load(V byte, std::uint32_t count);
+    V at_or_below(V a_low, V a_high, V b_low, V b_high);
+    std::pair<V, V> add_address(V low, V high, V bytes);
+    FlatTarget flat_lookup(V low, V high, std::optional<V> in_range);
+    FlatTarget flat_buffer_target(const IrInst& inst, const BufferFields& fields, std::optional<V> index, V off,
+                                  std::uint32_t bytes);
+    void flat_smem(const IrInst& inst);
+    bool reads_program_counter() const;
+    void flat_global(const IrInst& inst, std::size_t b, std::size_t i);
+    bool flat_buffer(const Source& src, const UsedResource* used) const;
+    bool joins_data(const IrBlock& block, const Phi& phi) const;
     void find_sections();
     void section_inst(std::size_t b, std::size_t i, std::size_t start);
     V shape(Shape shape);
@@ -105,18 +168,33 @@ private:
     std::optional<std::pair<std::size_t, std::uint8_t>> find_input(std::uint8_t row,
                                                                    std::uint8_t channel);
     Val load_input(std::size_t id, std::uint8_t col);
-    Val load_any_input(std::size_t id, std::uint8_t col);
+    Val load_any_input(std::size_t id, std::uint8_t col,
+                       std::optional<std::uint32_t> vertex = std::nullopt);
+    std::optional<std::pair<std::size_t, std::uint8_t>> geometry_slot(std::vector<SigElement>& elements,
+                                                                      std::uint32_t dword, bool input);
+    void geometry_ring(const IrInst& inst, std::size_t b, std::size_t i);
+    void geometry_message(const IrInst& inst, std::size_t b, std::size_t i);
     Val get(Value v);
     V i32_of(Value v);
     Val user(std::size_t param, std::uint32_t dword);
     V mask_dword(Value v);
+    std::pair<V, V> mask_pair(Value v);
+    std::size_t mask_site(Value lo);
+    std::pair<V, V> active_ballot(Bool bits, std::size_t at);
+    std::pair<V, V> combine_mask(Bool bits, std::size_t at);
+    std::pair<V, V> atom_mask(const Atom& atom, std::size_t at);
+    std::pair<V, V> mask_ones();
+    std::pair<V, V> mask_bin(Bin op, std::pair<V, V> a, std::pair<V, V> b, std::size_t at);
+    void fill_mask_words();
     V operand(const IrInst& inst, const Operand& op);
     V as_float(V x);
     V as_int(V f);
+    V max_min(bool max, V a, V b);
+    V f16_operand(const IrInst& inst, const Operand& op);
     static std::optional<std::pair<std::uint8_t, bool>> sdwa_src(const IrInst& inst, std::size_t k);
     V select_bits(V x, std::uint8_t sel, bool sext);
     V fsrc(const IrInst& inst, std::size_t k);
-    V src(const IrInst& inst, std::size_t k);
+    V src(const IrInst& inst, std::size_t k, std::optional<std::uint32_t> mask = std::nullopt);
     V unary(std::uint32_t op, V f);
     V binary(std::uint32_t op, V a, V b);
     V fmad(V a, V b, V c);
@@ -149,6 +227,7 @@ private:
     std::uint32_t wave() const;
     V lane_index();
     V quad_pick(V x, V src);
+    bool same_quad_lane(const IrInst& inst) const;
     V read_lane(V x, V lane);
     V float_of(Value v);
     std::vector<V> vgprs(const IrInst& inst, const Operand& op, std::uint8_t n);
@@ -160,13 +239,48 @@ private:
     V scc_in(const IrInst& inst);
     void smem(const IrInst& inst, Site site);
     void descriptor_data(const IrInst& inst, Site site);
+    void rebuilt_descriptor_data(const IrInst& inst, Site site);
+    bool descriptor_words_data(const IrInst& inst, Site site, std::optional<std::uint32_t> only);
+    bool read_as_data(const IrInst& inst) const;
+    bool value_read(Value value) const;
+    const std::unordered_set<Value, ValueHash>& data_reads() const;
+    void standalone_descriptor_data(const IrInst& inst, Site site, std::uint8_t code, std::uint32_t count);
+    bool defer_descriptor_address(Value value, const Source& src, const UsedResource& used,
+                                  UserData::Source source);
+    Val descriptor_address(UserData data);
+    bool has_partial_descriptor(Value value) const;
+    V masked_descriptor_value(Value value, std::uint32_t mask);
+    void defer_image_heap_read(const IrInst& inst, Site site, std::uint8_t code, const RootParam& root);
+    V read_image_heap_word(const ImageHeapWord& word);
+    struct HeapRecords {
+        V handle;
+        V count;
+    };
+    HeapRecords heap_records(const UserData& binding);
+    std::pair<V, V> read_heap_record(std::size_t c, V byte_address, const UserData& binding);
+    void fill_masked_descriptor_phis();
+    Val user_dword(std::uint32_t index);
     void code_smem(const IrInst& inst, Address a);
+    std::optional<std::uint8_t> root_cbv_slot(const V& handle) const;
     V cbuffer_dword(V h, V a);
     std::vector<V> format_load(V h, V off, std::uint8_t format, std::uint32_t channels);
+    bool indexed_by_resource_heap(const Source& src) const;
+    std::vector<V> load_indexed_heap_buffer(const Source& src, V index, V offset, std::uint32_t count,
+                                             std::optional<V> guard_value);
     std::pair<std::uint32_t, std::optional<V>> built_offset(const Source& src);
     const UsedResource* used_kind(const Source& src) const;
     V handle(Site site, const Source& src, bool sampler, std::pair<std::uint32_t, std::uint32_t> props);
-    V heap_index(Site load, std::uint8_t first, bool sampler);
+    V lane_heap_index(const Source& src, bool sampler, std::uint32_t props);
+    V fetched_index(Site load, std::uint8_t first, bool sampler, std::uint32_t props);
+    V heap_byte_address(Site load, std::uint8_t first);
+    bool heap_pointer(Value value) const;
+    V heap_index(Site load, std::uint8_t first, bool sampler, std::uint32_t props);
+    V heap_limit(bool sampler);
+    V null_view_slot(std::uint32_t props);
+    V raw_byte_fits(V handle, V byte, std::uint32_t bytes);
+    V root_view_bytes(std::uint8_t slot);
+    std::vector<V> bounded_raw_words(V handle, V byte, std::uint32_t count);
+    V bounded_heap_index(V index, bool sampler, std::uint32_t props);
     void valu(const IrInst& inst, std::size_t b, std::size_t i);
     std::pair<V, std::optional<V>> dpp(const IrInst& inst, const Dpp& dpp);
     void valu_op(const IrInst& inst, std::optional<V> guard);
@@ -180,7 +294,8 @@ private:
                    std::span<const std::string_view> float1,
                    std::span<const std::string_view> float2,
                    std::span<const std::string_view> float3);
-    V packed_src(const IrInst& inst, std::size_t k, bool high);
+    V packed_src(const IrInst& inst, std::size_t k, bool high, bool float16);
+    V cvt_norm16(const IrInst& inst, bool is_signed);
     void packed16(const IrInst& inst, std::string_view op, std::optional<V> guard);
     V integer(const IrInst& inst, std::string_view name);
     void compare(const IrInst& inst, std::string_view rest);
@@ -191,6 +306,14 @@ private:
     void image(const IrInst& inst, std::size_t b, std::size_t i);
     std::array<V, 3> cube_direction(V s, V t, V face);
     void buffer(const IrInst& inst, std::size_t b, std::size_t i);
+    void bvh(const IrInst& inst, std::size_t b, std::size_t i);
+    BvhNode bvh_node_at(V low, V high);
+    std::vector<V> bvh_words(const BvhNode& node, std::optional<V> base, std::uint32_t offset, std::uint32_t count);
+    std::array<V, 4> bvh_boxes(const BvhNode& node, V kind, const BvhRay& ray, V sort);
+    std::array<V, 4> bvh_triangle(const BvhNode& node, V kind, const BvhRay& ray);
+    void narrow_buffer(const IrInst& inst, const BufferFields& fields, Site site, const Source& src,
+                       const UsedResource* used, std::optional<V> index, V off, std::uint32_t uav_flag,
+                       std::uint32_t bits, bool sign, bool store, std::optional<V> guard_value);
     void export_(std::size_t b, std::size_t i);
     void emit_indices(const Export& e, std::optional<V> guard);
     std::optional<std::uint8_t> unnamed_row() const;
@@ -204,6 +327,7 @@ private:
     Shader s_;
     const Parts* x_ = nullptr;
     const std::unordered_map<Value, Why, ValueHash>* bad_ = nullptr;
+    const std::map<DescriptorMask, Why>* bad_masked_ = nullptr;
     std::unordered_map<Value, Why, ValueHash> lane_fail_;
     std::unordered_map<Value, Val, ValueHash> vals_;
     std::unordered_map<Value, V, ValueHash> floats_;
@@ -217,13 +341,27 @@ private:
     std::vector<std::tuple<V, std::size_t, std::size_t>> data_phis_;
     std::unordered_set<Value, ValueHash> read_phis_;
     std::unordered_map<Value, std::pair<std::size_t, std::uint32_t>, ValueHash> params_;
+    std::unordered_set<Value, ValueHash> heap_pointers_;
+    std::unordered_map<Value, UserData, ValueHash> descriptor_addresses_;
+    std::vector<ImageHeapRead> image_heap_reads_;
+    std::unordered_map<Value, ImageHeapWord, ValueHash> image_heap_words_;
+    std::optional<bool> image_heap_allowed_;
+    mutable std::optional<std::unordered_set<Value, ValueHash>> data_reads_;
+    std::unordered_map<Value, std::uint32_t, ValueHash> descriptor_zero_bits_;
+    std::map<DescriptorMask, V> masked_descriptor_phis_;
+    std::vector<std::tuple<Value, std::uint32_t, V>> pending_descriptor_phis_;
     std::optional<V> user_data_;
+    std::map<std::uint32_t, V> user_data_rows_;
+    std::map<std::uint32_t, V> user_data_words_;
+    std::unordered_map<V, HeapRecords, VHash> heap_records_;
     std::map<std::uint32_t, UserData> user_reads_;
+    bool flat_writes_ = false;
     std::vector<std::array<std::uint32_t, 4>> samplers_;
     std::map<std::pair<Site, bool>, const Source*> descriptors_;
     std::unordered_map<Site, Address, SiteHash> scalar_;
     std::map<Site, const Export*> exports_;
     std::map<Site, const Interp*> interps_;
+    std::vector<RingStore> geometry_stores_;
     std::map<std::tuple<std::size_t, Site, std::uint8_t, bool, std::uint32_t>, V> handles_;
     std::map<std::pair<std::size_t, std::size_t>, std::size_t> edges_;
     std::vector<bool> exported_;
@@ -239,6 +377,10 @@ private:
     bool mask_ok_ = false;
     std::unordered_map<Value, std::pair<V, V>, ValueHash> ballots_;
     std::unordered_set<Value, ValueHash> balloting_;
+    std::map<std::pair<std::uint32_t, std::size_t>, std::pair<V, V>> mask_words_;
+    std::unordered_map<Value, std::pair<V, V>, ValueHash> mask_phi_words_;
+    std::vector<Value> pending_mask_words_;
+    std::unordered_map<Value, std::pair<V, V>, ValueHash> lane_ballots_;
     std::unordered_map<Value, std::size_t, ValueHash> def_block_;
     std::size_t cur_ir_ = 0;
     std::map<std::size_t, std::unordered_map<std::size_t, Section>> sections_;

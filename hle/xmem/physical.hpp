@@ -36,6 +36,7 @@ struct PhysicalMapping {
 
 bool find_physical_page(std::size_t number, PhysicalPage* page);
 bool find_physical_mapping(std::size_t address, PhysicalMapping* mapping);
+bool find_stretch(std::size_t address, std::size_t bytes, HANDLE* section, std::uint64_t* offset);
 
 class PageWindow {
 public:

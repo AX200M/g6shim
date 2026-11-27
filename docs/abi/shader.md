@@ -67,6 +67,30 @@ One bit of `SPI_PS_INPUT_ADDR` per entry, in this order; each enabled entry take
 User data dword `i` arrives in SGPR `i` in the vertex, pixel and compute stages, and in SGPR `i + 8` in the merged stages.
 A table or heap parameter holds the 32-bit heap address in its first dword, with the high half set to 0; a root descriptor holds a 64-bit buffer address in its first two.
 
+One compute layout reserves four hardware user SGPRs and starts logical root data at word 16. Fixed scalar loads through the pointer copied from `s0` and the low eight bits of `s1` read declared logical words starting at `16 + byte_offset / 4`. The translator binds those words through the ordinary root constants and descriptor paths. Undeclared words and direct reads of a spilled table's high address word remain unsupported. [Public description of user data spilling](https://releases.llvm.org/16.0.0/docs/AMDGPUUsage.html#spill-table)
+
+## Loop limits
+
+A back edge counts iterations per lane and per entry. The lane leaves when the count reaches the stage limit: 128 in a pixel shader, 256 in a mesh shader or any stage with no thread count (vertex and geometry), and 4096 in compute. The count is compared as unsigned and less-than, so the emitted constant is that limit. `parse_loop_limit` still accepts a decimal or `0x` hex override of at least 1 and falls back to 2^20 when the text is missing or unusable. No setting wires that override; when `loop_limit` stays 2^20 the stage table above is what the translator emits. The shader-cache fingerprint includes the override and the three stage limits, so a change of any of them misses the cache.
+
+## Geometry stage
+
+A geometry program is a merged export/geometry stage on local-data-share rings, not a primitive shader. It is wave64. It does not use `exp`.
+
+The live vertex-offset registers on entry are `v0` and `v1`. They hold packed 16-bit input-vertex offsets, unpacked with word selects (`WORD_0` of `v0`, `WORD_1` of `v0`, `WORD_0` of `v1` are vertices 0, 1 and 2).
+
+The merged-wave word in `s3` holds the geometry primitive count in bits 8–15. The host runs one primitive per invocation. A count extracted for an EXEC prefix mask or a comparison against zero can use that host count. A full-wave comparison is also supported when it only selects between the prefix mask and a full EXEC mask. Any use of the native count as shader data remains unsupported. [Public instruction set reference](https://docs.amd.com/api/khub/documents/Et~wpu9g~Ffl7d9q0QZ~Og/content)
+
+Export-shader outputs are read from local data share at those vertex offsets (`ds_read2_b32` and `ds_read_b32`). A packed offset may be multiplied by four with a word-select shift or with a shift and low-word mask. Each signature register is 4 dwords, so register `n` starts 16 bytes after the vertex base. The input primitive is a triangle.
+
+Emitted vertices are written with `ds_write*` into the geometry-to-vertex area. The vector address is the per-lane base. The instruction offset either selects the output register directly or indexes successive vertex records. Each record spans four dwords per declared output row, including row padding. In a single block, the translator can subtract the record base when the writes for each vertex precede that vertex's emit and every remaining word maps to a declared output component. A scalar dword load can be omitted if its result feeds only the address arithmetic for these output writes. A result used as output data, a control condition, or a different memory operand still needs a mapped scalar address. Output is a triangle strip on stream 0.
+
+`s_sendmsg` `MSG_GS` with `GS_OP_EMIT` emits the vertex, `GS_OP_CUT` ends the strip, and `GS_OP_EMIT_CUT` does both. The program finishes with `MSG_GS_DONE` and `GS_OP_NOP`.
+
+Geometry DXIL records its input width, stream 0 output width and a bitmask of dependent outputs for each input, followed by zero widths for the other three streams. The pipeline validation part uses the same input-to-output mask orientation. [DXIL view state serialization](https://github.com/microsoft/DirectXShaderCompiler/blob/main/lib/HLSL/ComputeViewIdState.cpp)
+
+The paired vertex container holds an export-shader payload and a legacy vertex payload. A geometry-bound pipeline is taken to run the export-shader payload on the console. The host runs the legacy vertex payload; its exports are the geometry shader's inputs.
+
 ## DXIL bitcode blocks
 
 Unabbreviated records only; each block's abbreviation width is fixed.
@@ -120,6 +144,8 @@ Unabbreviated records only; each block's abbreviation width is fixed.
 | `HASH` | twenty zero bytes |
 | `DXIL` | program |
 
+SFI0 feature bits used here: 0x200 stencil reference, 0x800 typed UAV loads, 0x4000 wave operations, 0x8000 64-bit integers, 0x400000 64-bit atomics on typed resources, 0x2000000 resource heap, 0x4000000 sampler heap, 0x10000000 64-bit atomics on heap resources.
+
 DXIL part header: program kind shifted left 16 and or 0x66, size in dwords, `DXIL`, validator version 1.6, bitcode offset 16, bitcode size.
 
 Container header: `DXBC`, MD5-like digest, version 1.0, total size, part count, part offsets, then each part as FourCC, size and data.
@@ -140,6 +166,33 @@ Container header: `DXBC`, MD5-like digest, version 1.0, total size, part count, 
 | 25 | read/write mask |
 | 28 | minimum precision, 0 |
 
+Interpolation modes: 0 constant, 1 linear, 2 linear centroid, 3 linear no perspective, 4 perspective, 5 perspective centroid, 6 perspective sample, 7 linear sample.
+
+A pixel shader writing SV_DepthLessEqual (18) or SV_DepthGreaterEqual (19) interpolates its position inputs (kind 3) at the centroid (5), as the DXIL validator requires.
+
+## Image instructions
+
+Sampling offsets are 6-bit signed per coordinate in the console encoding, and DXIL's immediate offsets are -8 to 7, so a computed offset word must be constant and in range.
+
+The `_cl` sample forms take a minimum level clamp as the address word after the coordinates and array slice. `image_sample_cl` and `image_sample_d_cl` pass it as the clamp operand of DXIL `sample` and `sampleGrad`.
+
+`image_gather4_l` and `image_gather4_l_o` read one mip. DXIL gather has no level operand, so the four texels are loaded. The level is floor(max(level, 0) + 1/2), then clamped to [0, mip count - 1]. That rounding is unconfirmed: the public instruction set only says the user level replaces the computed level. Sampler level bias and clamps are not applied. Texel coordinates are floor(uv * size - 1/2) and the +1 neighbour, returned in gather order (0, 1), (1, 1), (1, 0), (0, 0). An immediate sampler's address mode is applied per texel; any other sampler clamps. Border returns that sampler's immediate border colour.
+
+
+## 64-bit image atomics
+
+An image atomic whose `dmask` is 0x3, or 0xF for compare-and-swap, is a 64-bit atomic. It lowers to `dx.op.atomicBinOp.i64` or `dx.op.atomicCompareExchange.i64` on a UAV handle annotated as one U32 component (`0x105`), the annotation DXC emits for `RWTexture2D<uint64_t>`. Subtract is an add of the negated value. The return, when `glc` is set, is the previous 64-bit texel, split back into two VGPRs.
+
+The container sets SFI0 bits 0x8000, 0x400000 and 0x10000000, and the module shader flags at bits 20, 27 and 32. Bit 0x10000000 is set because the handle comes from the descriptor heap. The host resource view for the operation is `R32G32_UINT`.
+
+A host that reports false from `D3D12_FEATURE_DATA_D3D12_OPTIONS9::AtomicInt64OnTypedResourceSupported`, or from `D3D12_FEATURE_DATA_D3D12_OPTIONS11::AtomicInt64OnDescriptorHeapResourceSupported`, still receives the translated shader. `CreateComputePipelineState` or `CreatePipelineState` then fails, pipeline creation logs `host pipeline refused`, and the title gets no pipeline.
+
+`image_atomic_inc` and `image_atomic_dec` have no shader model 6.6 atomic, at either width, and stop the translation.
+
+## Predicates
+
+`v_cmp_lg_*` is ordered and not equal, so a NaN makes it false: DXIL `olt | ogt`. `fcmp one` means the same but the AMD D3D12 driver treats it as unordered.
+
 ## PSV0 runtime info
 
 48-byte block.
@@ -147,6 +200,7 @@ Container header: `DXBC`, MD5-like digest, version 1.0, total size, part count, 
 | Offset | Field |
 |---|---|
 | 0 | shared memory bytes (mesh) or output-depth flag |
+| 1 | sample frequency: an input interpolated per sample (interpolation 6 or 7) or the sample index (kind 12) |
 | 12, 14 | maximum vertices, primitives (mesh) |
 | 16, 20 | minimum, maximum wave size |
 | 24 | stage: 0 pixel, 1 vertex, 5 compute, 13 mesh |
@@ -264,6 +318,21 @@ Each part is a FourCC[4], a size u32 and the part body. A container is its first
 | 0x14 | bitcode size u32 |
 
 Shader kinds: 0 ps, 1 vs, 2 gs, 3 hs, 4 ds, 5 cs, 13 ms, 14 as.
+
+The emitter uses validator version 1.8 for compute shaders that sample with implicit LOD. Their `PSV0` runtime info adds the entry point's string table offset after the thread group dimensions. The shader model remains 6.6.
+
+A console container's `DXIL` part can hold a placeholder instead of LLVM bitcode. The kind always comes from the version word; the code is the native program the `XDAT` index lists.
+
+## Native program index
+
+| Offset | Content |
+|---|---|
+| 0x18 | `XDAT` |
+| 0x1C | entry count u32, at most 64 |
+| 0x20 | 0x24 u32 |
+| 0x24 | entries: kind u32, offset u32, size u32 (part-relative) |
+
+Kind 0x0D entries hold `XBCH`: version 3 u32, packed size u64, unpacked size u64, then a zlib stream of an `FSSM` blob.
 
 ## Packed shader record
 

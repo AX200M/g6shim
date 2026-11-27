@@ -6,6 +6,7 @@
 
 #include <g6shim/drives.hpp>
 #include <g6shim/log.hpp>
+#include <g6shim/settings.hpp>
 #include <g6shim/shader/error.hpp>
 #include <g6shim/shader/inflate.hpp>
 
@@ -39,6 +40,7 @@ namespace {
 constexpr Guid kFactoryInterface{0x62959d11u, 0xd45f, 0x4884,
                                  {0xa0, 0xa3, 0xf7, 0x86, 0x2e, 0xa2, 0x43, 0xae}};
 constexpr DWORD kConsole64KiBPageReserve = MEM_RESERVE | 0x2040'0000u;
+constexpr DWORD kSynchronousFile = 0;
 constexpr std::size_t kFactorySlots = 16;
 constexpr std::size_t kFileSlots = 8;
 constexpr std::size_t kStatusSlots = 5;
@@ -92,20 +94,10 @@ std::atomic<std::uint64_t>& reading_time() {
     return time;
 }
 
-constexpr wchar_t kTablesVariable[] = L"G6SHIM_BCPACK_TABLES";
 constexpr wchar_t kTablesFileName[] = L"bcpack-tables.bin";
 constexpr std::uint64_t kMaxTableFileBytes = 4u << 20;
 
-std::optional<std::wstring> tables_variable_path() {
-    const DWORD needed = GetEnvironmentVariableW(kTablesVariable, nullptr, 0);
-    if (needed == 0) return std::nullopt;
-    std::wstring value(needed, L'\0');
-    const DWORD written = GetEnvironmentVariableW(kTablesVariable, value.data(), needed);
-    if (written == 0 || written >= needed) return std::nullopt;
-    value.resize(written);
-    if (value.empty()) return std::nullopt;
-    return value;
-}
+std::optional<std::wstring> tables_variable_path() { return settings::get_wide("G6SHIM_BCPACK_TABLES"); }
 
 std::wstring module_folder() {
     HMODULE module = nullptr;
@@ -403,7 +395,7 @@ HRESULT WINAPI open_file(const Object*, const wchar_t* path, const Guid* iid, vo
     const std::string name = narrow(path);
     const auto host = g6shim::drives::translate(path);
     const HANDLE handle = CreateFileW(host ? host->c_str() : path, GENERIC_READ, FILE_SHARE_READ, nullptr,
-                                      OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+                                      OPEN_EXISTING, kSynchronousFile, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
         const DWORD error = GetLastError();
         G6SHIM_WARN("dstorage: opening a file failed: %s: error %lu", name.c_str(), error);

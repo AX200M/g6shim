@@ -1,0 +1,100 @@
+# Authors
+
+g6shim is written by gookie and its contributors, listed below with the GitHub names they use.
+
+Parts of g6shim are ported from other projects licensed under the GPL-3.0-or-later. The people who wrote that code hold the copyright to it and are listed by area.
+
+## Contributors
+
+- gookie
+- AX200M
+- 57r-dev
+
+## Ported code
+
+### Console API modules, shader translator and graphics (`hle/`, `src/shader/`, `src/tools/shader/`)
+
+- Andrea Casale
+- alessiodeia
+- artor410
+- BaggyALPHA
+- Belobug
+- bvtterbroot
+- codec_d
+- Duff
+- Enzo Souza Duarte
+- Exorion
+- fever308
+- FIocker
+- fuzeofficial
+- fxceless
+- hophaver
+- ifBars
+- jaschinski97-ops
+- Jeremy Goldberg
+- julio
+- KoLolX3
+- LaunchDoesntCode
+- lordon1a
+- LUIS LARIOS
+- Luiz Neves
+- Lyrnc
+- Manuel Pérez
+- Maraco91
+- Marvis
+- meower
+- mgunes1311-lab
+- Noname0202
+- Nostyxx
+- NuraadGit
+- Pedro Fortunato
+- r4.
+- romainhedouin
+- Saitken91
+- SlopComp
+- spacede
+- tedin7
+- TG0000
+- Vanthys
+- Vyacheslav Venglovsky
+- Yaekai
+- 9hvn9yt2vk-netizen
+
+### Ray tracing (`hle/d3d12_xs/bvh/`)
+
+- Alex Collini
+- Ayinaki
+- bbareth
+- bobcatchris
+- chatadouille
+- Codimation
+- Davide
+- Diego Casares
+- Dominik
+- FIocker
+- ItsNotRexed
+- Jacob
+- Jolymmiles
+- justr4mzi
+- Kacper Serewiś
+- Kam471
+- Kosmabb8
+- kotorvr
+- Krashgamer
+- NiiRoZz
+- omardev29
+- Proudnoob4
+- romainveurrier
+- S1m0ne1997
+- Sc4ros
+- ScarionWorkspace
+- shelbykb2
+- SirAmong
+- SuarezPM
+- tedin7
+- throny
+- undeadhuman37
+- Vonsek
+- Zebraine
+- zneel
+- 凉开水

@@ -1,0 +1,10 @@
+LIBRARY "g6shim_xgameruntime.dll"
+EXPORTS
+    XGameRuntimeInitialize=g6shim_XGameRuntimeInitialize
+    XGameRuntimeUninitialize=g6shim_XGameRuntimeUninitialize
+    InitializeApiImpl=g6shim_InitializeApiImpl
+    InitializeApiImplEx=g6shim_InitializeApiImplEx
+    InitializeApiImplEx2=g6shim_InitializeApiImplEx2
+    UninitializeApiImpl=g6shim_UninitializeApiImpl
+    QueryApiImpl=g6shim_QueryApiImpl
+    XErrorReport=g6shim_XErrorReport

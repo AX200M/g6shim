@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
 # SPDX-License-Identifier: GPL-3.0-or-later
+g6shim_require_opus()
 add_executable(g6shim_tests
   unit/main.cpp
   unit/sample_pe.cpp
@@ -26,6 +27,8 @@ add_executable(g6shim_tests
   unit/chad_dsp_test.cpp
   unit/xapu_test.cpp
   unit/gfx10_layout_test.cpp
+  unit/gfx10_xor_checks.cpp
+  unit/gfx10_xor_reference.cpp
   unit/xg_xs_test.cpp
   unit/shader_gfx10_test.cpp
   unit/shader_container_test.cpp
@@ -39,17 +42,130 @@ add_executable(g6shim_tests
   unit/shader_emit_wave_test.cpp
   unit/shader_emit_validator_test.cpp
   unit/shader_valu_test.cpp
+  unit/shader_lowering.cpp
+  unit/shader_fixtures_test.cpp
+  unit/shader_image_atomic_test.cpp
+  unit/shader_geometry_test.cpp
+  unit/shader_lane_mask_test.cpp
+  unit/shader_waterfall_test.cpp
   unit/shader_tool_test.cpp
   unit/shader_fuzz_test.cpp
+  unit/parser_fuzz_test.cpp
   unit/title_memory_test.cpp
   unit/xmem_virtual_test.cpp
   unit/xmem_physical_test.cpp
   unit/xmem_statistics_test.cpp
-  unit/acphal_test.cpp
+  unit/console_model_test.cpp
+  unit/advapi32_test.cpp
+  unit/settings_test.cpp
   unit/xma_test.cpp
   unit/bcpack_test.cpp
   unit/xcrdapi_test.cpp
+  unit/xgameruntime_xasync_test.cpp
+  unit/xgameruntime_xuser_test.cpp
+  unit/xgameruntime_xgame_test.cpp
+  unit/xgameruntime_xsystem_test.cpp
+  unit/xgameruntime_storage_test.cpp
+  unit/xgameruntime_xnetworking_test.cpp
+  unit/xgameruntime_xpackage_test.cpp
+  unit/xgameruntime_display_test.cpp
+  unit/xgameruntime_xgamesave_test.cpp
+  unit/xgameruntime_xstore_test.cpp
+  unit/xgameruntime_xgameui_test.cpp
+  unit/xgameruntime_speech_test.cpp
+  unit/xgameruntime_module_test.cpp
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/runtime.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xasync.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xuser.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xgame.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xsystem.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/title.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/storage.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xnetworking.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xpackage.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/display.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xgamesave.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xstore.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/xgameui.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime/speech.cpp"
   unit/log_format_test.cpp
+  unit/run_frames_test.cpp
+  "${PROJECT_SOURCE_DIR}/src/tools/run/frames.cpp"
+  unit/cpu_emulation_test.cpp
+  "${PROJECT_SOURCE_DIR}/runtime/src/cpu_emulation.cpp"
+  unit/timer_resolution_test.cpp
+  unit/d3d12_xs_object_test.cpp
+  unit/d3d12_xs_device_test.cpp
+  unit/d3d12_xs_dxgi_test.cpp
+  unit/d3d12_xs_fence_test.cpp
+  unit/d3d12_xs_frame_test.cpp
+  unit/d3d12_xs_root_test.cpp
+  unit/d3d12_xs_descriptor_test.cpp
+  unit/d3d12_xs_resource_test.cpp
+  unit/d3d12_xs_sampler_test.cpp
+  unit/d3d12_xs_host_test.cpp
+  unit/upscaler_loader_test.cpp
+  unit/d3d12_xs_copy_test.cpp
+  unit/d3d12_xs_descriptor_lazy_test.cpp
+  unit/d3d12_xs_descriptor_records_test.cpp
+  unit/d3d12_xs_completion_test.cpp
+  unit/d3d12_xs_retirement_test.cpp
+  unit/d3d12_xs_capture_test.cpp
+  unit/d3d12_xs_present_test.cpp
+  unit/bvh_reference_test.cpp
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh/format.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh/reference.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh/builder.cpp"
+  unit/bvh_builder_test.cpp
+  unit/d3d12_xs_pipeline_test.cpp
+  unit/d3d12_xs_list_test.cpp
+  unit/d3d12_xs_acceleration_test.cpp
+  unit/d3d12_xs_queue_test.cpp
+  unit/d3d12_xs_window_test.cpp
+  unit/d3d12_xs_primitive_test.cpp
+  unit/d3d12_xs_indirect_test.cpp
+  unit/d3d12_xs_draw_test.cpp
+  unit/d3d12_xs_depth_uav_test.cpp
+  unit/d3d12_xs_ambient_test.cpp
+  unit/d3d12_xs_inplace_test.cpp
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/ambient.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/inplace.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/console.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor_host.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/descriptor_words.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/device.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/draw.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/dxgi.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/fence.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/frame.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/host.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/gpu_capture.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/removal.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/completion.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/indirect.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/later.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/list.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/object.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/pipeline.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/pipeline_host.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/pipeline_library.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/pipeline_make.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/primitive.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/query.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/queue.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/resource.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/root.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/sampler.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/shader_cache.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/shadow.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/card.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/signature.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/texture.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/depth_uav.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/watch.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/window.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/window_geometry.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/graphics_object.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/device.cpp"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x/objects.cpp"
@@ -77,22 +193,66 @@ add_executable(g6shim_tests
   "${PROJECT_SOURCE_DIR}/hle/acphal/xma.cpp"
   "${PROJECT_SOURCE_DIR}/hle/acphal/xma_voices.cpp"
   "${PROJECT_SOURCE_DIR}/hle/xcrdapi/bcpack.cpp"
-  "${PROJECT_SOURCE_DIR}/hle/xcrdapi/dstorage.cpp")
-target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim_shader g6shim::winrt d3d12 dxgi onecore)
-target_link_options(g6shim_tests PRIVATE "/EXPORT:__XMemAllocationHooks__,DATA")
+  "${PROJECT_SOURCE_DIR}/hle/xcrdapi/dstorage.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/g6shim_advapi32/registry.cpp"
+  "${PROJECT_SOURCE_DIR}/hle/upscaler_loader/translate.cpp")
+target_link_libraries(g6shim_tests PRIVATE g6shim_core g6shim_shader g6shim::winrt Opus::opus d3d12 dxgi d3dcompiler onecore PowrProf)
+target_link_options(g6shim_tests PRIVATE "/EXPORT:__XMemAllocationHooks__,DATA" "/EXPORT:g6shim_xmem_map_alias")
+foreach(forwarder IN ITEMS hle_g6shim_file hle_g6shim_file2 hle_g6shim_crtfs hle_g6shim_kernel32
+                         hle_g6shim_libloader hle_g6shim_libloader2 hle_xgameruntime)
+  if(TARGET ${forwarder})
+    add_dependencies(g6shim_tests ${forwarder})
+  endif()
+endforeach()
 target_include_directories(g6shim_tests PRIVATE
   "${PROJECT_SOURCE_DIR}/hle/acphal"
   "${PROJECT_SOURCE_DIR}/hle/kernelx"
   "${PROJECT_SOURCE_DIR}/hle/d3d11_x"
   "${PROJECT_SOURCE_DIR}/hle/d3d12_x"
+  "${PROJECT_SOURCE_DIR}/hle"
+  "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh"
   "${PROJECT_SOURCE_DIR}/hle/xg_x"
   "${PROJECT_SOURCE_DIR}/hle/xmem"
   "${PROJECT_SOURCE_DIR}/hle/chad"
   "${PROJECT_SOURCE_DIR}/hle/xapu"
   "${PROJECT_SOURCE_DIR}/hle/xg_xs"
   "${PROJECT_SOURCE_DIR}/hle/xcrdapi"
+  "${PROJECT_SOURCE_DIR}/hle/xgameruntime"
   "${PROJECT_SOURCE_DIR}/runtime/src"
+  "${PROJECT_SOURCE_DIR}/src/tools/run"
   "${PROJECT_SOURCE_DIR}/winrt")
+g6shim_add_compute_dxil(g_bvh_build_dxil "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/bvh/build.hlsl" main)
+g6shim_add_compute_dxil(g_card_piece_dxil "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/card_hash.hlsl" main)
+g6shim_add_compute_dxil(g_present_plane_vs "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/present.hlsl" present_vs vs_6_0)
+g6shim_add_compute_dxil(g_present_plane_ps "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/present.hlsl" present_ps ps_6_0)
+g6shim_target_compute_dxil(g6shim_tests g_bvh_build_dxil)
+g6shim_target_compute_dxil(g6shim_tests g_card_piece_dxil)
+g6shim_target_compute_dxil(g6shim_tests g_present_plane_vs)
+g6shim_target_compute_dxil(g6shim_tests g_present_plane_ps)
+g6shim_add_compute_dxil(g_depth_copy_vs "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/depth_copy.hlsl" copy_vs vs_6_0)
+g6shim_add_compute_dxil(g_depth_copy_ps "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/depth_copy.hlsl" copy_depth_ps ps_6_0)
+g6shim_add_compute_dxil(g_depth_copy_stencil_ps "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/depth_copy.hlsl" copy_stencil_ps ps_6_0)
+g6shim_add_compute_dxil(g_depth_copy_stencil_bit_ps "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/depth_copy.hlsl" copy_stencil_bit_ps ps_6_0)
+g6shim_add_compute_dxil(g_depth_uav_write "${CMAKE_CURRENT_SOURCE_DIR}/unit/depth_uav_write.hlsl" main)
+g6shim_add_compute_dxil(g_depth_equal_vs "${CMAKE_CURRENT_SOURCE_DIR}/unit/depth_equal.hlsl" equal_vs vs_6_0)
+g6shim_add_compute_dxil(g_depth_equal_ps "${CMAKE_CURRENT_SOURCE_DIR}/unit/depth_equal.hlsl" equal_ps ps_6_0)
+g6shim_target_compute_dxil(g6shim_tests g_bvh_build_dxil)
+g6shim_target_compute_dxil(g6shim_tests g_depth_copy_vs)
+g6shim_target_compute_dxil(g6shim_tests g_depth_copy_ps)
+g6shim_target_compute_dxil(g6shim_tests g_depth_copy_stencil_ps)
+g6shim_target_compute_dxil(g6shim_tests g_depth_copy_stencil_bit_ps)
+g6shim_target_compute_dxil(g6shim_tests g_depth_uav_write)
+g6shim_add_compute_dxil(g_ambient_keep "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/ambient_keep.hlsl" keep)
+g6shim_add_compute_dxil(g_ambient_mean "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/ambient_keep.hlsl" mean)
+g6shim_add_compute_dxil(g_ambient_place "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/ambient_gather.hlsl" place)
+g6shim_add_compute_dxil(g_ambient_gather "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/ambient_gather.hlsl" gather)
+g6shim_add_compute_dxil(g_ambient_raise "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/ambient_raise.hlsl" raise)
+g6shim_add_compute_dxil(g_ambient_air "${PROJECT_SOURCE_DIR}/hle/d3d12_xs/ambient_air.hlsl" clear_air)
+foreach(pass keep mean place gather raise air)
+  g6shim_target_compute_dxil(g6shim_tests g_ambient_${pass})
+endforeach()
+g6shim_target_compute_dxil(g6shim_tests g_depth_equal_vs)
+g6shim_target_compute_dxil(g6shim_tests g_depth_equal_ps)
 add_test(NAME unit COMMAND g6shim_tests)
 set_tests_properties(unit PROPERTIES TIMEOUT 30
   ENVIRONMENT "G6SHIM_LOG=${CMAKE_CURRENT_BINARY_DIR}/unit.log;G6SHIM_LOG_STDERR=0")

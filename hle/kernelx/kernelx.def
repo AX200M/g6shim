@@ -149,8 +149,8 @@ EXPORTS
     TryEnterCriticalSection=kernel32.TryEnterCriticalSection
     UnregisterTraceGuids=advapi32.UnregisterTraceGuids
     VirtualAlloc=g6shim_VirtualAlloc
-    VirtualFree=kernel32.VirtualFree
-    VirtualProtect=kernel32.VirtualProtect
+    VirtualFree=g6shim_VirtualFree
+    VirtualProtect=g6shim_VirtualProtect
     VirtualQuery=kernel32.VirtualQuery
     WaitForMultipleObjects=kernel32.WaitForMultipleObjects
     WaitForMultipleObjectsEx=kernel32.WaitForMultipleObjectsEx

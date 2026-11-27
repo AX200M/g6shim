@@ -123,10 +123,34 @@ struct Export {
     friend bool operator==(const Export&, const Export&) = default;
 };
 
+struct RingLoad {
+    Site site;
+    std::uint8_t vgpr = 0;
+    std::uint8_t vertex = 0;
+    std::uint32_t dword = 0;
+
+    friend bool operator==(const RingLoad&, const RingLoad&) = default;
+};
+
+struct RingStore {
+    Site site;
+    std::uint8_t vgpr = 0;
+    std::uint32_t dword = 0;
+
+    friend bool operator==(const RingStore&, const RingStore&) = default;
+};
+
 struct Io {
     std::vector<std::pair<Value, Input>> inputs;
     std::vector<std::pair<Site, Interp>> interps;
     std::vector<Export> exports;
+    std::vector<RingLoad> ring_loads;
+    std::vector<RingStore> ring_stores;
+    std::vector<Site> ring_address_loads;
+    std::vector<Value> geometry_primitive_counts;
+    std::optional<std::uint8_t> initialized_sgprs;
+
+    friend bool operator==(const Io&, const Io&) = default;
 };
 
 std::vector<std::pair<std::uint8_t, Input>> pixel_input_vgprs(std::uint32_t input_addr);

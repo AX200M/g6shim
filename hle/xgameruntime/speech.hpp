@@ -1,0 +1,27 @@
+// SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+#include "runtime.hpp"
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <span>
+
+namespace g6shim::xgameruntime::speech {
+
+inline constexpr Guid kProvider = guid(0x3e241977, 0x6237, 0x41e9, 0x85, 0x59, 0x10, 0x2c, 0x2d, 0x99, 0x83,
+                                       0xf1);
+inline constexpr Guid kIid = guid(0xd722b373, 0x8c4d, 0x4692, 0x9e, 0x51, 0xd6, 0xad, 0x9b, 0x37, 0xaa, 0x7d);
+
+inline constexpr std::array<std::uint8_t, 44> kSilence = {
+    'R',  'I',  'F',  'F',  0x24, 0x00, 0x00, 0x00, 'W',  'A',  'V',  'E',  'f',  'm',  't',
+    ' ',  0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x80, 0x3e, 0x00, 0x00, 0x00, 0x7d,
+    0x00, 0x00, 0x02, 0x00, 0x10, 0x00, 'd',  'a',  't',  'a',  0x00, 0x00, 0x00, 0x00};
+
+extern const Object kObject;
+
+std::span<const Interface> interfaces();
+
+}  // namespace g6shim::xgameruntime::speech

@@ -18,13 +18,21 @@ namespace g6shim::shader::emit {
 inline constexpr std::uint32_t kUserDataSpace = 0;
 inline constexpr std::uint32_t kSamplerSpace = 0;
 inline constexpr std::uint32_t kRootCbvSpace = 1;
+inline constexpr std::uint32_t kDescriptorWordsSpace = 2;
+inline constexpr std::uint8_t kViewWordsRegister = 0;
+inline constexpr std::uint8_t kSamplerWordsRegister = 1;
+inline constexpr std::uint8_t kFlatTableRegister = 2;
 
 namespace feature {
 
 inline constexpr std::uint64_t kRawBuffers = 1ull << 4;
+inline constexpr std::uint64_t kStencilRef = 1ull << 11;
+inline constexpr std::uint64_t kTiledResources = 1ull << 12;
 inline constexpr std::uint64_t kTypedUavLoads = 1ull << 13;
 inline constexpr std::uint64_t kWaveOps = 1ull << 19;
 inline constexpr std::uint64_t kInt64 = 1ull << 20;
+inline constexpr std::uint64_t kAtomicInt64OnTypedResource = 1ull << 27;
+inline constexpr std::uint64_t kAtomicInt64OnHeapResource = 1ull << 32;
 inline constexpr std::uint64_t kResourceHeap = 1ull << 30;
 inline constexpr std::uint64_t kSamplerHeap = 1ull << 31;
 
@@ -50,12 +58,15 @@ struct Shader {
     std::vector<SigElement> outputs;
     std::vector<SigElement> prims;
     std::optional<Mesh> mesh;
+    std::optional<Geometry> geometry;
     std::uint32_t user_data = 0;
     std::uint32_t samplers = 0;
     std::uint64_t cmp_samplers = 0;
     std::vector<std::pair<std::uint8_t, V>> root_cbvs;
     std::vector<std::pair<std::uint8_t, V>> root_srvs;
+    std::vector<std::pair<std::uint8_t, V>> words_srvs;
     std::uint64_t flags = 0;
+    std::uint32_t nonuniform_handles = 0;
     std::optional<std::array<std::uint32_t, 3>> threads;
     std::optional<std::uint32_t> wave_size;
     std::uint32_t lds_dwords = 0;
@@ -68,18 +79,25 @@ struct Shader {
     V op(std::size_t block, const std::string& name, Attr attr, Ty ret, std::uint32_t opcode,
          const std::vector<V>& args);
     V user_data_handle();
+    V descriptor_words_handle(bool sampler);
+    V flat_table_handle();
     V root_cbv_handle(std::uint8_t slot);
     V root_srv_handle(std::uint8_t slot);
     V sampler_handle(std::size_t block, std::uint32_t n);
     V annotate(std::size_t block, V handle, std::uint32_t props0, std::uint32_t props1);
-    V heap_handle(std::size_t block, V index, bool sampler, std::pair<std::uint32_t, std::uint32_t> props);
+    V heap_handle(std::size_t block, V index, bool sampler, bool nonuniform,
+                  std::pair<std::uint32_t, std::uint32_t> props);
     std::vector<std::uint8_t> finish();
+
+    bool uses_level_clamp = false;
 
 private:
     void fix_user_data_size(std::uint32_t size);
+    V words_handle(std::uint8_t reg);
     std::optional<Md> signature_md(std::vector<SigElement> elements);
 
     std::optional<V> lds_;
+    bool uses_implicit_lod_ = false;
 };
 
 }  // namespace g6shim::shader::emit

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "statistics.hpp"
 
+#include <g6shim/console_model.hpp>
 #include <g6shim/log.hpp>
 
 #include <windows.h>
@@ -16,6 +17,7 @@ namespace g6shim::xmem {
 
 namespace {
 
+std::atomic<bool> g_overridden{false};
 std::atomic<std::size_t> g_gpu_optimal{kDefaultTitleMemory.gpu_optimal};
 std::atomic<std::size_t> g_standard{kDefaultTitleMemory.standard};
 std::atomic<std::size_t> g_transferred{0};
@@ -23,15 +25,25 @@ std::atomic<std::size_t> g_transferred{0};
 constexpr std::uint32_t kTitleToSystem = 0;
 constexpr std::size_t kTransferGranularity = 2 * kMebibyte;
 
+TitleMemory console_title_memory() {
+    return console_model() == ConsoleModel::kSeriesS ? kSmallTitleMemory : kDefaultTitleMemory;
+}
+
 }  // namespace
 
 TitleMemory title_memory() {
+    if (!g_overridden.load(std::memory_order_acquire)) return console_title_memory();
     return {g_gpu_optimal.load(std::memory_order_relaxed), g_standard.load(std::memory_order_relaxed)};
 }
 
 void set_title_memory(TitleMemory memory) {
     g_gpu_optimal.store(memory.gpu_optimal, std::memory_order_relaxed);
     g_standard.store(memory.standard, std::memory_order_relaxed);
+    g_overridden.store(true, std::memory_order_release);
+}
+
+void reset_title_memory() {
+    g_overridden.store(false, std::memory_order_release);
 }
 
 int get_working_set_statistics(std::uint32_t, WorkingSet* out) {

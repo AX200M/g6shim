@@ -15,6 +15,7 @@ void xma_enable(std::uint32_t index);
 void xma_disable(std::uint32_t index);
 void xma_advance_read(std::uint32_t index, std::uint32_t blocks);
 void xma_pump();
+void decoder_wait(void* timer, void* wake);
 std::optional<std::size_t> xma_produced(std::uint32_t index);
 
 }  // namespace g6shim::acphal

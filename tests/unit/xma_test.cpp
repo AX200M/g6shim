@@ -3,7 +3,11 @@
 #include "check.hpp"
 
 #include "xma.hpp"
+#include "xma_voices.hpp"
 
+#include <windows.h>
+
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <numbers>
@@ -39,6 +43,24 @@ std::vector<float> imdct_direct_sum(const std::vector<float>& input) {
 }
 
 }  // namespace
+
+TEST(xma_decoder_waits_finer_than_the_system_tick) {
+    constexpr int kWaits = 50;
+    constexpr auto kSystemTick = std::chrono::milliseconds(15);
+    const HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    const HANDLE wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    CHECK(timer != nullptr);
+    const auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < kWaits; ++i) g6shim::acphal::decoder_wait(timer, wake);
+    const auto spent = std::chrono::steady_clock::now() - start;
+    CHECK(spent < kSystemTick * kWaits / 2);
+    SetEvent(wake);
+    const auto woken = std::chrono::steady_clock::now();
+    g6shim::acphal::decoder_wait(timer, wake);
+    CHECK(std::chrono::steady_clock::now() - woken < kSystemTick);
+    CloseHandle(wake);
+    CloseHandle(timer);
+}
 
 TEST(xma_zero_length_frame_before_start_ends_the_search) {
     std::vector<std::uint8_t> data(kPacketBytes, 0);

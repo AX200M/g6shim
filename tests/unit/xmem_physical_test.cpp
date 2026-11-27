@@ -115,6 +115,29 @@ TEST(xmem_physical_pages_map_alias_and_unmap) {
     VirtualFree(b, 0, MEM_RELEASE);
 }
 
+TEST(xmem_finds_a_stretch_of_one_section_across_views) {
+    const std::vector<std::size_t> pages = allocate_pages(4);
+    void* a = g6shim_XMemVirtualAlloc(nullptr, 4 * kPageBytes, MEM_RESERVE | kPages64K, 0, PAGE_READWRITE);
+    CHECK(a != nullptr);
+    if (a == nullptr) return;
+    const auto page_at = [&](std::size_t n) { return static_cast<unsigned char*>(a) + n * kPageBytes; };
+    CHECK(g6shim_XMemMapPhysicalPages(a, 2, pages.data()) == a);
+    CHECK(g6shim_XMemMapPhysicalPages(page_at(2), 2, pages.data() + 2) == page_at(2));
+    HANDLE section = nullptr;
+    std::uint64_t offset = 0;
+    const auto base = reinterpret_cast<std::size_t>(a);
+    CHECK(find_stretch(base + kPageBytes + 16, 2 * kPageBytes, &section, &offset));
+    CHECK(section != nullptr);
+    CHECK(offset == kPageBytes + 16);
+    const std::size_t swapped[2] = {pages[3], pages[2]};
+    CHECK(g6shim_XMemMapPhysicalPages(page_at(2), 2, swapped) == page_at(2));
+    CHECK(!find_stretch(base, 4 * kPageBytes, &section, &offset));
+    CHECK(g6shim_XMemMapPhysicalPages(a, 4, nullptr) == a);
+    CHECK(!find_stretch(base, kPageBytes, &section, &offset));
+    CHECK(g6shim_XMemFreePhysicalPages(4, pages.data()) == 1);
+    VirtualFree(a, 0, MEM_RELEASE);
+}
+
 TEST(xmem_mapping_no_pages_changes_nothing) {
     const std::vector<std::size_t> pages = allocate_pages(2);
     void* a = g6shim_XMemVirtualAlloc(nullptr, 2 * kPageBytes, MEM_RESERVE | kPages64K, 0, PAGE_READWRITE);

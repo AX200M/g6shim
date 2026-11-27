@@ -37,8 +37,11 @@ struct Lowered {
     std::uint64_t cmp_samplers = 0;
     std::vector<std::uint8_t> root_cbvs;
     std::vector<std::uint8_t> root_srvs;
+    std::uint8_t descriptor_words = 0;
     std::vector<UserData> user_data;
     std::vector<std::array<std::uint32_t, 4>> samplers;
+    std::uint32_t nonuniform_handles = 0;
+    bool wave_ops = false;
 };
 
 struct Parts {

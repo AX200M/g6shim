@@ -26,17 +26,22 @@ constexpr std::array<std::string_view, 6> kFloat2 = {
 constexpr std::array<std::string_view, 7> kFloat3 = {
     "v_fma_f16", "v_mad_f16", "v_fmac_f16", "v_mac_f16", "v_max3_f16", "v_min3_f16",
     "v_med3_f16"};
-constexpr std::array<std::string_view, 13> kInt16 = {
-    "v_add_nc_u16",   "v_sub_nc_u16",  "v_subrev_nc_u16", "v_mul_lo_u16",
-    "v_lshlrev_b16",  "v_lshrrev_b16", "v_ashrrev_i16",   "v_max_u16",
-    "v_max_i16",      "v_min_u16",     "v_min_i16",       "v_cvt_u16_f16",
-    "v_cvt_i16_f16"};
+constexpr std::array<std::string_view, 15> kInt16 = {
+    "v_add_nc_u16",  "v_sub_nc_u16",  "v_subrev_nc_u16",     "v_mul_lo_u16", "v_lshlrev_b16",
+    "v_lshrrev_b16", "v_ashrrev_i16", "v_max_u16",           "v_max_i16",    "v_min_u16",
+    "v_min_i16",     "v_cvt_u16_f16", "v_cvt_i16_f16",       "v_cvt_norm_i16_f16",
+    "v_cvt_norm_u16_f16"};
 
-constexpr std::array<std::uint32_t, 9> kHalfConstants = {0x3800, 0xB800, 0x3C00, 0xBC00, 0x4000,
-                                                         0xC000, 0x4400, 0xC400, 0x3118};
+constexpr std::string_view kComparePrefix = "v_cmp_";
+constexpr std::string_view kCompareExecPrefix = "v_cmpx_";
 
 bool member(std::span<const std::string_view> list, std::string_view value) {
     return std::find(list.begin(), list.end(), value) != list.end();
+}
+
+std::string_view compare_rest(std::string_view name) {
+    if (name.starts_with(kCompareExecPrefix)) return name.substr(kCompareExecPrefix.size());
+    return name.substr(kComparePrefix.size());
 }
 
 }  // namespace
@@ -45,10 +50,16 @@ void Lower::valu(const IrInst& inst, std::size_t b, std::size_t i) {
     const auto* fields = std::get_if<Valu>(&inst.fields);
     if (fields == nullptr) std::abort();
     const std::string_view name = inst.name();
-    if (name.starts_with("v_cmp_") || name.starts_with("v_cmpx_")) {
+    const auto& compares = x_->res->waterfall.compares;
+    if (std::any_of(compares.begin(), compares.end(),
+                    [&](const Site& site) { return site.block == b && site.index == i; })) {
+        lane(inst, true);
+        return;
+    }
+    if (name.starts_with(kComparePrefix) || name.starts_with(kCompareExecPrefix)) {
         try {
             if (fields->dpp) fail("a compare with DPP");
-            compare(inst, name.substr(6));
+            compare(inst, compare_rest(name));
         } catch (const WhyError& error) {
             for (const auto& write : inst.writes) lane_fail_[write.second] = error.why;
             throw;
@@ -154,7 +165,7 @@ std::pair<V, std::optional<V>> Lower::dpp(const IrInst& inst, const Dpp& dpp_val
             masks = std::pair<std::uint8_t, std::uint8_t>{pattern.row_mask, pattern.bank_mask};
         zero = pattern.bound_ctrl;
     }
-    V r = mesh_quad ? quad_pick(x, src) : read_lane(x, src);
+    V r = mesh_quad || (s_.pixel && quad) ? quad_pick(x, src) : read_lane(x, src);
     std::optional<V> enable;
     if (inside) {
         if (zero) {
@@ -364,8 +375,8 @@ void Lower::valu_op(const IrInst& inst, std::optional<V> guard_value) {
         else if (name == "v_subrev_f32") r = s_.m.bin(c, Bin::Sub, b, a);
         else if (name == "v_mul_f32") r = s_.m.bin(c, Bin::Mul, a, b);
         else if (name == "v_mul_legacy_f32") r = legacy_mul(a, b);
-        else if (name == "v_max_f32") r = binary(35, a, b);
-        else r = binary(36, a, b);
+        else if (name == "v_max_f32") r = max_min(true, a, b);
+        else r = max_min(false, a, b);
         write_f(inst, r, guard_value);
         return;
     }
@@ -414,11 +425,11 @@ void Lower::valu_op(const IrInst& inst, std::optional<V> guard_value) {
         const V d = fsrc(inst, 2);
         V r;
         if (name == "v_max3_f32") {
-            const V t = binary(35, a, b);
-            r = binary(35, t, d);
+            const V t = max_min(true, a, b);
+            r = max_min(true, t, d);
         } else if (name == "v_min3_f32") {
-            const V t = binary(36, a, b);
-            r = binary(36, t, d);
+            const V t = max_min(false, a, b);
+            r = max_min(false, t, d);
         } else {
             r = med3(a, b, d);
         }
@@ -582,14 +593,23 @@ void Lower::valu_op(const IrInst& inst, std::optional<V> guard_value) {
         return;
     }
     if (name == "v_cndmask_b32") {
-        std::optional<Value> mask;
-        if (fields->src.size() > 2) {
-            if (const auto* scalar = std::get_if<ScalarOperand>(&fields->src[2]))
-                mask = inst.read(Reg::s(scalar->code));
-        }
+        const auto* scalar = fields->src.size() > 2 ? std::get_if<ScalarOperand>(&fields->src[2]) : nullptr;
+        const auto mask = scalar != nullptr ? inst.read(Reg::s(scalar->code)) : std::nullopt;
         const auto found = mask ? x_->st->masks.find(*mask) : x_->st->masks.end();
-        if (!mask || found == x_->st->masks.end()) fail("a select on an untracked mask");
-        const V cond = boolean(found->second, c);
+        V cond;
+        if (found != x_->st->masks.end()) {
+            cond = boolean(found->second, c);
+        } else {
+            if (!console_lanes_ || !mask) fail("a select on an untracked mask");
+            std::optional<V> high;
+            if (x_->native->wave64) {
+                const auto upper = inst.read(Reg::s(static_cast<std::uint8_t>(scalar->code + 1)));
+                if (!upper) fail("a select on an untracked mask");
+                high = i32_of(*upper);
+            }
+            cross_lane(false);
+            cond = lane_bit(c, i32_of(*mask), high);
+        }
         if (fields->abs != 0 || fields->neg != 0) {
             const V a = fsrc(inst, 0);
             const V b = fsrc(inst, 1);
@@ -633,6 +653,10 @@ void Lower::valu_op(const IrInst& inst, std::optional<V> guard_value) {
     if (name == "v_readlane_b32") {
         const V a = src(inst, 0);
         const V lane = src(inst, 1);
+        if (s_.pixel && same_quad_lane(inst)) {
+            write_i(inst, quad_pick(a, lane), guard_value);
+            return;
+        }
         if (mask_data_ == MaskData::Host && lane.kind != V::Kind::Const) {
             s_.flags |= feature::kWaveOps;
         } else {
@@ -648,7 +672,13 @@ void Lower::valu_op(const IrInst& inst, std::optional<V> guard_value) {
         const auto* target = std::get_if<VectorOperand>(&*fields->dst);
         if (target == nullptr) fail("a lane write");
         V old = s_.m.i32(0);
-        if (const std::optional<Value> read = inst.read(Reg::v(target->reg))) old = i32_of(*read);
+        if (const std::optional<Value> read = inst.read(Reg::v(target->reg))) {
+            try {
+                old = i32_of(*read);
+            } catch (const WhyError& error) {
+                if (std::string_view(error.why) != kUnfollowedSection) throw;
+            }
+        }
         cross_lane(false);
         const V me = lane_index();
         const V is = s_.m.cmp(c, pred::kEq, me, lane);
@@ -656,9 +686,20 @@ void Lower::valu_op(const IrInst& inst, std::optional<V> guard_value) {
         return;
     }
     if (name == "v_readfirstlane_b32") {
+        const auto& reads = x_->res->waterfall.reads;
+        if (!inst.writes.empty() &&
+            std::find(reads.begin(), reads.end(), inst.writes.front().second) != reads.end()) {
+            const V a = src(inst, 0);
+            write_i(inst, a, guard_value);
+            return;
+        }
         const V a = src(inst, 0);
         s_.flags |= feature::kWaveOps;
-        const V r = s_.op(c, "waveReadLaneFirst.i32", Attr::NoUnwind, s_.t.i32, 118, {a});
+        V r = s_.op(c, "waveReadLaneFirst.i32", Attr::NoUnwind, s_.t.i32, 118, {a});
+        if (s_.pixel) {
+            const V helper = s_.op(c, "isHelperLane.i1", Attr::ReadOnly, s_.t.i1, 221, {});
+            r = s_.m.select(c, helper, a, r);
+        }
         write_i(inst, r, guard_value);
         return;
     }
@@ -727,15 +768,7 @@ V Lower::half_src(const IrInst& inst, std::size_t k) {
             fail("a byte select on a 16-bit operation");
         }
     }
-    V x;
-    if (src0_ && k == 0) {
-        x = *src0_;
-    } else if (const auto* constant = std::get_if<ConstantOperand>(&op);
-               constant && constant->code >= 240 && constant->code <= 248) {
-        x = s_.m.i32(kHalfConstants[constant->code - 240]);
-    } else {
-        x = operand(inst, op);
-    }
+    V x = (src0_ && k == 0) ? *src0_ : f16_operand(inst, op);
     const std::size_t c = cur_;
     if (high) {
         const V k16 = s_.m.i32(16);
@@ -850,8 +883,8 @@ void Lower::valu16_op(const IrInst& inst, std::string_view name, std::optional<V
         else if (name == "v_sub_f16") r = s_.m.bin(c, Bin::Sub, a, b);
         else if (name == "v_subrev_f16") r = s_.m.bin(c, Bin::Sub, b, a);
         else if (name == "v_mul_f16") r = s_.m.bin(c, Bin::Mul, a, b);
-        else if (name == "v_max_f16") r = binary(35, a, b);
-        else r = binary(36, a, b);
+        else if (name == "v_max_f16") r = max_min(true, a, b);
+        else r = max_min(false, a, b);
         float_result(r);
         return;
     }
@@ -881,11 +914,11 @@ void Lower::valu16_op(const IrInst& inst, std::string_view name, std::optional<V
             name == "v_mac_f16") {
             r = fmad(a, b, acc);
         } else if (name == "v_max3_f16") {
-            const V t = binary(35, a, b);
-            r = binary(35, t, acc);
+            const V t = max_min(true, a, b);
+            r = max_min(true, t, acc);
         } else if (name == "v_min3_f16") {
-            const V t = binary(36, a, b);
-            r = binary(36, t, acc);
+            const V t = max_min(false, a, b);
+            r = max_min(false, t, acc);
         } else {
             r = med3(a, b, acc);
         }
@@ -932,13 +965,26 @@ void Lower::valu16_op(const IrInst& inst, std::string_view name, std::optional<V
         float_result(r);
         return;
     }
+    if (name == "v_cvt_norm_i16_f16" || name == "v_cvt_norm_u16_f16") {
+        if (fields->clamp || fields->omod != 0) fail("modifiers on a 16-bit integer operation");
+        const V r = cvt_norm16(inst, name == "v_cvt_norm_i16_f16");
+        write_half(inst, r, guard_value);
+        return;
+    }
     if (fields->clamp || fields->omod != 0 || fields->abs != 0 || fields->neg != 0)
         fail("modifiers on a 16-bit integer operation");
     V r;
     if (name == "v_cvt_u16_f16" || name == "v_cvt_i16_f16") {
         const V a = half_fsrc(inst, 0);
-        const Cast op = name == "v_cvt_u16_f16" ? Cast::FpToUi : Cast::FpToSi;
-        r = s_.m.cast(c, op, a, i32t);
+        const bool is_unsigned = name == "v_cvt_u16_f16";
+        const V lo = s_.m.f32(std::bit_cast<std::uint32_t>(is_unsigned ? 0.0f : -32768.0f));
+        const V hi = s_.m.f32(std::bit_cast<std::uint32_t>(is_unsigned ? 65535.0f : 32767.0f));
+        V t = binary(35, a, lo);
+        t = binary(36, t, hi);
+        const V converted = s_.m.cast(c, Cast::FpToSi, t, i32t);
+        const V nan = s_.m.cmp(c, pred::kUno, a, a);
+        const V z = s_.m.i32(0);
+        r = s_.m.select(c, nan, z, converted);
     } else {
         V a = half_src(inst, 0);
         V b = half_src(inst, 1);
@@ -979,21 +1025,79 @@ void Lower::valu16_op(const IrInst& inst, std::string_view name, std::optional<V
     write_half(inst, r, guard_value);
 }
 
-V Lower::packed_src(const IrInst& inst, std::size_t k, bool high) {
+V Lower::cvt_norm16(const IrInst& inst, bool is_signed) {
+    const auto* fields = std::get_if<Valu>(&inst.fields);
+    if (fields == nullptr) std::abort();
+    const std::size_t c = cur_;
+    const auto k = [&](std::uint32_t x) { return s_.m.i32(x); };
+    V h = half_src(inst, 0);
+    if ((fields->abs & 1) != 0) {
+        const V m = k(0x7FFFu);
+        h = s_.m.bin(c, Bin::And, h, m);
+    }
+    if ((fields->neg & 1) != 0) {
+        const V m = k(0x8000u);
+        h = s_.m.bin(c, Bin::Xor, h, m);
+    }
+    const std::uint32_t scale = is_signed ? 0x7FFFu : 0xFFFFu;
+    const V zero = k(0);
+    const V one = k(1);
+    const V ten = k(10);
+    const V mag_mask = k(0x7FFFu);
+    const V mag = s_.m.bin(c, Bin::And, h, mag_mask);
+    const V fifteen = k(15);
+    const V sign = s_.m.bin(c, Bin::LShr, h, fifteen);
+    const V negative = s_.m.cmp(c, pred::kNe, sign, zero);
+    const V exponent = s_.m.bin(c, Bin::LShr, mag, ten);
+    const V man_mask = k(0x3FFu);
+    const V man = s_.m.bin(c, Bin::And, mag, man_mask);
+    const V implicit = k(0x400u);
+    const V normal = s_.m.bin(c, Bin::Or, man, implicit);
+    const V subnormal = s_.m.cmp(c, pred::kEq, exponent, zero);
+    const V m = s_.m.select(c, subnormal, man, normal);
+    const V twenty_five = k(25);
+    const V shift_normal = s_.m.bin(c, Bin::Sub, twenty_five, exponent);
+    const V twenty_four = k(24);
+    const V shift = s_.m.select(c, subnormal, twenty_four, shift_normal);
+    const V ks = k(scale);
+    const V product = s_.m.bin(c, Bin::Mul, m, ks);
+    const V q = s_.m.bin(c, Bin::LShr, product, shift);
+    const V one_shifted = s_.m.bin(c, Bin::Shl, one, shift);
+    const V low_mask = s_.m.bin(c, Bin::Sub, one_shifted, one);
+    const V rem = s_.m.bin(c, Bin::And, product, low_mask);
+    const V half = s_.m.bin(c, Bin::LShr, one_shifted, one);
+    const V above = s_.m.cmp(c, pred::kIugt, rem, half);
+    const V tie = s_.m.cmp(c, pred::kEq, rem, half);
+    const V odd = s_.m.bin(c, Bin::And, q, one);
+    const V odd_bit = s_.m.cmp(c, pred::kNe, odd, zero);
+    const V tie_up = s_.m.bin(c, Bin::And, tie, odd_bit);
+    const V up = s_.m.bin(c, Bin::Or, above, tie_up);
+    V r = s_.m.select(c, up, one, zero);
+    r = s_.m.bin(c, Bin::Add, q, r);
+    const V one_half = k(0x3C00u);
+    const V big = s_.m.cmp(c, pred::kIuge, mag, one_half);
+    r = s_.m.select(c, big, ks, r);
+    const V infinity = k(0x7C00u);
+    const V nan = s_.m.cmp(c, pred::kIugt, mag, infinity);
+    r = s_.m.select(c, nan, zero, r);
+    if (is_signed) {
+        const V negated = s_.m.bin(c, Bin::Sub, zero, r);
+        r = s_.m.select(c, negative, negated, r);
+    } else {
+        r = s_.m.select(c, negative, zero, r);
+    }
+    const V mask16 = k(0xFFFFu);
+    return s_.m.bin(c, Bin::And, r, mask16);
+}
+
+V Lower::packed_src(const IrInst& inst, std::size_t k, bool high, bool float16) {
     const auto* fields = std::get_if<Valu>(&inst.fields);
     if (fields == nullptr) std::abort();
     if (k >= fields->src.size()) fail("a missing operand");
     const Operand& op = fields->src[k];
     const std::uint8_t select = high ? fields->opsel_hi : fields->opsel;
     const bool choose_high = (select >> k & 1) != 0;
-    V x;
-    if (const auto* constant = std::get_if<ConstantOperand>(&op);
-        constant && constant->code >= 240 && constant->code <= 248) {
-        const std::uint32_t h = kHalfConstants[constant->code - 240];
-        x = s_.m.i32(h | h << 16);
-    } else {
-        x = operand(inst, op);
-    }
+    V x = float16 ? f16_operand(inst, op) : operand(inst, op);
     const std::size_t c = cur_;
     if (choose_high) {
         const V k16 = s_.m.i32(16);
@@ -1010,7 +1114,7 @@ void Lower::packed16(const IrInst& inst, std::string_view op, std::optional<V> g
     std::size_t n = 0;
     if (op == "fma_f16" || op == "mad_u16" || op == "mad_i16") {
         n = 3;
-    } else if (op == "add_f16" || op == "mul_f16" || op == "min_f16" || op == "max_f16" ||
+    } else if (op == "fmac_f16" || op == "add_f16" || op == "mul_f16" || op == "min_f16" || op == "max_f16" ||
                op == "add_u16" || op == "sub_u16" || op == "add_i16" || op == "sub_i16" ||
                op == "mul_lo_u16" || op == "lshlrev_b16" || op == "lshrrev_b16" ||
                op == "ashrrev_i16" || op == "max_u16" || op == "min_u16" || op == "max_i16" ||
@@ -1024,11 +1128,18 @@ void Lower::packed16(const IrInst& inst, std::string_view op, std::optional<V> g
     const std::size_t c = cur_;
     const Ty i32t = s_.t.i32;
     const Ty f32t = s_.t.f32;
+    std::optional<V> accumulator;
+    if (op == "fmac_f16") {
+        const auto* held = fields->dst ? std::get_if<VectorOperand>(&*fields->dst) : nullptr;
+        const std::optional<Value> before = held != nullptr ? inst.read(Reg::v(held->reg)) : std::nullopt;
+        if (!before) fail("an accumulator");
+        accumulator = i32_of(*before);
+    }
     std::vector<V> halves;
     for (bool high : {false, true}) {
         std::vector<V> xs;
         for (std::size_t k = 0; k < n; ++k) {
-            const V h = packed_src(inst, k, high);
+            const V h = packed_src(inst, k, high, is_float);
             if (is_float) {
                 V f = s_.op(c, "legacyF16ToF32", Attr::ReadNone, f32t, 131, {h});
                 const std::uint8_t neg = high ? fields->neg_hi : fields->neg;
@@ -1046,9 +1157,13 @@ void Lower::packed16(const IrInst& inst, std::string_view op, std::optional<V> g
             V f;
             if (op == "add_f16") f = s_.m.bin(c, Bin::Add, xs[0], xs[1]);
             else if (op == "mul_f16") f = s_.m.bin(c, Bin::Mul, xs[0], xs[1]);
-            else if (op == "min_f16") f = binary(36, xs[0], xs[1]);
-            else if (op == "max_f16") f = binary(35, xs[0], xs[1]);
-            else f = fmad(xs[0], xs[1], xs[2]);
+            else if (op == "min_f16") f = max_min(false, xs[0], xs[1]);
+            else if (op == "max_f16") f = max_min(true, xs[0], xs[1]);
+            else if (accumulator) {
+                const V shifted = high ? s_.m.bin(c, Bin::LShr, *accumulator, s_.m.i32(16)) : *accumulator;
+                const V half = s_.m.bin(c, Bin::And, shifted, s_.m.i32(0xFFFF));
+                f = fmad(xs[0], xs[1], s_.op(c, "legacyF16ToF32", Attr::ReadNone, f32t, 131, {half}));
+            } else f = fmad(xs[0], xs[1], xs[2]);
             if (fields->clamp) f = unary(7, f);
             r = s_.op(c, "legacyF32ToF16", Attr::ReadNone, i32t, 130, {f});
         } else {
@@ -1126,6 +1241,38 @@ V Lower::integer(const IrInst& inst, std::string_view name) {
             y = a;
         }
         return s_.m.bin(c, op, x, y);
+    }
+    if (name == "v_dot4c_i32_i8") {
+        constexpr std::uint32_t kDot4AddI8Packed = 163;
+        const V a = src(inst, 0);
+        const V b = src(inst, 1);
+        const auto* target = fields->dst ? std::get_if<VectorOperand>(&*fields->dst) : nullptr;
+        if (target == nullptr) fail("an accumulator");
+        const std::optional<Value> before = inst.read(Reg::v(target->reg));
+        if (!before) fail("an accumulator");
+        return s_.op(c, "dot4AddPacked.i32", Attr::ReadNone, s_.t.i32, kDot4AddI8Packed, {i32_of(*before), a, b});
+    }
+    if (name == "v_dot4_i32_i8") {
+        constexpr std::uint32_t kDot4AddI8Packed = 163;
+        constexpr std::uint32_t kHalfBits = 16;
+        constexpr std::uint32_t kLowHalf = 0xFFFF;
+        if (fields->clamp || fields->neg_hi != 0) fail("a saturating or negated dot product");
+        std::array<V, 2> packed{};
+        for (std::size_t n = 0; n < packed.size(); ++n) {
+            const V x = src(inst, n);
+            const bool low_from_top = (fields->opsel >> n & 1) != 0;
+            const bool high_from_top = (fields->opsel_hi >> n & 1) != 0;
+            if (!low_from_top && high_from_top) {
+                packed[n] = x;
+                continue;
+            }
+            const V top = s_.m.bin(c, Bin::LShr, x, k(kHalfBits));
+            const V bottom = s_.m.bin(c, Bin::And, x, k(kLowHalf));
+            const V high = s_.m.bin(c, Bin::Shl, high_from_top ? top : bottom, k(kHalfBits));
+            packed[n] = s_.m.bin(c, Bin::Or, low_from_top ? top : bottom, high);
+        }
+        return s_.op(c, "dot4AddPacked.i32", Attr::ReadNone, s_.t.i32, kDot4AddI8Packed,
+                     {src(inst, 2), packed[0], packed[1]});
     }
     if (name == "v_xnor_b32") {
         const V a = src(inst, 0);
@@ -1222,11 +1369,20 @@ V Lower::integer(const IrInst& inst, std::string_view name) {
         return mul_hi(a, b, name == "v_mul_hi_i32");
     }
     if (name == "v_alignbit_b32" || name == "v_alignbyte_b32") {
-        const V a = src(inst, 0);
-        const V b = src(inst, 1);
         const V sh = src(inst, 2);
+        const bool byte_shift = name == "v_alignbyte_b32";
+        std::optional<std::uint32_t> high_mask;
+        std::optional<std::uint32_t> low_mask;
+        if (const auto amount = s_.m.int_value(sh)) {
+            const auto value = static_cast<std::uint32_t>(*amount);
+            const std::uint32_t bits = byte_shift ? (value & 3u) * 8u : value & 31u;
+            high_mask = bits == 0 ? 0u : UINT32_MAX >> (32u - bits);
+            low_mask = UINT32_MAX << bits;
+        }
+        const V a = src(inst, 0, high_mask);
+        const V b = src(inst, 1, low_mask);
         V shift;
-        if (name == "v_alignbyte_b32") {
+        if (byte_shift) {
             const V three = k(3);
             const V t = s_.m.bin(c, Bin::And, sh, three);
             shift = s_.m.bin(c, Bin::Shl, t, k(3));
@@ -1358,24 +1514,22 @@ V Lower::integer(const IrInst& inst, std::string_view name) {
         const V a = src(inst, 0);
         const V b = src(inst, 1);
         const V sv = src(inst, 2);
-        const Ty i64t = s_.m.int_type(64);
-        s_.flags |= feature::kInt64;
-        const V wa = s_.m.cast(c, Cast::ZExt, a, i64t);
-        const V wb = s_.m.cast(c, Cast::ZExt, b, i64t);
-        const V k32 = s_.m.int_const(i64t, 32);
-        const V wa_up = s_.m.bin(c, Bin::Shl, wa, k32);
-        const V both = s_.m.bin(c, Bin::Or, wa_up, wb);
         V r = k(0);
         for (std::uint32_t i = 0; i < 4; ++i) {
             const V sh = k(8 * i);
             const V ff = k(0xFF);
             V selector_byte = s_.m.bin(c, Bin::LShr, sv, sh);
             selector_byte = s_.m.bin(c, Bin::And, selector_byte, ff);
-            const V bits = s_.m.bin(c, Bin::Shl, selector_byte, k(3));
-            const V bits64 = s_.m.cast(c, Cast::ZExt, bits, i64t);
-            const V x = s_.m.bin(c, Bin::LShr, both, bits64);
-            const V truncated = s_.m.cast(c, Cast::Trunc, x, s_.t.i32);
-            V byte = s_.m.bin(c, Bin::And, truncated, ff);
+            const V four = k(4);
+            const V zero_bits = k(0);
+            const V high_bit = s_.m.bin(c, Bin::And, selector_byte, four);
+            const V high = s_.m.cmp(c, pred::kNe, high_bit, zero_bits);
+            const V word = s_.m.select(c, high, a, b);
+            const V three = k(3);
+            const V index_bits = s_.m.bin(c, Bin::And, selector_byte, three);
+            const V bits = s_.m.bin(c, Bin::Shl, index_bits, three);
+            const V x = s_.m.bin(c, Bin::LShr, word, bits);
+            V byte = s_.m.bin(c, Bin::And, x, ff);
             const std::array<std::tuple<std::uint32_t, V, std::uint32_t>, 4> signs = {
                 std::tuple<std::uint32_t, V, std::uint32_t>{8, b, 15},
                 std::tuple<std::uint32_t, V, std::uint32_t>{9, b, 31},
@@ -1568,6 +1722,13 @@ void Lower::compare(const IrInst& inst, std::string_view rest) {
         }
         std::uint8_t p = 0;
         bool known = true;
+        if (op == "lg") {
+            const V lt = s_.m.cmp(c, pred::kOlt, a, b);
+            const V gt = s_.m.cmp(c, pred::kOgt, a, b);
+            r = s_.m.bin(c, Bin::Or, lt, gt);
+            lane_bits_for(inst, r);
+            return;
+        }
         if (op == "f") p = pred::kFalse;
         else if (op == "lt") p = pred::kOlt;
         else if (op == "eq") p = pred::kOeq;

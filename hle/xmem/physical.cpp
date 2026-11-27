@@ -267,6 +267,31 @@ bool find_physical_mapping(std::size_t address, PhysicalMapping* mapping) {
     return true;
 }
 
+bool find_stretch(std::size_t address, std::size_t bytes, HANDLE* section, std::uint64_t* offset) {
+    if (section == nullptr || offset == nullptr || bytes == 0) return false;
+    std::lock_guard<std::mutex> lock(physical_mutex());
+    const Physical& physical = physical_state();
+    const auto first = containing_slice(physical, address);
+    if (!first) return false;
+    const std::uint64_t start = static_cast<std::uint64_t>(first->index) * kPageBytes + address % kPageBytes;
+    std::size_t at = address;
+    const std::size_t end = address + bytes;
+    while (at < end) {
+        auto it = physical.views.upper_bound(at);
+        if (it == physical.views.begin()) return false;
+        --it;
+        const std::size_t view_end = it->first + it->second.bytes;
+        if (at >= view_end || it->second.slice.section != first->section) return false;
+        const std::uint64_t here =
+            static_cast<std::uint64_t>(it->second.slice.index) * kPageBytes + (at - it->first);
+        if (here != start + (at - address)) return false;
+        at = view_end;
+    }
+    *section = first->section->handle;
+    *offset = start;
+    return true;
+}
+
 bool page_runs(const std::size_t* pages, std::size_t count, std::size_t offset, std::size_t bytes,
                std::vector<PageRun>* out) {
     if (out == nullptr) return false;
@@ -436,4 +461,13 @@ extern "C" void* WINAPI g6shim_XMemMapPhysicalPages(void* address, SIZE_T n, con
 extern "C" BOOL WINAPI g6shim_XMemMapPhysicalPagesScatter(void* const* addresses, SIZE_T n,
                                                           const SIZE_T* pages) {
     return map_physical_pages_scatter(addresses, n, pages);
+}
+
+extern "C" BOOL WINAPI g6shim_xmem_map_alias(std::uintptr_t to, std::uintptr_t from, std::size_t bytes) {
+    return map_alias(to, from, bytes) ? TRUE : FALSE;
+}
+
+extern "C" BOOL WINAPI g6shim_xmem_find_stretch(std::uintptr_t address, std::size_t bytes, HANDLE* section,
+                                                std::uint64_t* offset) {
+    return find_stretch(address, bytes, section, offset) ? TRUE : FALSE;
 }

@@ -24,12 +24,12 @@
 <rect x="183" y="28" width="8" height="8" fill="#2ea043"/>
 </g>
 <text x="14" y="47">d3d12_xs.dll</text>
-<text x="137" y="47" text-anchor="end">0/4</text>
+<text x="137" y="47" text-anchor="end">4/4</text>
 <g shape-rendering="crispEdges">
-<rect x="147" y="40" width="8" height="8" fill="#d29922"/>
-<rect x="156" y="40" width="8" height="8" fill="#d29922"/>
-<rect x="165" y="40" width="8" height="8" fill="#d29922"/>
-<rect x="174" y="40" width="8" height="8" fill="#d29922"/>
+<rect x="147" y="40" width="8" height="8" fill="#2ea043"/>
+<rect x="156" y="40" width="8" height="8" fill="#2ea043"/>
+<rect x="165" y="40" width="8" height="8" fill="#2ea043"/>
+<rect x="174" y="40" width="8" height="8" fill="#2ea043"/>
 </g>
 <text x="14" y="59">xapu.dll</text>
 <text x="137" y="59" text-anchor="end">5/5</text>

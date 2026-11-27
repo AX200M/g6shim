@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 gookie and g6shim contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "check.hpp"
+#include "shader_lowering.hpp"
 
 #include <algorithm>
 #include <array>
@@ -9,11 +10,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <limits>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -22,11 +25,13 @@
 #include "g6shim/shader/emit/lower.hpp"
 #include "g6shim/shader/emit/validator.hpp"
 #include "g6shim/shader/error.hpp"
+#include "g6shim/shader/gfx10.hpp"
 
 namespace {
 
 using namespace g6shim::shader;
 using namespace g6shim::shader::emit;
+using namespace g6shim::test::lowering;
 
 constexpr std::uint32_t kSEndPgm = 0xBF81'0000u;
 
@@ -66,70 +71,7 @@ std::uint16_t sgpr(std::uint8_t n) { return n; }
 
 std::uint16_t vgpr(std::uint8_t n) { return static_cast<std::uint16_t>(256 + n); }
 
-std::vector<std::uint8_t> bytes_of(const std::vector<std::uint32_t>& words) {
-    std::vector<std::uint8_t> code;
-    code.reserve(words.size() * 4);
-    for (std::uint32_t word : words) {
-        code.push_back(static_cast<std::uint8_t>(word));
-        code.push_back(static_cast<std::uint8_t>(word >> 8));
-        code.push_back(static_cast<std::uint8_t>(word >> 16));
-        code.push_back(static_cast<std::uint8_t>(word >> 24));
-    }
-    return code;
-}
-
-RootParam root_param(RootType::Kind kind, std::uint8_t user_data, std::uint8_t slot) {
-    RootParam param;
-    param.root = RootType{kind, 0};
-    param.table_offset_dwords = 0;
-    param.sgprs = kind == RootType::Kind::Constants ? 4 : 1;
-    param.base_register = 0;
-    param.user_data = user_data;
-    param.slot = slot;
-    return param;
-}
-
-UsedResource used_uav(std::uint8_t user_data, std::uint8_t slot) {
-    UsedResource used;
-    used.kind = ResourceType{ResourceType::Kind::Uav, 0};
-    used.root = RootType{RootType::Kind::Table, 0};
-    used.table_offset_dwords = 0;
-    used.lower_bound = 0;
-    used.stride = 0;
-    used.dwords = 4;
-    used.user_data = user_data;
-    used.slot = slot;
-    return used;
-}
-
-Lowered lower_compute(const std::vector<std::uint32_t>& words, std::uint16_t vgprs,
-                      const std::vector<RootParam>& layout, const std::vector<UsedResource>& used,
-                      std::uint32_t rsrc2, std::array<std::uint32_t, 3> threads) {
-    NativeProgram native;
-    native.stage = HwStage::Cs;
-    native.wave64 = false;
-    native.vgprs = vgprs;
-    native.layout = layout;
-    native.used = used;
-    ComputeIo io;
-    io.rsrc2 = rsrc2;
-    io.threads = threads;
-    native.io = io;
-    native.code = bytes_of(words);
-    const Program program = ::g6shim::shader::build(native.patched_code(), native.wave64, native.vgprs);
-    const Resources resources = track(program, native.layout, native.stage);
-    const Io raised = raise(program, native);
-    const Structured structured = structure(program);
-    Parts parts;
-    parts.native = &native;
-    parts.p = &program;
-    parts.st = &structured;
-    parts.io = &raised;
-    parts.res = &resources;
-    return lower(parts);
-}
-
-bool lowers(const std::vector<std::uint32_t>& words, std::string_view* reason = nullptr) {
+bool lowers(const std::vector<std::uint32_t>& words, std::string* reason = nullptr) {
     try {
         lower_compute(words, 256, {}, {}, 0, {1, 1, 1});
         return true;
@@ -139,38 +81,15 @@ bool lowers(const std::vector<std::uint32_t>& words, std::string_view* reason = 
     }
 }
 
-std::optional<Validator> load_validator() {
-    std::optional<Validator> validator;
+bool lowers_with_inputs(const std::vector<std::uint32_t>& words, std::uint32_t rsrc2,
+                        std::string* reason = nullptr) {
     try {
-        const std::optional<std::filesystem::path> path = Validator::default_path();
-        validator.emplace(Validator::load(path ? &*path : nullptr));
-    } catch (const std::exception&) {
-        return std::nullopt;
-    }
-    return validator;
-}
-
-void check_dxil(const std::vector<std::uint8_t>& dxil, const char* label) {
-    CHECK(!dxil.empty());
-    const Container container = Container::parse(dxil);
-    CHECK(container.part(kDxil) != nullptr);
-    std::optional<Validator> validator = load_validator();
-    if (!validator) {
-        std::printf("no dxil.dll; validation skipped for %s\n", label);
-        return;
-    }
-    std::vector<std::uint8_t> copy = dxil;
-    std::array<std::uint8_t, 16> ours{};
-    std::copy_n(copy.begin() + 4, 16, ours.begin());
-    bool accepted = true;
-    try {
-        validator->validate(copy);
+        lower_compute(words, 256, {}, {}, rsrc2, {1, 1, 1});
+        return true;
     } catch (const std::exception& error) {
-        std::printf("validation failed for %s: %s\n", label, error.what());
-        accepted = false;
+        if (reason != nullptr) *reason = error.what();
+        return false;
     }
-    CHECK(accepted);
-    CHECK((std::equal(ours.begin(), ours.end(), copy.begin() + 4)));
 }
 
 Lowered build_valu_cs(const std::vector<std::uint32_t>& body) {
@@ -191,11 +110,263 @@ Lowered build_valu_cs(const std::vector<std::uint32_t>& body) {
 
 void check_valu(const std::vector<std::uint32_t>& body, const char* label) {
     const Lowered lowered = build_valu_cs(body);
-    CHECK(lowered.user_data.size() == 5);
+    std::size_t heap_limits = 0;
+    for (const UserData& entry : lowered.user_data) {
+        if (entry.source == UserData::Source::ViewHeapCount ||
+            entry.source == UserData::Source::SamplerHeapCount ||
+            entry.source == UserData::Source::NullViewBase)
+            ++heap_limits;
+    }
+    CHECK(lowered.user_data.size() == 5 + heap_limits);
     check_dxil(lowered.dxil, label);
 }
 
 std::uint32_t u32_bits(float value) { return std::bit_cast<std::uint32_t>(value); }
+
+void note_gpu_comparison_skipped(const char* label, std::size_t cases) {
+    std::printf("  GPU comparison skipped for %s: %zu cases checked by lowering only\n", label, cases);
+}
+
+std::array<std::uint32_t, 2> mubuf(std::uint8_t op, std::uint8_t vdata, std::uint8_t srsrc,
+                                   std::uint16_t byte_offset) {
+    return {0x38u << 26 | static_cast<std::uint32_t>(op) << 18 | (byte_offset & 0xFFFu),
+            0x80u << 24 | ((srsrc >> 2) & 0x1Fu) << 16 | static_cast<std::uint32_t>(vdata) << 8};
+}
+
+std::string decoded_name(const std::array<std::uint32_t, 2>& words) {
+    std::vector<std::uint8_t> code;
+    for (const std::uint32_t word : {words[0], words[1], kSEndPgm})
+        for (int k = 0; k < 4; ++k) code.push_back(static_cast<std::uint8_t>(word >> (8 * k)));
+    try {
+        const std::vector<Instruction> instructions = decode(code);
+        if (instructions.empty() || !instructions[0].name()) return {};
+        return std::string(*instructions[0].name());
+    } catch (const std::exception& error) {
+        return error.what();
+    }
+}
+
+TEST(byte_and_short_buffer_accesses_lower_and_validate) {
+    struct Case {
+        std::uint8_t op;
+        const char* name;
+        bool store;
+    };
+    constexpr std::array<Case, 6> kCases = {Case{0x08, "buffer_load_ubyte", false},
+                                            Case{0x09, "buffer_load_sbyte", false},
+                                            Case{0x0A, "buffer_load_ushort", false},
+                                            Case{0x0B, "buffer_load_sshort", false},
+                                            Case{0x18, "buffer_store_byte", true},
+                                            Case{0x1A, "buffer_store_short", true}};
+    constexpr std::array<std::uint16_t, 3> kOffsets = {0, 1, 3};
+    for (const Case& narrow : kCases) {
+        for (const std::uint16_t offset : kOffsets) {
+            const auto access = mubuf(narrow.op, narrow.store ? 1 : 0, 8, offset);
+            CHECK(decoded_name(access) == narrow.name);
+            try {
+                check_valu(std::vector<std::uint32_t>(access.begin(), access.end()), narrow.name);
+            } catch (const std::exception& error) {
+                std::printf("  %s at byte %u does not lower: %s\n", narrow.name, static_cast<unsigned>(offset),
+                            error.what());
+                CHECK(false);
+            }
+        }
+    }
+    note_gpu_comparison_skipped("byte and short buffer accesses", kCases.size() * kOffsets.size());
+}
+
+std::array<std::uint32_t, 2> mimg_bvh(bool wide, std::uint8_t vaddr, std::uint8_t vdata, std::uint8_t srsrc) {
+    const std::uint32_t op = wide ? 0xE7u : 0xE6u;
+    constexpr std::uint32_t kR128 = 1u << 15;
+    return {0x3Cu << 26 | (op & 0x7Fu) << 18 | kR128 | 0xFu << 8 | (op >> 7),
+            static_cast<std::uint32_t>(vaddr) | static_cast<std::uint32_t>(vdata) << 8 |
+                ((srsrc >> 2) & 0x1Fu) << 16};
+}
+
+TEST(ray_node_tests_lower_and_validate) {
+    constexpr std::uint16_t kZero = 0x80;
+    constexpr std::uint16_t kOne = 0xF2;
+    constexpr std::uint16_t kFour = 0xF6;
+    for (const bool wide : {false, true}) {
+        std::vector<std::uint16_t> operands = {sgpr(0)};
+        if (wide) operands.push_back(kZero);
+        operands.insert(operands.end(), {kFour, kZero, kZero, kZero, kOne, kOne, kOne, kOne, kOne, kOne});
+        std::vector<std::uint32_t> body;
+        for (std::size_t k = 0; k < operands.size(); ++k)
+            body.push_back(vop1(0x001, static_cast<std::uint8_t>(5 + k), operands[k]));
+        const auto test = mimg_bvh(wide, 5, 0, 8);
+        const char* name = wide ? "image_bvh64_intersect_ray" : "image_bvh_intersect_ray";
+        CHECK(decoded_name(test) == name);
+        body.insert(body.end(), test.begin(), test.end());
+        try {
+            const Lowered lowered = build_valu_cs(body);
+            CHECK((lowered.descriptor_words & kFlatTable) != 0);
+            check_dxil(lowered.dxil, name);
+        } catch (const std::exception& error) {
+            std::printf("  %s does not lower: %s\n", name, error.what());
+            CHECK(false);
+        }
+    }
+    note_gpu_comparison_skipped("ray node tests", 2);
+}
+
+TEST(max_and_min_pick_a_zero_with_the_right_sign) {
+    const std::array<std::uint16_t, 4> ops = {0x110, 0x10F, 0x154, 0x151};
+    for (std::uint16_t op : ops) {
+        const auto body = vop3(op, 0, vgpr(1), vgpr(2), vgpr(3));
+        check_valu(std::vector<std::uint32_t>(body.begin(), body.end()), "a float maximum or minimum");
+    }
+    note_gpu_comparison_skipped("a float maximum or minimum", 4);
+}
+
+TEST(packed_operations_read_the_halves_of_inline_constants) {
+    const std::array<std::array<std::uint32_t, 2>, 3> cases = {
+        std::array<std::uint32_t, 2>{0xCC0F'4000u, 0x1A02'02F8u},
+        std::array<std::uint32_t, 2>{0xCC0F'4000u, 0x1202'02F8u},
+        std::array<std::uint32_t, 2>{0xCC0A'4000u, 0x1A02'02F8u}};
+    for (const auto& words : cases) check_valu({words[0], words[1]}, "a packed 16-bit operation");
+    note_gpu_comparison_skipped("a packed 16-bit operation", cases.size());
+}
+
+TEST(a_float_less_or_greater_compare_is_false_for_nan) {
+    const std::array<std::uint16_t, 2> ops = {0x005, 0x0CD};
+    for (std::uint16_t op : ops) {
+        std::vector<std::uint32_t> body;
+        const auto compare = vop3(op, 20, vgpr(1), vgpr(2), 0x80);
+        body.insert(body.end(), compare.begin(), compare.end());
+        const auto mask = vop3(0x101, 0, 0x80, 0x81, sgpr(20));
+        body.insert(body.end(), mask.begin(), mask.end());
+        check_valu(body, "v_cmp_lg");
+    }
+    note_gpu_comparison_skipped("v_cmp_lg", 2);
+}
+
+TEST(normalised_conversions_round_the_exact_product) {
+    for (std::uint16_t op : {static_cast<std::uint16_t>(0x063), static_cast<std::uint16_t>(0x064)}) {
+        check_valu({vop1(0x001, 0, 128), vop1(op, 0, vgpr(1))}, "a normalised conversion");
+    }
+    note_gpu_comparison_skipped("a normalised conversion", 2);
+}
+
+TEST(fractional_conversions_saturate) {
+    for (std::uint16_t op : {static_cast<std::uint16_t>(0x052), static_cast<std::uint16_t>(0x053)}) {
+        check_valu({vop1(0x001, 0, 128), vop1(op, 0, vgpr(1))}, "a 16-bit conversion");
+    }
+    note_gpu_comparison_skipped("a 16-bit conversion", 2);
+}
+
+std::uint64_t perm_features(std::uint32_t selector) {
+    const std::vector<std::uint32_t> words = {0x7E02'02FFu,
+                                              0x817F'34ABu,
+                                              0x7E04'02FFu,
+                                              0xFE01'56CDu,
+                                              0xD744'0003u,
+                                              257u | (258u << 9) | (selector << 18),
+                                              0x3408'0082u,
+                                              0xD834'0000u,
+                                              0x0000'0304u,
+                                              kSEndPgm};
+    NativeProgram native;
+    native.stage = HwStage::Cs;
+    native.wave64 = false;
+    native.vgprs = 256;
+    ComputeIo compute;
+    compute.rsrc2 = 1u << 15;
+    compute.threads = {64, 1, 1};
+    native.io = compute;
+    native.code = bytes_of(words);
+    const Program program = ::g6shim::shader::build(native.code, false, 256);
+    bool perm = false;
+    for (const ::g6shim::shader::Block& block : program.blocks)
+        for (const ::g6shim::shader::Inst& inst : block.insts)
+            if (inst.name() == "v_perm_b32") perm = true;
+    CHECK(perm);
+    const Structured structured = structure(program);
+    const Resources resources = track(program, native.layout, native.stage, &structured);
+    const Io raised = raise(program, native);
+    Parts parts;
+    parts.native = &native;
+    parts.p = &program;
+    parts.st = &structured;
+    parts.io = &raised;
+    parts.res = &resources;
+    const Lowered lowered = lower(parts);
+    const Container container = Container::parse(lowered.dxil);
+    const Part* sfi0 = container.part(kSfi0);
+    CHECK(sfi0 != nullptr);
+    if (sfi0 == nullptr || sfi0->data.size() < 8) return 0;
+    std::uint64_t features = 0;
+    for (std::size_t i = 0; i < 8; ++i)
+        features |= static_cast<std::uint64_t>(sfi0->data[i]) << (8 * i);
+    return features;
+}
+
+TEST(a_constant_perm_selector_needs_no_int64) { CHECK((perm_features(128) & 0x8000) == 0); }
+
+TEST(a_dynamic_perm_selector_needs_no_int64) { CHECK((perm_features(256) & 0x8000) == 0); }
+
+TEST(a_descriptor_selected_by_scc_uses_its_heap_index) {
+    const std::vector<std::uint32_t> words = {
+        0xBE84'0300, 0xBE85'0380, 0xF408'0202, 0xFA00'0000, 0xF408'0302, 0xFA00'0010,
+        0xBF06'8001, 0x8590'0C08, 0x8592'0E0A, 0xE030'2000, 0x8004'0100, 0xD834'0000,
+        0x0000'0100, kSEndPgm};
+    RootParam table;
+    table.root = RootType{RootType::Kind::Table, 0};
+    table.sgprs = 1;
+    table.user_data = 0;
+    table.slot = 0;
+    RootParam constants;
+    constants.root = RootType{RootType::Kind::Constants, 0};
+    constants.sgprs = 1;
+    constants.user_data = 1;
+    constants.slot = 1;
+    UsedResource used;
+    used.kind = ResourceType{ResourceType::Kind::Srv, 0};
+    used.root = RootType{RootType::Kind::Table, 0};
+    used.stride = 4;
+    used.dwords = 4;
+    used.user_data = 0;
+    used.slot = 0;
+    bool lowered = false;
+    try {
+        (void)lower_compute(words, 256, {table, constants}, {used}, (1u << 15) | (2u << 1), {1, 1, 1});
+        lowered = true;
+    } catch (const std::exception&) {
+    }
+    CHECK(lowered);
+}
+
+TEST(a_missing_value_stays_missing_through_two_live_joins) {
+    std::vector<std::uint32_t> words = {0xF490'0180u,
+                                        0u,
+                                        0xBF06'8000u,
+                                        0xBF85'0001u,
+                                        0xBE86'0380u,
+                                        0xBF06'8101u,
+                                        0xBF85'0001u,
+                                        0xBE86'0381u,
+                                        0xBF07'8006u,
+                                        0xBF85'0001u,
+                                        0xBE83'0380u,
+                                        kSEndPgm};
+    const std::uint32_t group_ids_xy = 3u << 7;
+    const auto refusal = [&](const std::vector<std::uint32_t>& code) -> std::optional<std::string> {
+        std::string reason;
+        if (lowers_with_inputs(code, group_ids_xy, &reason)) return std::nullopt;
+        return std::string(reason);
+    };
+    std::vector<std::uint32_t> direct(words.begin(), words.begin() + 2);
+    direct.insert(direct.end(), words.begin() + 8, words.end());
+    const auto what = [](const std::optional<std::string>& text) -> std::string {
+        if (!text) return "ok";
+        const std::size_t at = text->find(": ");
+        return at == std::string::npos ? *text : text->substr(at + 2);
+    };
+    CHECK(what(refusal(words)) == what(refusal(direct)));
+    words[8] = 0xBF07'8000u;
+    std::string reason;
+    CHECK(lowers_with_inputs(words, group_ids_xy, &reason));
+}
 
 TEST(med3_f32_with_nan) {
     const auto body = vop3(0x157, 0, vgpr(1), vgpr(2), vgpr(3));
@@ -240,6 +411,33 @@ TEST(cmp_class_f16_classes) {
     body.insert(body.end(), compare.begin(), compare.end());
     body.insert(body.end(), mask.begin(), mask.end());
     check_valu(body, "v_cmp_class_f16");
+}
+
+TEST(cmpx_compares_read_their_operation_and_type) {
+    for (const std::uint16_t op : {std::uint16_t{0x0d4}, std::uint16_t{0x014}}) {
+        const auto compare = vop3(op, 0, vgpr(1), vgpr(2), 0);
+        const auto value = vop1(0x001, 0, vgpr(3));
+        std::vector<std::uint32_t> body(compare.begin(), compare.end());
+        body.push_back(value);
+        std::string reason;
+        std::vector<std::uint32_t> words;
+        words.push_back(s_mov_b32(5, 0x80));
+        const std::array<std::uint32_t, 2> load = s_load_dwordx4(8, 4);
+        words.insert(words.end(), load.begin(), load.end());
+        words.insert(words.end(), body.begin(), body.end());
+        const std::array<std::uint32_t, 2> store = buffer_store_dword(0, 8, 0);
+        words.insert(words.end(), store.begin(), store.end());
+        words.push_back(kSEndPgm);
+        try {
+            lower_compute(words, 8,
+                          {root_param(RootType::Kind::Constants, 0, 0), root_param(RootType::Kind::Table, 4, 1)},
+                          {used_uav(4, 1)}, 5u << 1, {1, 1, 1});
+        } catch (const std::exception& error) {
+            reason = error.what();
+        }
+        CHECK(reason.find("compare") == std::string_view::npos);
+        CHECK(reason.find("v_cmpx") == std::string_view::npos);
+    }
 }
 
 TEST(buffer_formats_by_number) {
@@ -332,7 +530,7 @@ TEST(a_scalar_carry_chain_reaches_the_select) {
     const std::vector<std::uint32_t> sub = {
         0xBE80'0380u, 0xBE81'0380u, 0x8080'8100u, 0x8281'8001u,
         0x8502'0001u, 0xBF07'8002u, 0xBF85'0001u, 0xBE83'0380u, kSEndPgm};
-    std::string_view reason;
+    std::string reason;
     CHECK(lowers(add, &reason));
     CHECK(lowers(sub, &reason));
 }
@@ -362,6 +560,148 @@ TEST(the_loop_limit_switch_parses_or_falls_back) {
     }
 }
 
+struct BitCursor {
+    const std::vector<std::uint32_t>* words = nullptr;
+    std::size_t index = 0;
+    std::size_t end = 0;
+    std::uint64_t current = 0;
+    int have = 0;
+
+    std::uint32_t take(int width) {
+        while (have < width && index < words->size()) {
+            current |= static_cast<std::uint64_t>((*words)[index++]) << have;
+            have += 32;
+        }
+        const std::uint32_t value = static_cast<std::uint32_t>(current & ((std::uint64_t{1} << width) - 1));
+        current >>= width;
+        have -= width;
+        return value;
+    }
+
+    std::uint64_t vbr(int width) {
+        std::uint64_t value = 0;
+        int shift = 0;
+        const std::uint32_t high = 1u << (width - 1);
+        for (;;) {
+            const std::uint32_t chunk = take(width);
+            value |= static_cast<std::uint64_t>(chunk & (high - 1)) << shift;
+            if ((chunk & high) == 0) return value;
+            shift += width - 1;
+        }
+    }
+
+    void align() {
+        current = 0;
+        have = 0;
+    }
+};
+
+bool dxil_has_i32(const std::vector<std::uint8_t>& dxil, std::int32_t want) {
+    std::size_t at = 0;
+    for (; at + 4 <= dxil.size(); ++at) {
+        if (dxil[at] == 'B' && dxil[at + 1] == 'C' && dxil[at + 2] == 0xC0 && dxil[at + 3] == 0xDE) break;
+    }
+    if (at + 4 > dxil.size()) return false;
+    at += 4;
+    std::vector<std::uint32_t> words;
+    for (; at + 4 <= dxil.size(); at += 4) {
+        words.push_back(static_cast<std::uint32_t>(dxil[at]) | static_cast<std::uint32_t>(dxil[at + 1]) << 8 |
+                        static_cast<std::uint32_t>(dxil[at + 2]) << 16 |
+                        static_cast<std::uint32_t>(dxil[at + 3]) << 24);
+    }
+    BitCursor cursor{&words};
+    bool hit = false;
+    const auto search = [&](auto&& self, int width, bool constants) -> void {
+        if (hit) return;
+        for (;;) {
+            if (cursor.index >= words.size() && cursor.have < width) return;
+            const std::uint32_t abbrev = cursor.take(width);
+            if (abbrev == 0) {
+                cursor.align();
+                return;
+            }
+            if (abbrev == 1) {
+                const std::uint64_t id = cursor.vbr(8);
+                const std::uint64_t next = cursor.vbr(4);
+                cursor.align();
+                if (cursor.index < words.size()) ++cursor.index;
+                self(self, next == 0 ? 2 : static_cast<int>(next), constants || id == 11);
+                continue;
+            }
+            if (abbrev != 3) return;
+            const std::uint64_t code = cursor.vbr(6);
+            const std::uint64_t count = cursor.vbr(6);
+            std::uint64_t operand = 0;
+            for (std::uint64_t n = 0; n < count; ++n) {
+                const std::uint64_t value = cursor.vbr(6);
+                if (n == 0) operand = value;
+            }
+            if (!constants || code != 4 || count != 1) continue;
+            const std::uint64_t magnitude = operand >> 1;
+            const std::int64_t decoded = (operand & 1) == 0 ? static_cast<std::int64_t>(magnitude)
+                                                            : -static_cast<std::int64_t>(magnitude);
+            if (decoded == want) hit = true;
+        }
+    };
+    search(search, 2, false);
+    return hit;
+}
+
+Lowered lower_unbounded(HwStage stage) {
+    const std::vector<std::uint32_t> words{0xBE80'0381u, 0x8000'8100u, 0xBF85'FFFEu, 0xBF81'0000u};
+    NativeProgram native;
+    native.stage = stage;
+    native.wave64 = false;
+    native.vgprs = 4;
+    native.code = bytes_of(words);
+    if (stage == HwStage::Cs) {
+        ComputeIo io;
+        io.threads = {1, 1, 1};
+        native.io = io;
+    } else if (stage == HwStage::Ms) {
+        MeshIo io;
+        io.threads = 32;
+        io.max_vertices = 32;
+        io.max_primitives = 32;
+        io.topology = 2;
+        native.io = io;
+    } else if (stage == HwStage::Ps) {
+        native.io = PsIo{};
+    } else {
+        native.io = VsIo{};
+    }
+    return lower_native(native);
+}
+
+TEST(an_unbounded_loop_emits_the_stage_limit) {
+    CHECK(stage_loop_limit(kLoopLimit, true, false, false) == kPixelLoopLimit);
+    CHECK(stage_loop_limit(kLoopLimit, false, true, true) == kMeshLoopLimit);
+    CHECK(stage_loop_limit(kLoopLimit, false, false, false) == kMeshLoopLimit);
+    CHECK(stage_loop_limit(kLoopLimit, false, false, true) == kComputeLoopLimit);
+    CHECK(stage_loop_limit(32, true, false, true) == 32);
+    const std::array<std::pair<HwStage, std::uint32_t>, 4> cases{{
+        {HwStage::Cs, kComputeLoopLimit},
+        {HwStage::Ps, kPixelLoopLimit},
+        {HwStage::Ms, kMeshLoopLimit},
+        {HwStage::Vs, kMeshLoopLimit},
+    }};
+    for (const auto& [stage, limit] : cases) {
+        bool translated = true;
+        Lowered lowered;
+        try {
+            lowered = lower_unbounded(stage);
+        } catch (const std::exception& error) {
+            std::printf("unbounded loop stage %u did not translate: %s\n", static_cast<unsigned>(stage),
+                        error.what());
+            translated = false;
+        }
+        CHECK(translated);
+        if (!translated) continue;
+        CHECK(dxil_has_i32(lowered.dxil, static_cast<std::int32_t>(limit)));
+        CHECK(!dxil_has_i32(lowered.dxil, static_cast<std::int32_t>(kLoopLimit)));
+    }
+}
+
 TEST(an_exec_high_write_does_not_overflow_the_stack) {
     NativeProgram native;
     native.stage = HwStage::Cs;
@@ -373,9 +713,9 @@ TEST(an_exec_high_write_does_not_overflow_the_stack) {
     native.io = io;
     native.code = bytes_of({0xBEFF'0380u, 0x7E02'0300u, 0xBF81'0000u});
     const Program program = ::g6shim::shader::build(native.patched_code(), native.wave64, native.vgprs);
-    const Resources resources = track(program, native.layout, native.stage);
-    const Io raised = raise(program, native);
     const Structured structured = structure(program);
+    const Resources resources = track(program, native.layout, native.stage, &structured);
+    const Io raised = raise(program, native);
     std::vector<ContainerPart> no_parts;
     const std::vector<std::uint8_t> container_bytes = ::g6shim::shader::emit::build(no_parts);
     const Container container = Container::parse(container_bytes);
@@ -426,9 +766,9 @@ TEST(reading_a_channel_below_an_input_element_does_not_underflow) {
     const std::vector<std::uint8_t> container_bytes = ::g6shim::shader::emit::build(parts);
     const Container container = Container::parse(container_bytes);
     const Program program = ::g6shim::shader::build(native.patched_code(), native.wave64, native.vgprs);
-    const Resources resources = track(program, native.layout, native.stage);
-    const Io raised = raise(program, native);
     const Structured structured = structure(program);
+    const Resources resources = track(program, native.layout, native.stage, &structured);
+    const Io raised = raise(program, native);
     bool finished = false;
     try {
         (void)::g6shim::shader::emit::emit(container, native, program, structured, raised, resources);

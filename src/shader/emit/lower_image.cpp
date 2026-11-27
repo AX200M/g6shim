@@ -14,15 +14,47 @@
 #include "lower_internal.hpp"
 
 namespace g6shim::shader::emit {
+namespace {
+
+constexpr std::uint32_t kAddressWrap = 1;
+constexpr std::uint32_t kAddressMirror = 2;
+constexpr std::uint32_t kAddressClamp = 3;
+constexpr std::uint32_t kAddressBorder = 4;
+constexpr std::uint32_t kAddressMirrorOnce = 5;
+constexpr std::uint32_t kBorderOpaqueBlack = 1;
+constexpr std::uint32_t kBorderOpaqueWhite = 2;
+constexpr std::uint32_t kFloor = 27;
+constexpr std::uint32_t kFMax = 35;
+constexpr std::uint32_t kFMin = 36;
+constexpr std::uint32_t kGatherChannel = 4;
+constexpr float kTexelCenter = 0.5f;
+
+bool gather_address_mode(std::uint32_t mode) {
+    return mode == kAddressWrap || mode == kAddressMirror || mode == kAddressClamp ||
+           mode == kAddressBorder || mode == kAddressMirrorOnce;
+}
+
+std::uint32_t gather_border_bits(std::uint32_t border, std::uint32_t channel) {
+    if (border == kBorderOpaqueWhite || (border == kBorderOpaqueBlack && channel == 3))
+        return std::bit_cast<std::uint32_t>(1.0f);
+    return 0;
+}
+
+}  // namespace
+
 
 void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
     const auto* fields = std::get_if<ImageFields>(&inst.fields);
     if (fields == nullptr) std::abort();
+    if (inst.name() == "image_bvh_intersect_ray" || inst.name() == "image_bvh64_intersect_ray") {
+        bvh(inst, b, i);
+        return;
+    }
     if (fields->tfe || fields->lwe) fail("an image access with tfe or lwe");
     const std::string_view name = inst.name();
     const bool a16 = fields->a16;
     const bool d16 = fields->d16;
-    if (a16 && name.starts_with("image_sample_b"))
+    if (a16 && name.starts_with("image_sample_b") && name != "image_sample_b")
         fail("a biased image sample with 16-bit coordinates");
     const std::uint8_t dmask = fields->dmask == 0 ? 1 : fields->dmask;
     const Site site{b, i};
@@ -54,8 +86,8 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
                 regs.push_back(static_cast<std::uint8_t>(vector->reg + k));
         }
     }
-    const auto addr_val = [&](std::size_t k) -> V {
-        const std::size_t index = a16 ? k / 2 : k;
+    const auto addr_val = [&](std::size_t k, std::size_t prefix_words = 0) -> V {
+        const std::size_t index = prefix_words + (a16 ? k / 2 : k);
         if (index >= regs.size()) fail("an image address");
         const std::optional<Value> read = inst.read(Reg::v(regs[index]));
         if (!read) fail("an image address");
@@ -88,50 +120,99 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
         else if (op == "swap") code = 8;
         else if (op == "cmpswap") code = UINT32_MAX;
         else fail(name);
+        const bool cmpswap = code == UINT32_MAX;
+        constexpr std::uint8_t kNarrowMask = 1;
+        constexpr std::uint8_t kNarrowCmpMask = 3;
+        constexpr std::uint8_t kWideMask = 3;
+        constexpr std::uint8_t kWideCmpMask = 0xF;
+        constexpr std::uint32_t kTypedU32 = 0x105;
+        constexpr std::uint8_t kWideDwords = 2;
+        constexpr std::uint8_t kWideCmpDwords = 4;
+        const std::uint8_t narrow = cmpswap ? kNarrowCmpMask : kNarrowMask;
+        const bool wide = dmask != narrow;
         const bool glc = fields->cache.glc;
-        if (d16 || a16) fail("a 16-bit image atomic");
-        if (dmask != (code == UINT32_MAX ? 3 : 1)) fail("a 64-bit image atomic");
+        if (d16) fail("a 16-bit image atomic");
+        if (wide && dmask != (cmpswap ? kWideCmpMask : kWideMask)) fail("a 64-bit image atomic");
         const V iu = s_.m.undef(s_.t.i32);
         std::array<V, 3> cs{iu, iu, iu};
         for (std::size_t k = 0; k < coords; ++k) cs[k] = addr_val(k);
-            const auto* data = std::get_if<VectorOperand>(&fields->data);
+        const auto* data = std::get_if<VectorOperand>(&fields->data);
         if (data == nullptr) fail("image atomic data");
-        const std::vector<V> vals =
-            vgprs(inst, fields->data, static_cast<std::uint8_t>(code == UINT32_MAX ? 2 : 1));
+        const std::uint8_t dwords =
+            cmpswap ? (wide ? kWideCmpDwords : kNarrowCmpMask) : (wide ? kWideDwords : kNarrowMask);
+        const std::vector<V> vals = vgprs(inst, fields->data, dwords);
+        Ty i64t = s_.t.i32;
+        if (wide) i64t = s_.m.int_type(64);
+        const auto pack64 = [&](V lo, V hi) {
+            const V lo64 = s_.m.cast(c, Cast::ZExt, lo, i64t);
+            const V hi64 = s_.m.cast(c, Cast::ZExt, hi, i64t);
+            const V shifted = s_.m.int_const(i64t, 32);
+            return s_.m.bin(c, Bin::Or, lo64, s_.m.bin(c, Bin::Shl, hi64, shifted));
+        };
         V value = vals[0];
+        V compare = vals.size() > 1 ? vals[1] : s_.m.i32(0);
+        if (wide) {
+            value = pack64(vals[0], vals[1]);
+            compare = cmpswap ? pack64(vals[2], vals[3]) : s_.m.int_const(i64t, 0);
+        }
         if (op == "sub") {
-            const V z = s_.m.i32(0);
-            value = s_.m.bin(c, Bin::Sub, z, value);
+            value = wide ? s_.m.bin(c, Bin::Sub, s_.m.int_const(i64t, 0), value)
+                         : s_.m.bin(c, Bin::Sub, s_.m.i32(0), value);
         }
-        V old = s_.m.i32(0);
+        V old = wide ? s_.m.int_const(i64t, 0) : s_.m.i32(0);
         if (glc) {
-            if (const std::optional<Value> read = inst.read(Reg::v(data->reg))) old = i32_of(*read);
+            const std::optional<Value> lo = inst.read(Reg::v(data->reg));
+            if (wide) {
+                const std::optional<Value> hi = inst.read(Reg::v(static_cast<std::uint8_t>(data->reg + 1)));
+                if (lo && hi) old = pack64(i32_of(*lo), i32_of(*hi));
+            } else if (lo) {
+                old = i32_of(*lo);
+            }
         }
-        const V h = handle(site, src, false, {kind | 0x1000u, 0x105});
+        if (wide) {
+            s_.flags |= feature::kInt64 | feature::kAtomicInt64OnTypedResource |
+                        feature::kAtomicInt64OnHeapResource;
+        }
+        const V h = handle(site, src, false, {kind | 0x1000u, kTypedU32});
         const auto at = begin_guarded(guard_value);
-        const Ty i32t = s_.t.i32;
+        const Ty result_type = wide ? i64t : s_.t.i32;
         V r;
-        if (code == UINT32_MAX) {
-            const std::vector<V> args = {h, cs[0], cs[1], cs[2], vals[1], vals[0]};
-            r = s_.op(cur_, "atomicCompareExchange.i32", Attr::NoUnwind, i32t, 79, args);
+        if (cmpswap) {
+            const std::vector<V> args = {h, cs[0], cs[1], cs[2], compare, wide ? value : vals[0]};
+            r = s_.op(cur_, wide ? "atomicCompareExchange.i64" : "atomicCompareExchange.i32",
+                      Attr::NoUnwind, result_type, 79, args);
         } else {
-            std::vector<V> args = {h, s_.m.i32(code), cs[0], cs[1], cs[2], value};
-            r = s_.op(cur_, "atomicBinOp.i32", Attr::NoUnwind, i32t, 78, args);
+            const std::vector<V> args = {h, s_.m.i32(code), cs[0], cs[1], cs[2], value};
+            r = s_.op(cur_, wide ? "atomicBinOp.i64" : "atomicBinOp.i32", Attr::NoUnwind, result_type,
+                      78, args);
         }
         const V result = end_guarded(at, {{r, old}})[0];
-        if (glc) write(inst, Reg::v(data->reg), result, std::nullopt);
+        if (glc) {
+            if (wide) {
+                const auto [lo, hi] = split64(result);
+                write(inst, Reg::v(data->reg), lo, std::nullopt);
+                write(inst, Reg::v(static_cast<std::uint8_t>(data->reg + 1)), hi, std::nullopt);
+            } else {
+                write(inst, Reg::v(data->reg), result, std::nullopt);
+            }
+        }
         return;
     }
     if (store) {
         if (name != "image_store") fail("an image store to a mip level");
-        if (dmask != 0xF) fail("an image store of some channels");
+        const auto stored = static_cast<std::uint8_t>(std::popcount(static_cast<unsigned int>(dmask)));
+        if (dmask != (1u << stored) - 1u || stored == 0) fail("an image store of some channels");
         const V iu = s_.m.undef(s_.t.i32);
         std::array<V, 3> cs{iu, iu, iu};
         for (std::size_t k = 0; k < coords; ++k) cs[k] = addr_val(k);
-            const auto* data = std::get_if<VectorOperand>(&fields->data);
+        const auto* data = std::get_if<VectorOperand>(&fields->data);
         if (data == nullptr) fail("image store data");
         std::vector<V> vals;
         for (std::uint8_t k = 0; k < 4; ++k) {
+            if (k >= stored) {
+                vals.push_back(s_.m.f32(0));
+                continue;
+            }
             const std::uint8_t r = d16 ? static_cast<std::uint8_t>(k / 2) : k;
             const std::optional<Value> read = inst.read(Reg::v(static_cast<std::uint8_t>(data->reg + r)));
             if (!read) fail("image store data");
@@ -156,7 +237,7 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
     }
     std::uint32_t op = 0;
     bool sample = false;
-    if (name == "image_sample") {
+    if (name == "image_sample" || name == "image_sample_o" || name == "image_sample_cl") {
         op = 60;
         sample = true;
     } else if (name == "image_sample_lz" || name == "image_sample_l") {
@@ -168,7 +249,7 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
     } else if (name == "image_sample_c_lz") {
         op = 65;
         sample = true;
-    } else if (name == "image_sample_d") {
+    } else if (name == "image_sample_d" || name == "image_sample_d_cl") {
         op = 63;
         sample = true;
     } else if (name == "image_get_lod" && s_.pixel) {
@@ -178,7 +259,8 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
         op = 64;
         sample = true;
     } else if (name == "image_gather4" || name == "image_gather4_lz" ||
-               name == "image_gather4_lz_o") {
+               name == "image_gather4_lz_o" || name == "image_gather4_l" ||
+               name == "image_gather4_l_o") {
         op = 73;
         sample = true;
     } else if (name == "image_load" || name == "image_load_mip") {
@@ -230,8 +312,8 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
             fail("a comparison sample of 16-bit coordinates or several channels");
         const V sh = handle(site, ss, true, {14 | (cmp ? 0x8000u : 0u), 0});
         const bool offset_word = name.ends_with("_o");
-        const std::size_t first = (offset_word ? 1u : 0u) +
-                                  (name == "image_sample_b" ? 1u : 0u) + (cmp ? 1u : 0u);
+        const std::size_t first = (offset_word ? 1u : 0u) + (cmp ? 1u : 0u);
+        const std::size_t bias_words = op == 61 ? 1u : 0u;
         const std::size_t spatial = coords - ((kind == 6 || kind == 7) ? 1u : 0u);
         const std::size_t grads = op == 63 ? 2 * spatial : 0;
         std::vector<V> cs(4, fu);
@@ -240,7 +322,7 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
             return as_float(x);
         };
         for (std::size_t k = 0; k < coords; ++k) {
-            const V x = addr_val(first + grads + k);
+            const V x = addr_val(first + grads + k, bias_words);
             cs[k] = to_float(x);
         }
         if (kind == 5) {
@@ -278,6 +360,17 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
             }
             return;
         }
+        constexpr std::uint32_t kFloatMagnitude = 0x7FFF'FFFF;
+        constexpr std::uint32_t kHalfMagnitude = 0x7FFF;
+        const bool clamped = name.ends_with("_cl");
+        const V clamp_bits = clamped ? addr_val(first + grads + coords, bias_words) : iu;
+        if (clamped) {
+            const std::optional<std::int64_t> constant = s_.m.int_value(clamp_bits);
+            const std::uint32_t magnitude = a16 ? kHalfMagnitude : kFloatMagnitude;
+            if (!constant || (static_cast<std::uint32_t>(*constant) & magnitude) != 0)
+                s_.uses_level_clamp = true;
+        }
+        const V clamp = clamped ? to_float(clamp_bits) : fu;
         const std::size_t offsets =
             kind == 5 ? 0 : std::min<std::size_t>(coords - ((kind == 6 || kind == 7) ? 1u : 0u), 3);
         const V zero = s_.m.i32(0);
@@ -286,11 +379,23 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
         std::vector<V> args = {h, sh};
         args.insert(args.end(), cs.begin(), cs.end());
         if (op == 60) {
+            if (offset_word) {
+                const V w = addr_val(0);
+                const std::optional<std::int64_t> constant = s_.m.int_value(w);
+                if (!constant) fail("a sample offset that is not constant");
+                const std::uint32_t bits = static_cast<std::uint32_t>(*constant);
+                for (std::size_t k = 0; k < offsets; ++k) {
+                    const std::int32_t x = static_cast<std::int32_t>((bits >> (8 * k)) & 0x3F);
+                    const std::int32_t signed_offset = x >= 32 ? x - 64 : x;
+                    if (signed_offset < -8 || signed_offset > 7) fail("a sample offset past -8..7");
+                    os[k] = s_.m.i32(static_cast<std::uint32_t>(signed_offset));
+                }
+            }
             args.insert(args.end(), os.begin(), os.end());
-            args.push_back(fu);
+            args.push_back(clamp);
             r = s_.op(c, "sample.f32", Attr::ReadOnly, s_.t.res_ret, 60, args);
         } else if (op == 61) {
-            const V bias = as_float(addr_val(0));
+            const V bias = to_float(addr_val(0));
             args.insert(args.end(), os.begin(), os.end());
             args.push_back(bias);
             args.push_back(fu);
@@ -305,7 +410,7 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
             }
             args.insert(args.end(), os.begin(), os.end());
             args.insert(args.end(), g.begin(), g.end());
-            args.push_back(fu);
+            args.push_back(clamp);
             r = s_.op(c, "sampleGrad.f32", Attr::ReadOnly, s_.t.res_ret, 63, args);
         } else if (op == 64 || op == 65) {
             const V reference = as_float(addr_val(first - 1));
@@ -328,6 +433,7 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
             args.push_back(lod);
             r = s_.op(c, "sampleLevel.f32", Attr::ReadOnly, s_.t.res_ret, 62, args);
         } else {
+            const bool explicit_level = name == "image_gather4_l" || name == "image_gather4_l_o";
             if (name == "image_gather4") fail("a gather with implicit level");
             if (std::popcount(static_cast<unsigned int>(dmask)) != 1)
                 fail("a gather of several channels");
@@ -342,6 +448,139 @@ void Lower::image(const IrInst& inst, std::size_t b, std::size_t i) {
                     const V k26 = s_.m.i32(26);
                     os[std::get<0>(entry)] = s_.m.bin(c, Bin::AShr, t, k26);
                 }
+            }
+            const V lod_bits = explicit_level ? addr_val(coords, first) : iu;
+            bool level_zero = !explicit_level;
+            if (explicit_level) {
+                if (kind != 2) fail("a gather with explicit level on a non-2D texture");
+                if (fields->unorm) fail("a gather with explicit level and texel coordinates");
+                if (const auto constant = s_.m.int_value(lod_bits)) {
+                    const auto word = static_cast<std::uint32_t>(*constant);
+                    level_zero = a16 ? (word & 0x7FFFu) == 0u : (word & 0x7FFFFFFFu) == 0u;
+                }
+            }
+            if (explicit_level && !level_zero) {
+                std::array<std::uint32_t, 2> modes{kAddressClamp, kAddressClamp};
+                std::uint32_t border = 0;
+                if (ss.kind == Source::Kind::Constant && ss.constants.size() >= 4) {
+                    const std::array<std::uint32_t, 4> words{ss.constants[0], ss.constants[1],
+                                                           ss.constants[2], ss.constants[3]};
+                    const StaticSampler sampler = StaticSampler::from_words(words);
+                    modes = {sampler.address[0], sampler.address[1]};
+                    border = sampler.border;
+                }
+                if (!gather_address_mode(modes[0])) modes[0] = kAddressClamp;
+                if (!gather_address_mode(modes[1])) modes[1] = kAddressClamp;
+                const std::uint32_t channel =
+                    static_cast<std::uint32_t>(std::countr_zero(static_cast<unsigned int>(dmask)));
+                const Ty i32t = s_.t.i32;
+                const Ty dims = s_.m.named_struct("dx.types.Dimensions", {i32t, i32t, i32t, i32t});
+                const V zero_i = s_.m.i32(0);
+                const V one_i = s_.m.i32(1);
+                const V base_dims = s_.op(c, "getDimensions", Attr::ReadOnly, dims, 72, {h, zero_i});
+                const V levels = s_.m.extract(c, base_dims, 3);
+                const V max_mip = s_.m.bin(c, Bin::Sub, levels, one_i);
+                const V lod = to_float(lod_bits);
+                const V nonneg = binary(kFMax, lod, s_.m.f32(0));
+                const V half = s_.m.f32(std::bit_cast<std::uint32_t>(kTexelCenter));
+                const V bumped = s_.m.bin(c, Bin::Add, nonneg, half);
+                const V rounded = unary(kFloor, bumped);
+                const V max_mip_f = s_.m.cast(c, Cast::UiToFp, max_mip, s_.t.f32);
+                const V clamped_lod = binary(kFMin, rounded, max_mip_f);
+                const V mip = s_.m.cast(c, Cast::FpToUi, clamped_lod, i32t);
+                const V level_dims = s_.op(c, "getDimensions", Attr::ReadOnly, dims, 72, {h, mip});
+                const std::array<V, 2> size{s_.m.extract(c, level_dims, 0), s_.m.extract(c, level_dims, 1)};
+                const bool bordered = modes[0] == kAddressBorder || modes[1] == kAddressBorder;
+                const V border_f = s_.m.f32(gather_border_bits(border, channel));
+                const V no_border = s_.m.boolean(false);
+                const auto positive_mod = [&](V value, V modulus) {
+                    const V quot = s_.m.bin(c, Bin::SDiv, value, modulus);
+                    const V prod = s_.m.bin(c, Bin::Mul, quot, modulus);
+                    const V rem = s_.m.bin(c, Bin::Sub, value, prod);
+                    const V neg = s_.m.cmp(c, pred::kSlt, rem, zero_i);
+                    return s_.m.select(c, neg, s_.m.bin(c, Bin::Add, rem, modulus), rem);
+                };
+                const auto clamp_edge = [&](V value, V last) {
+                    const V low = s_.m.select(c, s_.m.cmp(c, pred::kSlt, value, zero_i), zero_i, value);
+                    return s_.m.select(c, s_.m.cmp(c, pred::kSgt, low, last), last, low);
+                };
+                const auto address = [&](V value, V extent, std::uint32_t mode) {
+                    const V last = s_.m.bin(c, Bin::Sub, extent, one_i);
+                    if (mode == kAddressBorder) {
+                        const V below = s_.m.cmp(c, pred::kSlt, value, zero_i);
+                        const V above = s_.m.cmp(c, pred::kSgt, value, last);
+                        return std::pair<V, V>{clamp_edge(value, last), s_.m.bin(c, Bin::Or, below, above)};
+                    }
+                    if (mode == kAddressWrap) return std::pair<V, V>{positive_mod(value, extent), no_border};
+                    if (mode == kAddressMirror) {
+                        const V span = s_.m.bin(c, Bin::Mul, extent, s_.m.i32(2));
+                        const V wrapped = positive_mod(value, span);
+                        const V centered = s_.m.bin(c, Bin::Sub, wrapped, extent);
+                        const V neg = s_.m.cmp(c, pred::kSlt, centered, zero_i);
+                        const V flipped = s_.m.bin(c, Bin::Sub, s_.m.i32(static_cast<std::uint32_t>(-1)), centered);
+                        const V mirrored = s_.m.select(c, neg, flipped, centered);
+                        return std::pair<V, V>{s_.m.bin(c, Bin::Sub, last, mirrored), no_border};
+                    }
+                    if (mode == kAddressMirrorOnce) {
+                        const V neg = s_.m.cmp(c, pred::kSlt, value, zero_i);
+                        const V flipped = s_.m.bin(c, Bin::Sub, s_.m.i32(static_cast<std::uint32_t>(-1)), value);
+                        return std::pair<V, V>{clamp_edge(s_.m.select(c, neg, flipped, value), last), no_border};
+                    }
+                    return std::pair<V, V>{clamp_edge(value, last), no_border};
+                };
+                const auto neighbours = [&](V uv, V extent, V offset, std::uint32_t mode) {
+                    const V scaled = s_.m.bin(c, Bin::Mul, uv, s_.m.cast(c, Cast::UiToFp, extent, s_.t.f32));
+                    const V shifted = s_.m.bin(c, Bin::Sub, scaled, half);
+                    const V base = s_.m.cast(c, Cast::FpToSi, unary(kFloor, shifted), i32t);
+                    const V first_texel = s_.m.bin(c, Bin::Add, base, offset);
+                    const V second_texel = s_.m.bin(c, Bin::Add, first_texel, one_i);
+                    return std::array<std::pair<V, V>, 2>{address(first_texel, extent, mode),
+                                                         address(second_texel, extent, mode)};
+                };
+                const auto xs = neighbours(cs[0], size[0], os[0], modes[0]);
+                const auto ys = neighbours(cs[1], size[1], os[1], modes[1]);
+                constexpr std::array<std::pair<std::size_t, std::size_t>, kGatherChannel> kCorners{{
+                    {0, 1},
+                    {1, 1},
+                    {1, 0},
+                    {0, 0},
+                }};
+                std::vector<V> gathered;
+                for (const auto& corner : kCorners) {
+                    const auto& x = xs[corner.first];
+                    const auto& y = ys[corner.second];
+                    const std::vector<V> load_args = {h, mip, x.first, y.first, iu, iu, iu, iu};
+                    const V loaded =
+                        s_.op(c, "textureLoad.f32", Attr::ReadOnly, s_.t.res_ret, 66, load_args);
+                    V value = s_.m.extract(c, loaded, channel);
+                    if (bordered) {
+                        const V outside = s_.m.bin(c, Bin::Or, x.second, y.second);
+                        value = s_.m.select(c, outside, border_f, value);
+                    }
+                    gathered.push_back(value);
+                }
+                std::vector<V> packed;
+                if (d16) {
+                    for (V& value : gathered)
+                        value = s_.op(c, "legacyF32ToF16", Attr::ReadNone, i32t, 130, {value});
+                    const V k16 = s_.m.i32(16);
+                    for (std::size_t k = 0; k < gathered.size(); k += 2) {
+                        if (k + 1 < gathered.size()) {
+                            const V hi = s_.m.bin(c, Bin::Shl, gathered[k + 1], k16);
+                            packed.push_back(s_.m.bin(c, Bin::Or, gathered[k], hi));
+                        } else {
+                            packed.push_back(gathered[k]);
+                        }
+                    }
+                } else {
+                    for (const V value : gathered) packed.push_back(as_int(value));
+                }
+                const auto* level_data = std::get_if<VectorOperand>(&fields->data);
+                if (level_data == nullptr) fail("an image result");
+                for (std::size_t k = 0; k < packed.size(); ++k)
+                    write(inst, Reg::v(static_cast<std::uint8_t>(level_data->reg + k)), packed[k],
+                          guard_value);
+                return;
             }
             args.push_back(os[0]);
             args.push_back(os[1]);

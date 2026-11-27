@@ -6,12 +6,12 @@
 #include <array>
 #include <bit>
 #include <cstddef>
-#include <cstdlib>
 #include <cstdint>
 #include <limits>
 #include <map>
 #include <optional>
 #include <random>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -21,13 +21,97 @@
 #include <vector>
 
 #include "g6shim/shader/error.hpp"
+#include "g6shim/shader/resource.hpp"
+
+
 
 namespace g6shim::shader::emit {
-
 namespace {
 
 constexpr float kTwoPi = 6.283185307179586476925286766559f;
 constexpr std::uint16_t kGsAllocReq = 9;
+constexpr std::uint32_t kGeometryMaxVertices = 1024;
+constexpr std::uint32_t kReusedDescriptorWord = 0;
+constexpr std::uint32_t kGeometryScalarProduct = 1024;
+constexpr std::uint32_t kTrianglePrimitive = 3;
+constexpr std::uint32_t kTriangleStrip = 5;
+constexpr std::uint8_t kMsgGs = 2;
+constexpr std::uint8_t kMsgGsDone = 3;
+constexpr std::uint8_t kGsOpCut = 1;
+constexpr std::uint8_t kGsOpEmit = 2;
+constexpr std::uint8_t kGsOpEmitCut = 3;
+constexpr std::uint32_t kEmitStream = 97;
+constexpr std::uint32_t kCutStream = 98;
+
+std::optional<std::pair<std::size_t, std::uint8_t>> declared_geometry_slot(std::span<const SigElement> elements,
+                                                                         std::uint32_t dword) {
+    const std::uint32_t row = dword / 4;
+    const std::uint8_t col = static_cast<std::uint8_t>(dword % 4);
+    for (std::size_t id = 0; id < elements.size(); ++id) {
+        const SigElement& element = elements[id];
+        if (element.row == row && col >= element.col && col < element.col + element.cols)
+            return std::pair<std::size_t, std::uint8_t>{id, static_cast<std::uint8_t>(col - element.col)};
+    }
+    return std::nullopt;
+}
+
+void normalize_geometry_stores(const Program& program, std::span<const SigElement> outputs,
+                               std::vector<RingStore>& stores) {
+    if (stores.empty() || outputs.empty() ||
+        std::all_of(stores.begin(), stores.end(), [&](const RingStore& store) {
+            return declared_geometry_slot(outputs, store.dword).has_value();
+        }))
+        return;
+    const std::size_t store_block = stores.front().site.block;
+    if (stores.back().site.block != store_block) return;
+
+    std::uint64_t stride = 0;
+    for (const SigElement& output : outputs)
+        if (output.row) stride = std::max(stride, 4 * (std::uint64_t{*output.row} + 1));
+    if (stride == 0) return;
+
+    std::vector<std::uint32_t> slots;
+    slots.reserve(stores.size());
+    std::uint64_t base = 0;
+    bool wrote_vertex = false;
+    bool strip_cut = false;
+    for (std::size_t b = 0; b < program.blocks.size(); ++b) {
+        const IrBlock& block = program.blocks[b];
+        for (std::size_t i = 0; i < block.insts.size(); ++i) {
+            while (slots.size() < stores.size() && stores[slots.size()].site == Site{b, i}) {
+                const std::uint32_t word = stores[slots.size()].dword;
+                if (strip_cut || word < base || word - base >= stride) return;
+                const std::uint32_t slot = static_cast<std::uint32_t>(word - base);
+                if (!declared_geometry_slot(outputs, slot)) return;
+                slots.push_back(slot);
+                wrote_vertex = true;
+            }
+            const IrInst& inst = block.insts[i];
+            if (inst.name() != "s_sendmsg" && inst.name() != "s_sendmsghalt") continue;
+            const auto* fields = std::get_if<SoppFields>(&inst.fields);
+            if (fields == nullptr || (fields->imm & 0xF) != kMsgGs) continue;
+            const std::uint16_t op = (fields->imm >> 4) & 7;
+            if (op == 0) continue;
+            if (op > kGsOpEmitCut || b != store_block || ((fields->imm >> 8) & 3) != 0 || strip_cut) return;
+            if (op == kGsOpEmit || op == kGsOpEmitCut) {
+                if (!wrote_vertex) return;
+                wrote_vertex = false;
+                base += stride;
+            }
+            if (op == kGsOpCut || op == kGsOpEmitCut) strip_cut = true;
+        }
+    }
+    if (slots.size() != stores.size() || wrote_vertex) return;
+    for (std::size_t i = 0; i < slots.size(); ++i) stores[i].dword = slots[i];
+}
+
+Why mask_data_reason(const Bools& bools, Bool bits) {
+    for (const Atom& atom : bools.support(bits)) {
+        if (atom.kind == Atom::Kind::Quad) return kQuadMask;
+        if (atom.kind == Atom::Kind::Opaque) return kOpaqueMask;
+    }
+    return kLaneMaskElsewhere;
+}
 
 constexpr Numeric kNorm[] = {Numeric::Unorm, Numeric::Snorm, Numeric::Uscaled,
                              Numeric::Sscaled, Numeric::Uint, Numeric::Sint};
@@ -99,6 +183,20 @@ bool reads_mask_as_data(const Structured& st, const IrInst& inst) {
         if (read && is_mask(*read)) return true;
     }
     return false;
+}
+
+bool join_edge_known(const Structured& st, Bool bits) {
+    for (const Atom& atom : st.bools.support(bits)) {
+        if (atom.kind == Atom::Kind::Opaque || atom.kind == Atom::Kind::Quad) return false;
+    }
+    return true;
+}
+
+
+const std::vector<Bool>* join_edges(const Structured& st, Value id) {
+    const auto found = st.phi_masks.find(id);
+    if (found == st.phi_masks.end()) return nullptr;
+    return &found->second;
 }
 
 std::optional<std::pair<std::uint8_t, std::uint8_t>> packed_half(
@@ -178,8 +276,9 @@ std::map<std::uint8_t, std::pair<bool, std::optional<std::uint8_t>>> half_output
     return out;
 }
 
-Lower::Lower(const Parts& parts, const std::unordered_map<Value, Why, ValueHash>& bad)
-    : s_(parts.native->stage == HwStage::Ps), x_(&parts), bad_(&bad) {
+Lower::Lower(const Parts& parts, const std::unordered_map<Value, Why, ValueHash>& bad,
+             const std::map<DescriptorMask, Why>& bad_masked)
+    : s_(parts.native->stage == HwStage::Ps), x_(&parts), bad_(&bad), bad_masked_(&bad_masked) {
     const Program& p = *parts.p;
     for (std::size_t b = 0; b < p.blocks.size(); ++b) {
         const IrBlock& block = p.blocks[b];
@@ -241,7 +340,8 @@ Lower::Lower(const Parts& parts, const std::unordered_map<Value, Why, ValueHash>
         const std::uint64_t product = static_cast<std::uint64_t>(cs->threads[0]) * cs->threads[1] *
                                       cs->threads[2];
         const bool one_wave = product <= wave_size;
-        if (console_lanes_ || (one_wave && s_.lds_dwords > 0)) s_.wave_size = wave_size;
+        const bool host_picks = std::getenv("G6SHIM_HOST_WAVE") != nullptr;
+        if (!host_picks && (console_lanes_ || (one_wave && s_.lds_dwords > 0))) s_.wave_size = wave_size;
     }
     if (const auto* ms = std::get_if<MeshIo>(&parts.native->io)) {
         s_.prims = parts.prims;
@@ -282,8 +382,20 @@ Lower::Lower(const Parts& parts, const std::unordered_map<Value, Why, ValueHash>
     rpo_.assign(p.blocks.size(), std::numeric_limits<std::size_t>::max());
     tail_.assign(p.blocks.size(), std::nullopt);
     half_outputs_ = half_outputs(parts.native->io, parts.outputs);
+    if (parts.native->stage == HwStage::Gs) {
+        Geometry geometry;
+        geometry.input_primitive = kTrianglePrimitive;
+        geometry.max_vertices = kGeometryMaxVertices;
+        geometry.stream_mask = 1;
+        geometry.output_topology = kTriangleStrip;
+        geometry.instances = 1;
+        s_.geometry = geometry;
+        geometry_stores_ = parts.io->ring_stores;
+        normalize_geometry_stores(p, s_.outputs, geometry_stores_);
+    }
     if (parts.native->stage == HwStage::Cs) mask_data_ = MaskData::Console;
-    else if (parts.native->stage == HwStage::Ps || parts.native->stage == HwStage::Vs)
+    else if (parts.native->stage == HwStage::Ps || parts.native->stage == HwStage::Vs ||
+             parts.native->stage == HwStage::Gs)
         mask_data_ = MaskData::Host;
     else
         mask_data_ = MaskData::None;
@@ -327,7 +439,7 @@ V Lower::code_dword(V byte) {
                 first = std::min(first.value_or(offset), offset);
             }
         }
-        if (!first) fail("a code table");
+        if (!first) first = 0;
         const std::vector<std::uint8_t>& code = x_->native->code;
         if (*first > code.size()) fail("a code table past the code");
         std::vector<std::uint32_t> words;
@@ -367,6 +479,10 @@ void Lower::flat(const IrInst& inst, std::size_t b, std::size_t i) {
     const auto* fields = std::get_if<FlatFields>(&inst.fields);
     if (fields == nullptr) std::abort();
     const std::string_view name = inst.name();
+    if (const auto flat_at = scalar_.find(Site{b, i}); flat_at != scalar_.end() && flat_at->second.param == kFlat) {
+        flat_global(inst, b, i);
+        return;
+    }
     std::optional<std::string_view> rest = std::nullopt;
     if (name.starts_with("global_load_")) rest = name.substr(12);
     if (!rest) fail("a global memory write");
@@ -399,13 +515,8 @@ void Lower::flat(const IrInst& inst, std::size_t b, std::size_t i) {
     }
     const auto dword = [&](V byte) -> V {
         if (!h) return code_dword(byte);
-        const std::size_t at = cur_;
-        const V u = s_.m.undef(s_.t.i32);
-        const V mask = s_.m.i8(1);
-        const V align = s_.m.i32(4);
-        const V r = s_.op(at, "rawBufferLoad.f32", Attr::ReadOnly, s_.t.res_ret, 139,
-                          {*h, byte, u, mask, align});
-        return as_int(s_.m.extract(at, r, 0));
+        const std::vector<V> words = bounded_raw_words(*h, byte, 1);
+        return as_int(words[0]);
     };
     for (std::size_t k = 0; k < n; ++k) {
         V x;
@@ -468,7 +579,7 @@ void Lower::find_sections() {
 }
 
 void Lower::section_inst(std::size_t b, std::size_t i, std::size_t start) {
-    constexpr Why unknown = "a whole-wave section step the simulation does not follow";
+    constexpr Why unknown = kUnfollowedSection;
     const IrInst& inst = x_->p->blocks[b].insts[i];
     for (const auto& write : inst.writes) {
         const Value w = write.second;
@@ -628,12 +739,24 @@ Lowered Lower::run() {
             }
             ++i;
         }
-        mask_ok_ = mask_data_ == MaskData::Console;
+        mask_ok_ = mask_data_ != MaskData::None;
         tail_[b] = cur_;
         exit(b);
     }
     fill_phis();
+    fill_mask_words();
+    for (const ImageHeapRead& read : image_heap_reads_) {
+        if (!read.shape) s_.m.terminate(read.block, Term::br(read.next));
+    }
     s_.samplers = static_cast<std::uint32_t>(samplers_.size());
+    if (s_.geometry) {
+        std::uint32_t scalars = 1;
+        for (const SigElement& element : s_.outputs) {
+            if (!element.row) continue;
+            scalars = std::max(scalars, *element.row * 4 + static_cast<std::uint32_t>(element.col + element.cols));
+        }
+        s_.geometry->max_vertices = std::min(s_.geometry->max_vertices, kGeometryScalarProduct / scalars);
+    }
     Lowered out;
     out.dxil = s_.finish();
     out.cmp_samplers = s_.cmp_samplers;
@@ -641,10 +764,19 @@ Lowered Lower::run() {
     for (const auto& entry : s_.root_cbvs) out.root_cbvs.push_back(entry.first);
     out.root_srvs.reserve(s_.root_srvs.size());
     for (const auto& entry : s_.root_srvs) out.root_srvs.push_back(entry.first);
+    for (const auto& entry : s_.words_srvs)
+        out.descriptor_words |= entry.first == kSamplerWordsRegister ? kSamplerWords
+                                : entry.first == kFlatTableRegister  ? kFlatTable
+                                                                     : kViewWords;
+    if (flat_writes_) out.descriptor_words |= kFlatWrites;
     out.user_data = user_reads();
     out.samplers = samplers_;
+    out.nonuniform_handles = s_.nonuniform_handles;
+    out.wave_ops = (s_.flags & feature::kWaveOps) != 0;
     return out;
 }
+
+
 
 bool Lower::exported_out(std::size_t b) const { return exported_[b] || has_done_export(b); }
 
@@ -666,8 +798,14 @@ void Lower::inputs() {
         if (reg.kind == Reg::Kind::S && params_.contains(v)) continue;
         if (reg.kind == Reg::Kind::S) {
             const auto found = io_inputs.find(v);
-            val = found == io_inputs.end() ? Val::missing("a hardware SGPR input")
-                                           : input(found->second);
+            if (found != io_inputs.end()) {
+                val = input(found->second);
+            } else if (reg.code <= 105 && x_->io->initialized_sgprs &&
+                       reg.code >= *x_->io->initialized_sgprs) {
+                val = Val::i32(s_.m.i32(0));
+            } else {
+                val = Val::missing("a hardware SGPR input");
+            }
         } else if (reg.kind == Reg::Kind::Scc) {
             val = Val::missing("SCC on entry");
         } else {
@@ -772,7 +910,7 @@ Val Lower::load_input(std::size_t id, std::uint8_t col) {
     return load_any_input(id, col);
 }
 
-Val Lower::load_any_input(std::size_t id, std::uint8_t col) {
+Val Lower::load_any_input(std::size_t id, std::uint8_t col, std::optional<std::uint32_t> vertex) {
     SigElement& e = s_.inputs[id];
     e.usage = static_cast<std::uint8_t>(e.usage | (1u << col));
     const bool is_int = e.comp != 9;
@@ -784,12 +922,103 @@ Val Lower::load_any_input(std::size_t id, std::uint8_t col) {
     if (bit) suffix = ".i1";
     else if (!is_int) suffix = ".f32";
     const std::size_t entry = s_.entry;
-    const std::vector<V> args = {s_.m.i32(static_cast<std::uint32_t>(id)), s_.m.i32(0),
-                                 s_.m.i8(col), s_.m.undef(s_.t.i32)};
+    const V axis = vertex ? s_.m.i32(*vertex) : s_.m.undef(s_.t.i32);
+    const std::vector<V> args = {s_.m.i32(static_cast<std::uint32_t>(id)), s_.m.i32(0), s_.m.i8(col), axis};
     const V v = s_.op(entry, "loadInput" + suffix, Attr::ReadNone, ty, 4, args);
     if (bit) return Val::i32(s_.m.cast(entry, Cast::ZExt, v, s_.t.i32));
     if (is_int) return Val::i32(v);
     return Val::i32(s_.m.cast(entry, Cast::Bitcast, v, s_.t.i32));
+}
+
+std::optional<std::pair<std::size_t, std::uint8_t>> Lower::geometry_slot(std::vector<SigElement>& elements,
+                                                                         std::uint32_t dword, bool input) {
+    if (dword > 255) return std::nullopt;
+    if (const auto slot = declared_geometry_slot(elements, dword)) return slot;
+    const std::uint8_t row = static_cast<std::uint8_t>(dword / 4);
+    const std::uint8_t col = static_cast<std::uint8_t>(dword % 4);
+    if (!elements.empty()) return std::nullopt;
+    SigElement element;
+    element.row = row;
+    element.col = 0;
+    element.cols = 4;
+    element.comp = 9;
+    element.usage = 0;
+    element.half = false;
+    element.interp = row == 0 ? 4 : 2;
+    if (row == 0) {
+        element.name = "SV_Position";
+        element.kind = 3;
+        element.index = 0;
+    } else {
+        element.name = "TEXCOORD";
+        element.kind = 0;
+        element.index = static_cast<std::uint32_t>(row - 1);
+    }
+    if (!input && element.kind == 0) element.interp = 2;
+    elements.push_back(std::move(element));
+    return std::pair<std::size_t, std::uint8_t>{elements.size() - 1, col};
+}
+
+void Lower::geometry_ring(const IrInst& inst, std::size_t b, std::size_t i) {
+    const Site site{b, i};
+    bool matched = false;
+    const std::optional<V> guard_value = guard(b, i);
+    for (const RingLoad& load : x_->io->ring_loads) {
+        if (load.site != site) continue;
+        matched = true;
+        const std::optional<std::pair<std::size_t, std::uint8_t>> slot =
+            geometry_slot(s_.inputs, load.dword, true);
+        if (!slot) fail("a geometry input the signature lacks");
+        const Val value = load_any_input(slot->first, slot->second, load.vertex);
+        if (value.kind != Val::Kind::I32) fail(value.why);
+        write(inst, Reg::v(load.vgpr), value.value, guard_value);
+    }
+    const auto at = begin_guarded(guard_value);
+    for (const RingStore& store : geometry_stores_) {
+        if (store.site != site) continue;
+        matched = true;
+        const std::optional<std::pair<std::size_t, std::uint8_t>> slot =
+            geometry_slot(s_.outputs, store.dword, false);
+        if (!slot) fail("a geometry output the signature lacks");
+        const std::optional<Value> source = inst.read(Reg::v(store.vgpr));
+        if (!source) fail("an unread geometry output");
+        SigElement& element = s_.outputs[slot->first];
+        element.usage = static_cast<std::uint8_t>(element.usage | (1u << slot->second));
+        V argument = i32_of(*source);
+        std::string suffix = ".i32";
+        if (element.comp == 9) {
+            suffix = ".f32";
+            const auto found = floats_.find(*source);
+            argument = found != floats_.end() ? found->second : as_float(argument);
+        }
+        const std::vector<V> args = {s_.m.i32(static_cast<std::uint32_t>(slot->first)), s_.m.i32(0),
+                                     s_.m.i8(slot->second), argument};
+        s_.op(cur_, "storeOutput" + suffix, Attr::NoUnwind, s_.t.void_type, 5, args);
+    }
+    end_guarded(at, {});
+    if (!matched) fail("an LDS operation in a geometry shader");
+}
+
+void Lower::geometry_message(const IrInst& inst, std::size_t b, std::size_t i) {
+    if (x_->native->stage != HwStage::Gs) return;
+    const auto* fields = std::get_if<SoppFields>(&inst.fields);
+    if (fields == nullptr) std::abort();
+    const std::uint16_t msg = fields->imm & 0xF;
+    const std::uint16_t op = (fields->imm >> 4) & 7;
+    const std::uint16_t stream = (fields->imm >> 8) & 3;
+    if (msg == kMsgGsDone && op == 0) return;
+    if (msg != kMsgGs) fail("a geometry message");
+    if (stream != 0) fail("a geometry stream other than zero");
+    if (op == 0) return;
+    if (op != kGsOpCut && op != kGsOpEmit && op != kGsOpEmitCut) fail("a geometry message");
+    const std::optional<V> guard_value = guard(b, i);
+    const auto at = begin_guarded(guard_value);
+    const V id = s_.m.i8(static_cast<std::uint8_t>(stream));
+    if (op == kGsOpEmit || op == kGsOpEmitCut)
+        s_.op(cur_, "emitStream", Attr::NoUnwind, s_.t.void_type, kEmitStream, {id});
+    if (op == kGsOpCut || op == kGsOpEmitCut)
+        s_.op(cur_, "cutStream", Attr::NoUnwind, s_.t.void_type, kCutStream, {id});
+    end_guarded(at, {});
 }
 
 Val Lower::get(Value v) {
@@ -808,6 +1037,12 @@ Val Lower::get(Value v) {
         vals_[v] = val;
         return val;
     }
+    const auto address = descriptor_addresses_.find(v);
+    if (address != descriptor_addresses_.end()) {
+        const Val val = descriptor_address(address->second);
+        vals_[v] = val;
+        return val;
+    }
     fail("a value defined after its use");
 }
 
@@ -821,68 +1056,233 @@ V Lower::i32_of(Value v) {
 Val Lower::user(std::size_t param, std::uint32_t dword) {
     const RootParam& rp = x_->native->layout[param];
     if (rp.root.kind == RootType::Kind::ResourceHeap || rp.root.kind == RootType::Kind::SamplerHeap)
-        return Val::i32(s_.m.i32(0));
-    if (rp.root.kind != RootType::Kind::Constants && rp.root.kind != RootType::Kind::Table)
+        return Val::missing("a descriptor heap pointer used as an address");
+    if (rp.root.kind != RootType::Kind::Constants && rp.root.kind != RootType::Kind::Table &&
+        rp.root.kind != RootType::Kind::Descriptor)
         return Val::missing("a root descriptor");
     const std::uint32_t index = static_cast<std::uint32_t>(rp.user_data) + dword;
     user_reads_[index] = UserData{index, rp.slot, rp.root, dword};
-    s_.user_data = std::max(s_.user_data, index + 1);
-    V h;
-    if (user_data_) {
-        h = *user_data_;
-    } else {
-        h = s_.user_data_handle();
-        user_data_ = h;
+    return user_dword(index);
+}
+
+bool Lower::heap_pointer(Value value) const {
+    if (heap_pointers_.contains(value)) return true;
+    const auto param = params_.find(value);
+    if (param == params_.end() || param->second.first >= x_->native->layout.size()) return false;
+    const RootType::Kind kind = x_->native->layout[param->second.first].root.kind;
+    return kind == RootType::Kind::ResourceHeap || kind == RootType::Kind::SamplerHeap;
+}
+
+Val Lower::descriptor_address(UserData data) {
+    constexpr std::uint32_t kRootDwords = 64;
+    std::uint32_t index = 0;
+    for (const RootParam& param : x_->native->layout) {
+        if (param.user_data >= kRootDwords || param.sgprs > kRootDwords - param.user_data)
+            fail("a buffer descriptor address beyond host root constants");
+        index = std::max(index, std::uint32_t{param.user_data} + param.sgprs);
     }
+    for (const auto& [used_index, entry] : user_reads_) {
+        if (entry.source == data.source && entry.slot == data.slot && entry.dword == data.dword)
+            return user_dword(used_index);
+        index = std::max(index, used_index + 1);
+    }
+    if (index >= kRootDwords) fail("a buffer descriptor address beyond host root constants");
+    data.index = index;
+    user_reads_.emplace(index, data);
+    return user_dword(index);
+}
+
+Val Lower::user_dword(std::uint32_t index) {
+    if (const auto word = user_data_words_.find(index); word != user_data_words_.end())
+        return Val::i32(word->second);
+    s_.user_data = std::max(s_.user_data, index + 1);
+    if (!user_data_) user_data_ = s_.user_data_handle();
     const std::size_t entry = s_.entry;
-    const V row = s_.m.i32(index / 4);
-    const V r = s_.op(entry, "cbufferLoadLegacy.i32", Attr::ReadOnly, s_.t.cbuf_ret, 59, {h, row});
-    return Val::i32(s_.m.extract(entry, r, index % 4));
+    const std::uint32_t row = index / 4;
+    auto loaded = user_data_rows_.find(row);
+    if (loaded == user_data_rows_.end()) {
+        const V row_id = s_.m.i32(row);
+        const V values = s_.op(entry, "cbufferLoadLegacy.i32", Attr::ReadOnly, s_.t.cbuf_ret, 59,
+                               {*user_data_, row_id});
+        loaded = user_data_rows_.emplace(row, values).first;
+    }
+    const V word = s_.m.extract(entry, loaded->second, index % 4);
+    user_data_words_.emplace(index, word);
+    return Val::i32(word);
 }
 
 V Lower::mask_dword(Value v) {
+    const std::pair<V, V> words = mask_pair(v);
+    const bool high = x_->st->highs.contains(v);
+    return high ? words.second : words.first;
+}
+
+std::pair<V, V> Lower::mask_pair(Value v) {
     Value lo = v;
-    bool high = false;
-    const auto high_found = x_->st->highs.find(v);
-    if (high_found != x_->st->highs.end()) {
+    if (const auto high_found = x_->st->highs.find(v); high_found != x_->st->highs.end())
         lo = high_found->second;
-        high = true;
-    }
     const auto mask = x_->st->masks.find(lo);
     if (mask == x_->st->masks.end()) fail(kLaneMask);
-    if (!x_->st->active.contains(lo)) fail("a lane mask holding lanes elsewhere read as data");
-    std::pair<V, V> xy;
-    const auto ballot = ballots_.find(lo);
-    if (ballot != ballots_.end()) {
-        xy = ballot->second;
-    } else {
-        std::size_t at = s_.entry;
-        const auto def = def_block_.find(lo);
-        if (def != def_block_.end()) {
-            if (def->second == cur_ir_) {
-                at = cur_;
-            } else {
-                if (!tail_[def->second]) fail("a lane mask written after its use");
-                at = *tail_[def->second];
-            }
-        }
-        if (!balloting_.insert(lo).second) fail("a lane mask whose lanes depend on its own value");
-        std::optional<V> bit;
-        try {
-            bit = boolean(mask->second, at);
-        } catch (...) {
-            balloting_.erase(lo);
-            throw;
-        }
+    if (const auto ballot = ballots_.find(lo); ballot != ballots_.end()) return ballot->second;
+    if (!x_->st->lane_data.contains(lo)) fail(mask_data_reason(x_->st->bools, mask->second));
+    if (!balloting_.insert(lo).second) fail("a lane mask whose lanes depend on its own value");
+    std::pair<V, V> words;
+    try {
+        const std::size_t at = mask_site(lo);
+        if (x_->st->active.contains(lo)) words = active_ballot(mask->second, at);
+        else words = combine_mask(mask->second, at);
+    } catch (...) {
         balloting_.erase(lo);
-        const Ty i32t = s_.t.i32;
-        const Ty four = s_.m.named_struct("dx.types.fouri32", {i32t, i32t, i32t, i32t});
-        const V r = s_.op(at, "waveActiveBallot", Attr::NoUnwind, four, 116, {*bit});
-        s_.flags |= feature::kWaveOps;
-        xy = {s_.m.extract(at, r, 0), s_.m.extract(at, r, 1)};
-        ballots_[lo] = xy;
+        throw;
     }
-    return high ? xy.second : xy.first;
+    balloting_.erase(lo);
+    ballots_[lo] = words;
+    return words;
+}
+
+std::size_t Lower::mask_site(Value lo) {
+    std::size_t at = s_.entry;
+    const auto def = def_block_.find(lo);
+    if (def == def_block_.end()) return at;
+    if (def->second == cur_ir_) return cur_;
+    if (!tail_[def->second]) fail("a lane mask written after its use");
+    return *tail_[def->second];
+}
+
+std::pair<V, V> Lower::active_ballot(Bool bits, std::size_t at) {
+    const V bit = boolean(bits, at);
+    const Ty i32t = s_.t.i32;
+    const Ty four = s_.m.named_struct("dx.types.fouri32", {i32t, i32t, i32t, i32t});
+    const V r = s_.op(at, "waveActiveBallot", Attr::NoUnwind, four, 116, {bit});
+    s_.flags |= feature::kWaveOps;
+    return {s_.m.extract(at, r, 0), s_.m.extract(at, r, 1)};
+}
+
+std::pair<V, V> Lower::mask_ones() {
+    const V lo = s_.m.i32(0xFFFFFFFFu);
+    const V hi = s_.m.i32(x_->native->wave64 ? 0xFFFFFFFFu : 0u);
+    return {lo, hi};
+}
+
+std::pair<V, V> Lower::mask_bin(Bin op, std::pair<V, V> a, std::pair<V, V> b, std::size_t at) {
+    return {s_.m.bin(at, op, a.first, b.first), s_.m.bin(at, op, a.second, b.second)};
+}
+
+std::pair<V, V> Lower::combine_mask(Bool bits, std::size_t at) {
+    if (bits == kFalse) return {s_.m.i32(0), s_.m.i32(0)};
+    if (bits == kTrue) return mask_ones();
+    const auto key = std::pair<std::uint32_t, std::size_t>{bits.index, at};
+    if (const auto found = mask_words_.find(key); found != mask_words_.end()) return found->second;
+    const std::optional<std::tuple<Atom, Bool, Bool>> node = x_->st->bools.node(bits);
+    if (!node) std::abort();
+    const Atom& atom_value = std::get<0>(*node);
+    const Bool low = std::get<1>(*node);
+    const Bool high = std::get<2>(*node);
+    const std::pair<V, V> a = atom_mask(atom_value, at);
+    std::pair<V, V> words;
+    if (low == kFalse && high == kTrue) {
+        words = a;
+    } else if (low == kTrue && high == kFalse) {
+        words = mask_bin(Bin::Xor, a, mask_ones(), at);
+    } else if (low == kFalse) {
+        words = mask_bin(Bin::And, a, combine_mask(high, at), at);
+    } else if (high == kTrue) {
+        words = mask_bin(Bin::Or, a, combine_mask(low, at), at);
+    } else {
+        const std::pair<V, V> on_false = combine_mask(low, at);
+        const std::pair<V, V> on_true = combine_mask(high, at);
+        const std::pair<V, V> flipped = mask_bin(Bin::Xor, a, mask_ones(), at);
+        words = mask_bin(Bin::Or, mask_bin(Bin::And, a, on_true, at),
+                         mask_bin(Bin::And, flipped, on_false, at), at);
+    }
+    mask_words_[key] = words;
+    return words;
+}
+
+std::pair<V, V> Lower::atom_mask(const Atom& atom_value, std::size_t at) {
+    switch (atom_value.kind) {
+        case Atom::Kind::Lane: {
+            if (const auto found = lane_ballots_.find(atom_value.value); found != lane_ballots_.end())
+                return found->second;
+            const auto bit = lane_bits_.find(atom_value.value);
+            if (bit == lane_bits_.end()) {
+                const auto reason = lane_fail_.find(atom_value.value);
+                if (reason != lane_fail_.end()) fail(reason->second);
+                fail("a lane mask from a carry");
+            }
+            const std::size_t born = mask_site(atom_value.value);
+            const Ty i32t = s_.t.i32;
+            const Ty four = s_.m.named_struct("dx.types.fouri32", {i32t, i32t, i32t, i32t});
+            const V r = s_.op(born, "waveActiveBallot", Attr::NoUnwind, four, 116, {bit->second});
+            s_.flags |= feature::kWaveOps;
+            const std::pair<V, V> out = {s_.m.extract(born, r, 0), s_.m.extract(born, r, 1)};
+            lane_ballots_[atom_value.value] = out;
+            return out;
+        }
+        case Atom::Kind::Constant: {
+            const V lo = s_.m.i32(static_cast<std::uint32_t>(atom_value.constant));
+            const V hi = s_.m.i32(static_cast<std::uint32_t>(atom_value.constant >> 32));
+            return {lo, hi};
+        }
+        case Atom::Kind::Uniform: {
+            const V bit = atom(atom_value, at);
+            return {s_.m.select(at, bit, mask_ones().first, s_.m.i32(0)),
+                    s_.m.select(at, bit, mask_ones().second, s_.m.i32(0))};
+        }
+        case Atom::Kind::Phi: {
+            const Value id = atom_value.value;
+            if (const auto known = mask_phi_words_.find(id); known != mask_phi_words_.end())
+                return known->second;
+            const auto location = phi_at_.find(id);
+            if (location == phi_at_.end()) fail("a lane-mask join without a phi");
+            const std::size_t block = location->second.first;
+            if (!block_[block]) fail("an unreachable join");
+            const V lo = s_.m.phi(*block_[block], s_.t.i32);
+            const V hi = s_.m.phi(*block_[block], s_.t.i32);
+            const std::pair<V, V> words = {lo, hi};
+            mask_phi_words_[id] = words;
+            pending_mask_words_.push_back(id);
+            return words;
+        }
+        case Atom::Kind::Quad:
+            fail(kQuadMask);
+        case Atom::Kind::Opaque:
+            fail(kOpaqueMask);
+    }
+    fail(kOpaqueMask);
+}
+
+void Lower::fill_mask_words() {
+    while (!pending_mask_words_.empty()) {
+        const Value id = pending_mask_words_.back();
+        pending_mask_words_.pop_back();
+        const std::pair<V, V> words = mask_phi_words_.at(id);
+        const auto location = phi_at_.at(id);
+        const std::size_t block = location.first;
+        const Phi& phi = x_->p->blocks[block].phis[location.second];
+        const std::size_t offset = x_->p->blocks[block].offset;
+        std::vector<std::pair<V, std::size_t>> lo_in;
+        std::vector<std::pair<V, std::size_t>> hi_in;
+        const std::vector<Bool>* edges = join_edges(*x_->st, id);
+        if (edges == nullptr || edges->size() != x_->p->blocks[block].preds.size())
+            throw Stop::failure(offset, kUntrackedMaskJoin);
+        for (std::size_t n = 0; n < x_->p->blocks[block].preds.size(); ++n) {
+            const std::size_t q = x_->p->blocks[block].preds[n];
+            if (!tail_[q]) continue;
+            const std::size_t qb = edges_.contains({q, block}) ? edges_.at({q, block}) : *tail_[q];
+            if (n >= phi.args.size()) throw Stop::failure(offset, kUntrackedMaskJoin);
+            const Value arg = phi.args[n];
+            const bool tracked = x_->st->masks.contains(arg) || x_->st->highs.contains(arg);
+            if (!tracked && !join_edge_known(*x_->st, (*edges)[n]))
+                throw Stop::failure(offset, kUntrackedMaskJoin);
+            const std::pair<V, V> incoming =
+                stop_at(offset, [&]() { return combine_mask((*edges)[n], qb); });
+            lo_in.emplace_back(incoming.first, qb);
+            hi_in.emplace_back(incoming.second, qb);
+        }
+        s_.m.set_phi(words.first, lo_in);
+        s_.m.set_phi(words.second, hi_in);
+    }
 }
 
 V Lower::operand(const IrInst& inst, const Operand& op) {
@@ -898,6 +1298,8 @@ V Lower::operand(const IrInst& inst, const Operand& op) {
         return i32_of(*value);
     }
     if (const auto* constant = std::get_if<ConstantOperand>(&op)) {
+        constexpr std::uint16_t kSccAsData = 253;
+        if (constant->code == kSccAsData) return s_.m.cast(cur_, Cast::ZExt, scc_in(inst), s_.t.i32);
         const std::optional<std::uint32_t> value = inline_constant(constant->code);
         if (!value) fail("a special operand (vccz, execz, scc, lds_direct)");
         return s_.m.i32(*value);
@@ -909,6 +1311,28 @@ V Lower::operand(const IrInst& inst, const Operand& op) {
 V Lower::as_float(V x) { return s_.m.cast(cur_, Cast::Bitcast, x, s_.t.f32); }
 
 V Lower::as_int(V f) { return s_.m.cast(cur_, Cast::Bitcast, f, s_.t.i32); }
+
+V Lower::max_min(bool max, V a, V b) {
+    const std::size_t c = cur_;
+    const V r = binary(max ? 35 : 36, a, b);
+    const V ia = as_int(a);
+    const V ib = as_int(b);
+    V either = s_.m.bin(c, Bin::Or, ia, ib);
+    const V magnitude = s_.m.i32(0x7FFF'FFFFu);
+    either = s_.m.bin(c, Bin::And, either, magnitude);
+    const V zero = s_.m.i32(0);
+    const V zeros = s_.m.cmp(c, pred::kEq, either, zero);
+    const V sign = s_.m.bin(c, max ? Bin::And : Bin::Or, ia, ib);
+    const V signed_zero = as_float(sign);
+    return s_.m.select(c, zeros, signed_zero, r);
+}
+
+V Lower::f16_operand(const IrInst& inst, const Operand& op) {
+    if (const auto* constant = std::get_if<ConstantOperand>(&op);
+        constant && constant->code >= 240 && constant->code <= 248)
+        return s_.m.i32(kHalfConstants[constant->code - 240]);
+    return operand(inst, op);
+}
 
 std::optional<std::pair<std::uint8_t, bool>> Lower::sdwa_src(const IrInst& inst, std::size_t k) {
     const auto* valu = std::get_if<Valu>(&inst.fields);
@@ -967,7 +1391,7 @@ V Lower::fsrc(const IrInst& inst, std::size_t k) {
     return f;
 }
 
-V Lower::src(const IrInst& inst, std::size_t k) {
+V Lower::src(const IrInst& inst, std::size_t k, std::optional<std::uint32_t> mask) {
     const auto* valu = std::get_if<Valu>(&inst.fields);
     if (valu == nullptr) std::abort();
     if (k >= valu->src.size()) fail("a missing operand");
@@ -975,8 +1399,15 @@ V Lower::src(const IrInst& inst, std::size_t k) {
     if ((valu->abs >> k & 1) != 0 || (valu->neg >> k & 1) != 0)
         fail("integer operand modifiers");
     if (src0_ && k == 0) return *src0_;
-    const V x = operand(inst, op);
     const std::optional<std::pair<std::uint8_t, bool>> selected = sdwa_src(inst, k);
+    if (mask && !selected) {
+        if (*mask == 0) return s_.m.i32(0);
+        if (const auto* scalar = std::get_if<ScalarOperand>(&op)) {
+            const auto value = inst.read(Reg::s(scalar->code));
+            if (value && has_partial_descriptor(*value)) return masked_descriptor_value(*value, *mask);
+        }
+    }
+    const V x = operand(inst, op);
     if (selected) return select_bits(x, selected->first, selected->second);
     return x;
 }
@@ -1159,6 +1590,7 @@ V Lower::atom(const Atom& atom_value, std::size_t at) {
         case Atom::Kind::Quad:
             return s_.m.boolean(true);
         case Atom::Kind::Opaque: {
+            if (x_->native->stage == HwStage::Gs) return s_.m.boolean(true);
             if (!console_lanes_) fail("an opaque lane mask");
             std::optional<Val> hi;
             if (const std::optional<Value> high = pair_high(atom_value.value)) hi = get(*high);
@@ -1173,6 +1605,7 @@ V Lower::atom(const Atom& atom_value, std::size_t at) {
             return lane_bit(at, low_word, high_word);
         }
         case Atom::Kind::Constant: {
+            if (x_->native->stage == HwStage::Gs) return s_.m.boolean(true);
             if (!console_lanes_) fail("a constant lane mask");
             const V lo = s_.m.i32(static_cast<std::uint32_t>(atom_value.constant));
             const V hi = s_.m.i32(static_cast<std::uint32_t>(atom_value.constant >> 32));
@@ -1249,6 +1682,13 @@ std::optional<Value> Lower::pair_high(Value lo) const {
 std::optional<V> Lower::guard(std::size_t b, std::size_t i) {
     const std::optional<Bool>& entry = x_->st->guards[b][i];
     if (!entry) return std::nullopt;
+    if (x_->native->stage == HwStage::Gs) {
+        try {
+            return boolean(*entry, cur_);
+        } catch (const WhyError&) {
+            return std::nullopt;
+        }
+    }
     return boolean(*entry, cur_);
 }
 
@@ -1394,7 +1834,7 @@ void Lower::cross_lane(bool quad) {
 }
 
 Val Lower::thread_id(std::uint8_t c) {
-    if (!console_lanes_) return compute_id("threadIdInGroup.i32", 95, c);
+    if (!console_lanes_ || !s_.wave_size) return compute_id("threadIdInGroup.i32", 95, c);
     const std::array<std::uint32_t, 3> threads = *s_.threads;
     const std::uint32_t x = threads[0];
     const std::uint32_t y = threads[1];
@@ -1472,6 +1912,109 @@ V Lower::quad_pick(V x, V src) {
     return r;
 }
 
+namespace {
+
+enum class LaneShape : std::uint8_t { Unknown, Index, Base, Slot, Same };
+
+std::optional<std::uint32_t> lane_constant(const Operand& op) {
+    if (const auto* constant = std::get_if<ConstantOperand>(&op)) return inline_constant(constant->code);
+    if (const auto* literal = std::get_if<LiteralOperand>(&op)) return literal->value;
+    return std::nullopt;
+}
+
+LaneShape lane_shape(const Program& program,
+                     const std::unordered_map<Value, std::size_t, ValueHash>& defs, Value value,
+                     int depth) {
+    if (depth > 8) return LaneShape::Unknown;
+    const auto def = defs.find(value);
+    if (def == defs.end() || def->second >= program.blocks.size()) return LaneShape::Unknown;
+    for (const IrInst& written : program.blocks[def->second].insts) {
+        bool writes = false;
+        for (const auto& entry : written.writes)
+            if (entry.second == value) writes = true;
+        if (!writes) continue;
+        const auto* fields = std::get_if<Valu>(&written.fields);
+        if (fields == nullptr || fields->src.empty()) return LaneShape::Unknown;
+        const std::string_view name = written.name();
+        const auto src_value = [&](std::size_t k) -> std::optional<Value> {
+            if (k >= fields->src.size()) return std::nullopt;
+            const auto* vector = std::get_if<VectorOperand>(&fields->src[k]);
+            if (vector == nullptr) return std::nullopt;
+            return written.read(Reg::v(vector->reg));
+        };
+        const auto src_const = [&](std::size_t k) -> std::optional<std::uint32_t> {
+            if (k >= fields->src.size()) return std::nullopt;
+            return lane_constant(fields->src[k]);
+        };
+        if (name == "v_mbcnt_lo_u32_b32") {
+            const auto mask = src_const(0);
+            const auto add = src_const(1);
+            if (mask && *mask == UINT32_MAX && add && *add == 0) return LaneShape::Index;
+            return LaneShape::Unknown;
+        }
+        if (name == "v_mov_b32") {
+            if (const auto moved = src_value(0))
+                return lane_shape(program, defs, *moved, depth + 1);
+            return LaneShape::Unknown;
+        }
+        const auto combine = [&](LaneShape left, LaneShape right, std::string_view op) {
+            if (op == "v_or_b32" && ((left == LaneShape::Base && right == LaneShape::Slot) ||
+                                     (right == LaneShape::Base && left == LaneShape::Slot)))
+                return LaneShape::Same;
+            if (op == "v_xor_b32" &&
+                (((left == LaneShape::Index || left == LaneShape::Same) && right == LaneShape::Slot) ||
+                 ((right == LaneShape::Index || right == LaneShape::Same) && left == LaneShape::Slot)))
+                return LaneShape::Same;
+            return LaneShape::Unknown;
+        };
+        if (name != "v_and_b32" && name != "v_or_b32" && name != "v_xor_b32") return LaneShape::Unknown;
+        std::optional<std::uint32_t> constant;
+        std::optional<Value> other;
+        if (const auto found = src_const(0)) {
+            constant = found;
+            other = src_value(1);
+        } else if (const auto second = src_const(1)) {
+            constant = second;
+            other = src_value(0);
+        }
+        if (!constant || !other) {
+            const auto left = src_value(0);
+            const auto right = src_value(1);
+            if (!left || !right) return LaneShape::Unknown;
+            return combine(lane_shape(program, defs, *left, depth + 1),
+                           lane_shape(program, defs, *right, depth + 1), name);
+        }
+        const LaneShape shaped = lane_shape(program, defs, *other, depth + 1);
+        if (name == "v_and_b32") {
+            if ((shaped == LaneShape::Index || shaped == LaneShape::Same) && (*constant & ~3u) == ~3u)
+                return LaneShape::Base;
+            if ((shaped == LaneShape::Index || shaped == LaneShape::Same || shaped == LaneShape::Slot) &&
+                *constant <= 3)
+                return LaneShape::Slot;
+        } else if (name == "v_xor_b32") {
+            if ((shaped == LaneShape::Index || shaped == LaneShape::Same) && *constant <= 3)
+                return LaneShape::Same;
+        } else if (shaped == LaneShape::Base && *constant <= 3) {
+            return LaneShape::Same;
+        }
+        return LaneShape::Unknown;
+    }
+    return LaneShape::Unknown;
+}
+
+}  // namespace
+
+bool Lower::same_quad_lane(const IrInst& inst) const {
+    const auto* fields = std::get_if<Valu>(&inst.fields);
+    if (fields == nullptr || fields->src.size() < 2) return false;
+    const auto* vector = std::get_if<VectorOperand>(&fields->src[1]);
+    if (vector == nullptr) return false;
+    const std::optional<Value> lane = inst.read(Reg::v(vector->reg));
+    if (!lane) return false;
+    const LaneShape shaped = lane_shape(*x_->p, def_block_, *lane, 0);
+    return shaped == LaneShape::Index || shaped == LaneShape::Same;
+}
+
 V Lower::read_lane(V x, V lane) {
     return s_.op(cur_, "waveReadLaneAt.i32", Attr::NoUnwind, s_.t.i32, 117, {x, lane});
 }
@@ -1501,12 +2044,8 @@ void Lower::inst(std::size_t b, std::size_t i) {
     const std::string_view name = inst_value.name();
     switch (mask_data_) {
         case MaskData::Console:
-            mask_ok_ = true;
-            break;
         case MaskData::Host:
-            mask_ok_ = name.starts_with("s_bcnt1_i32_") || name.starts_with("s_ff1_i32_") ||
-                       name.starts_with("v_mbcnt_") || name == "s_cmp_eq_u32" ||
-                       name == "s_cmp_lg_u32" || name == "s_cmp_eq_u64" || name == "s_cmp_lg_u64";
+            mask_ok_ = true;
             break;
         case MaskData::None:
             mask_ok_ = false;
@@ -1519,13 +2058,17 @@ void Lower::inst(std::size_t b, std::size_t i) {
         (holds_flat && !name.starts_with("global_load_")) ||
         name.find("store") != std::string_view::npos ||
         name.find("atomic") != std::string_view::npos || name == "s_barrier" ||
+        (name == "s_sendmsg" && x_->native->stage == HwStage::Gs) ||
+        (holds_ds && x_->native->stage == HwStage::Gs) ||
         (holds_ds && !(name.starts_with("ds_read") || name.starts_with("ds_swizzle") ||
                        name.find("permute") != std::string_view::npos));
     try {
         if (std::holds_alternative<SopFields>(inst_value.fields)) {
             sop(inst_value);
         } else if (std::holds_alternative<SoppFields>(inst_value.fields)) {
-            if (name == "s_barrier") {
+            if (name == "s_sendmsg" || name == "s_sendmsghalt") {
+                geometry_message(inst_value, b, i);
+            } else if (name == "s_barrier") {
                 if (no_barrier_.contains(b)) return;
                 const std::uint32_t mode = writes_uavs_ ? (1u | 2u | 8u) : (1u | 8u);
                 const V k = s_.m.i32(mode);
@@ -1640,7 +2183,7 @@ V Lower::count_iteration(std::size_t to, std::uint8_t p) {
     const V phi = counters_.at(to).first;
     const V one = s_.m.i32(1);
     const V next = s_.m.bin(c, Bin::Add, phi, one);
-    const V limit = s_.m.i32(loop_limit());
+    const V limit = s_.m.i32(stage_loop_limit(loop_limit(), s_.pixel, s_.mesh.has_value(), s_.threads.has_value()));
     counters_.at(to).second.emplace_back(next, c);
     return s_.m.cmp(c, p, next, limit);
 }
@@ -1669,8 +2212,120 @@ std::size_t Lower::edge(std::size_t from, std::size_t to) {
     return e;
 }
 
+bool Lower::has_partial_descriptor(Value value) const {
+    if (!descriptor_addresses_.contains(value) && !phi_at_.contains(value) && !descriptor_zero_bits_.contains(value) &&
+        !image_heap_words_.contains(value))
+        return false;
+    std::unordered_set<Value, ValueHash> visited;
+    std::vector<Value> work{value};
+    while (!work.empty()) {
+        const Value v = work.back();
+        work.pop_back();
+        if (!visited.insert(v).second) continue;
+        if (descriptor_zero_bits_.contains(v) || image_heap_words_.contains(v)) return true;
+        const auto field = descriptor_addresses_.find(v);
+        if (field != descriptor_addresses_.end() && field->second.accepts_mask()) return true;
+        const auto at = phi_at_.find(v);
+        if (at == phi_at_.end() || is_mask(v) || x_->st->highs.contains(v)) continue;
+        const auto [b, i] = at->second;
+        const Phi& phi = x_->p->blocks[b].phis[i];
+        if (phi.reg.kind == Reg::Kind::S) work.insert(work.end(), phi.args.begin(), phi.args.end());
+    }
+    return false;
+}
+
+V Lower::masked_descriptor_value(Value value, std::uint32_t mask) {
+    constexpr Why unknown_bits = kDescriptorWordAsData;
+    const auto zero_bits = descriptor_zero_bits_.find(value);
+    if (zero_bits != descriptor_zero_bits_.end()) {
+        mask &= ~zero_bits->second;
+        if (mask == 0) return s_.m.i32(0);
+    }
+    if (const auto field = image_heap_words_.find(value); field != image_heap_words_.end()) {
+        if ((mask & ~field->second.known_bits) != 0) fail(unknown_bits);
+        return read_image_heap_word(field->second);
+    }
+    const auto field = descriptor_addresses_.find(value);
+    if (field != descriptor_addresses_.end()) {
+        using Source = UserData::Source;
+        UserData data = field->second;
+        if ((data.source == Source::StructuredBufferHighWord || data.source == Source::LinearRawBufferHighWord) &&
+            (mask & ~UserData::kBufferAddressHighMask) == 0)
+            data.source = Source::ShaderBufferAddressHigh;
+        if ((data.source == Source::StructuredBufferFormatWord || data.source == Source::LinearRawBufferFormatWord) &&
+            (mask & ~UserData::kBufferComponentMappingMask) == 0)
+            data.source = Source::ShaderBufferComponentMapping;
+        if ((mask & ~data.known_bits()) != 0) fail(unknown_bits);
+        return descriptor_address(data).value;
+    }
+    const auto at = phi_at_.find(value);
+    if (at != phi_at_.end() && !is_mask(value) && !x_->st->highs.contains(value)) {
+        const DescriptorMask key{value, mask};
+        const auto failed = bad_masked_->find(key);
+        if (failed != bad_masked_->end()) fail(failed->second);
+        const auto [b, i] = at->second;
+        if (block_[b] && x_->p->blocks[b].phis[i].reg.kind == Reg::Kind::S) {
+            const auto [entry, inserted] = masked_descriptor_phis_.try_emplace(key, V{});
+            if (inserted) {
+                entry->second = s_.m.phi(*block_[b], s_.t.i32);
+                pending_descriptor_phis_.emplace_back(value, mask, entry->second);
+            }
+            return entry->second;
+        }
+    }
+    const Val val = get(value);
+    if (val.kind != Val::Kind::I32) fail("an SCC joined with SGPR values");
+    return val.value;
+}
+
+void Lower::fill_masked_descriptor_phis() {
+    for (std::size_t i = 0; i < pending_descriptor_phis_.size(); ++i) {
+        const auto [source, mask, result] = pending_descriptor_phis_[i];
+        const auto [b, n] = phi_at_.at(source);
+        const auto& block = x_->p->blocks[b];
+        const Phi& phi = block.phis[n];
+        std::vector<std::pair<V, std::size_t>> incoming;
+        for (std::size_t j = 0; j < block.preds.size(); ++j) {
+            const std::size_t q = block.preds[j];
+            if (!tail_[q]) continue;
+            const std::size_t qb = edges_.contains({q, b}) ? edges_.at({q, b}) : *tail_[q];
+            try {
+                incoming.emplace_back(masked_descriptor_value(phi.args[j], mask), qb);
+            } catch (const WhyError& error) {
+                throw Stop::retry_masked(source, mask, error.why);
+            }
+        }
+        s_.m.set_phi(result, incoming);
+    }
+}
+
+bool Lower::joins_data(const IrBlock& block, const Phi& phi) const {
+    for (std::size_t n = 0; n < block.preds.size() && n < phi.args.size(); ++n) {
+        if (!tail_[block.preds[n]]) continue;
+        const Value arg = phi.args[n];
+        if (descriptor_addresses_.contains(arg) || descriptor_zero_bits_.contains(arg) ||
+            image_heap_words_.contains(arg) || params_.contains(arg))
+            continue;
+        const auto found = vals_.find(arg);
+        if (found != vals_.end() && found->second.kind == Val::Kind::I32) return true;
+    }
+    return false;
+}
+
 void Lower::fill_phis() {
+    fill_masked_descriptor_phis();
     const Program& p = *x_->p;
+    std::vector<Value> work;
+    for (Value v : read_phis_) work.push_back(v);
+    while (!work.empty()) {
+        const Value v = work.back();
+        work.pop_back();
+        const auto at = phi_at_.find(v);
+        if (at == phi_at_.end()) continue;
+        const Phi& phi = p.blocks[at->second.first].phis[at->second.second];
+        for (Value arg : phi.args)
+            if (phi_at_.contains(arg) && read_phis_.insert(arg).second) work.push_back(arg);
+    }
     std::vector<std::tuple<V, std::size_t, std::size_t>> data_phis = std::move(data_phis_);
     data_phis_.clear();
     for (const auto& entry : data_phis) {
@@ -1680,21 +2335,36 @@ void Lower::fill_phis() {
         const Phi& phi = p.blocks[b].phis[i];
         const bool bit = phi.reg.kind == Reg::Kind::Scc;
         const bool read = read_phis_.contains(phi.value);
+        const bool reused = !bit && joins_data(p.blocks[b], phi);
         std::vector<std::pair<V, std::size_t>> incoming;
         for (std::size_t n = 0; n < p.blocks[b].preds.size(); ++n) {
             const std::size_t q = p.blocks[b].preds[n];
             if (!tail_[q]) continue;
             const std::size_t qb = edges_.contains({q, b}) ? edges_.at({q, b}) : *tail_[q];
             const Value arg = phi.args[n];
+            if (read && !bit && (descriptor_addresses_.contains(arg) || params_.contains(arg)) &&
+                !vals_.contains(arg)) {
+                try {
+                    (void)get(arg);
+                } catch (const WhyError& error) {
+                    if (!reused || error.why != kDescriptorWordAsData) throw Stop::retry(phi.value, error.why);
+                }
+            }
             const auto found = vals_.find(arg);
             V x;
-            if (found != vals_.end() && found->second.kind == Val::Kind::I32 && !bit) {
+            if (reused && found != vals_.end() && found->second.kind == Val::Kind::Missing &&
+                found->second.why == kDescriptorWordAsData) {
+                x = s_.m.i32(kReusedDescriptorWord);
+            } else if (found != vals_.end() && found->second.kind == Val::Kind::I32 && !bit) {
                 x = found->second.value;
             } else if (found != vals_.end() && found->second.kind == Val::Kind::Bit && bit) {
                 x = found->second.value;
             } else if (found != vals_.end() && found->second.kind == Val::Kind::Bit && !bit &&
                        read) {
                 throw Stop::retry(phi.value, "an SCC joined with SGPR values");
+            } else if (!bit && read &&
+                       (x_->st->masks.contains(arg) || x_->st->highs.contains(arg))) {
+                x = stop_at(p.blocks[b].offset, [&]() { return mask_dword(arg); });
             } else if (found != vals_.end() && found->second.kind == Val::Kind::Missing && read) {
                 throw Stop::retry(phi.value, found->second.why);
             } else if (read) {
@@ -1722,10 +2392,28 @@ void Lower::fill_phis() {
             const std::size_t q = p.blocks[b].preds[n];
             if (!tail_[q]) continue;
             const std::size_t qb = edges_.contains({q, b}) ? edges_.at({q, b}) : *tail_[q];
-            const auto mask = x_->st->masks.find(phi.args[n]);
-            if (mask == x_->st->masks.end())
-                throw Stop::failure(offset, "a lane-mask join of an untracked mask");
-            const V x = stop_at(offset, [&]() { return boolean(mask->second, qb); });
+            const std::vector<Bool>* edges = join_edges(*x_->st, phi.value);
+            if (edges == nullptr || n >= edges->size() || n >= phi.args.size())
+                throw Stop::failure(offset, kUntrackedMaskJoin);
+            const Value arg = phi.args[n];
+            const bool tracked = x_->st->masks.contains(arg) || x_->st->highs.contains(arg);
+            if (!tracked && !join_edge_known(*x_->st, (*edges)[n]))
+                throw Stop::failure(offset, kUntrackedMaskJoin);
+            for (const Atom& atom : x_->st->bools.support((*edges)[n])) {
+                std::optional<std::size_t> born;
+                if (atom.kind == Atom::Kind::Lane) {
+                    if (const auto def = def_block_.find(atom.value); def != def_block_.end()) born = def->second;
+                } else if (atom.kind == Atom::Kind::Phi) {
+                    if (const auto at = phi_at_.find(atom.value); at != phi_at_.end()) born = at->second.first;
+                } else if (atom.kind == Atom::Kind::Uniform) {
+                    if (const auto def = def_block_.find(atom.value); def != def_block_.end()) born = def->second;
+                }
+                if (born && rpo_[*born] > rpo_[q]) throw Stop::failure(offset, kUntrackedMaskJoin);
+            }
+            std::size_t at = qb;
+            if (const auto def = def_block_.find(arg); def != def_block_.end() && tail_[def->second])
+                at = *tail_[def->second];
+            const V x = stop_at(offset, [&]() { return boolean((*edges)[n], at); });
             incoming.emplace_back(x, qb);
         }
         s_.m.set_phi(v, incoming);
@@ -1734,16 +2422,18 @@ void Lower::fill_phis() {
 
 Lowered lower(const Parts& parts) {
     std::unordered_map<Value, Why, ValueHash> bad;
+    std::map<DescriptorMask, Why> bad_masked;
     for (;;) {
         try {
-            Lower lowering(parts, bad);
+            Lower lowering(parts, bad, bad_masked);
             return lowering.run();
         } catch (const Stop& stop) {
             if (stop.kind == Stop::Kind::Retry) {
-                if (bad.contains(stop.value))
+                const bool inserted = stop.mask ? bad_masked.try_emplace(DescriptorMask{stop.value, *stop.mask}, stop.why).second
+                                                : bad.try_emplace(stop.value, stop.why).second;
+                if (!inserted)
                     throw ParseError(ErrorKind::Unsupported,
                                      "GFX10 code at 0x0: a phi that does not settle is not supported");
-                bad[stop.value] = stop.why;
             } else {
                 throw ParseError(ErrorKind::Unsupported, "GFX10 code at " + hex(stop.offset) + ": " +
                                                              std::string(stop.why) +

@@ -120,4 +120,6 @@ Kind 4 contexts are 64 bytes: 16 `UINT32` words each, written by the title and b
 | 8 | 0-31 | overlap buffer APU address |
 | 9 | 0-4 | read block, written by the title through command 18 |
 
+Command 18 moves the read block by its word 1 count, reduced modulo the ring size, so any count wraps.
+
 Each output block is 256 bytes of interleaved 16-bit samples, so 128 samples per channel. Titles read back the write block, the writable bit and the read block, and consume whatever lies between the read and write blocks.

@@ -20,13 +20,100 @@
 
 namespace g6shim::shader::emit {
 
+enum class NullView : std::uint32_t {
+    RawSrv = 0,
+    RawUav,
+    TypedSrv,
+    TypedUav,
+    StructuredSrv,
+    StructuredUav,
+    Texture2DSrv,
+    Texture2DUav,
+    Texture3DSrv,
+    Texture3DUav,
+    TextureCubeSrv,
+    TextureCubeUav,
+    Count
+};
+
 struct UserData {
+    enum class Source : std::uint32_t {
+        Root, ConstantBufferAddressLow, ShaderBufferAddressLow, ImageBaseAddressLow,
+        ShaderBufferAddressHigh, ShaderBufferComponentMapping, StructuredBufferHighWord,
+        LinearRawBufferHighWord, LinearRawBufferFormatWord, StructuredBufferFormatWord,
+        ImageSamplingFields, TypedBufferFormatWord, TypedBufferHighWord,
+        ConstantBufferHighWord, ConstantBufferRecordCount, ConstantBufferFormatWord,
+        ShaderBufferRecordCount, ImageWidthLowBits, ImageDimensions, SamplerLodWord, ImageBaseMip, ImageHeapData,
+        BufferHeapData, ViewHeapCount, SamplerHeapCount, NullViewBase, RootViewBytes
+    };
+
     std::uint32_t index = 0;
     std::uint8_t slot = 0;
     RootType root;
     std::uint32_t dword = 0;
+    Source source = Source::Root;
+
+    static constexpr std::uint32_t kBufferAddressHighMask = 0xffff;
+    static constexpr std::uint32_t kBufferComponentMappingMask = 0xfff;
+    static constexpr std::uint32_t kBufferStrideShift = 16;
+    static constexpr std::uint32_t kBufferStrideMask = 0x3fff;
+    static constexpr std::uint32_t kImageWidthLowShift = 30;
+    static constexpr std::uint32_t kImageWidthHighBits = 14;
+    static constexpr std::uint32_t kImageDimensionsMask = 0x3fff'ffff;
+    static constexpr std::uint32_t kImageBaseMipShift = 12;
+    static constexpr std::uint32_t kImageBaseMipMask = 0xfu << kImageBaseMipShift;
+    static constexpr std::uint32_t kImageSamplingPerformanceShift = 20;
+    static constexpr std::uint32_t kImageSamplingPerformanceMask = 0x7u << kImageSamplingPerformanceShift;
+    static constexpr std::uint32_t kImageLodWarningMask = 0xfffu << 8;
+    static constexpr std::uint32_t kStructuredBufferHighMask =
+        (kBufferStrideMask << kBufferStrideShift) | kBufferAddressHighMask;
+
+    constexpr std::uint32_t known_bits() const {
+        if (source == Source::ShaderBufferAddressHigh) return kBufferAddressHighMask;
+        if (source == Source::ShaderBufferComponentMapping) return kBufferComponentMappingMask;
+        if (source == Source::ImageWidthLowBits) return UINT32_MAX << kImageWidthLowShift;
+        if (source == Source::ImageDimensions) return kImageDimensionsMask;
+        if (source == Source::ImageBaseMip) return kImageBaseMipMask;
+        if (source == Source::ImageSamplingFields) return kImageSamplingPerformanceMask | kImageLodWarningMask;
+        return UINT32_MAX;
+    }
+
+    constexpr bool accepts_mask() const {
+        return known_bits() != UINT32_MAX || source == Source::LinearRawBufferHighWord ||
+               source == Source::StructuredBufferHighWord || source == Source::LinearRawBufferFormatWord ||
+               source == Source::StructuredBufferFormatWord;
+    }
 
     friend bool operator==(const UserData&, const UserData&) = default;
+};
+
+inline constexpr std::uint8_t kViewWords = 1;
+inline constexpr std::uint8_t kSamplerWords = 2;
+inline constexpr std::uint8_t kFlatTable = 4;
+inline constexpr std::uint8_t kFlatWrites = 8;
+inline constexpr std::uint32_t kFlatHeaderBytes = 16;
+inline constexpr std::uint32_t kFlatEntryBytes = 16;
+inline constexpr std::uint32_t kFlatSearchSteps = 16;
+inline constexpr std::uint32_t kFlatMaxEntries = 1u << kFlatSearchSteps;
+
+struct ImageHeapData {
+    static constexpr std::uint32_t kWidthLow = 0;
+    static constexpr std::uint32_t kDimensions = 1;
+    static constexpr std::uint32_t kBaseMip = 2;
+    static constexpr std::uint32_t kPresent = 3;
+    static constexpr std::uint32_t kWords = 4;
+    static constexpr std::uint32_t kBytes = kWords * sizeof(std::uint32_t);
+    using Record = std::array<std::uint32_t, kWords>;
+};
+
+struct BufferHeapData {
+    static constexpr std::uint32_t kDescriptor = 0;
+    static constexpr std::uint32_t kStride = 1;
+    static constexpr std::uint32_t kPrefix = 2;
+    static constexpr std::uint32_t kRecords = 3;
+    static constexpr std::uint32_t kWords = 4;
+    static constexpr std::uint32_t kBytes = kWords * sizeof(std::uint32_t);
+    using Record = std::array<std::uint32_t, kWords>;
 };
 
 struct HostShader {
@@ -37,14 +124,19 @@ struct HostShader {
     std::vector<StaticSampler> static_samplers;
     std::vector<std::uint8_t> root_cbvs;
     std::vector<std::uint8_t> root_srvs;
+    std::uint8_t descriptor_words = 0;
 
     std::uint32_t user_data_dwords() const;
 };
 
 inline constexpr std::uint32_t kLoopLimit = 1u << 20;
+inline constexpr std::uint32_t kPixelLoopLimit = 128;
+inline constexpr std::uint32_t kMeshLoopLimit = 256;
+inline constexpr std::uint32_t kComputeLoopLimit = 4096;
 
 std::uint32_t parse_loop_limit(std::optional<std::string_view> value);
 std::uint32_t loop_limit();
+std::uint32_t stage_loop_limit(std::uint32_t named, bool pixel, bool mesh, bool has_threads);
 
 HostShader translate(std::span<const std::uint8_t> container);
 
