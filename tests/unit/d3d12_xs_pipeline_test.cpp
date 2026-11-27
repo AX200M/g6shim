@@ -493,3 +493,31 @@ TEST(d3d12_xs_pipeline_compiles_a_synthetic_compute_pipeline) {
     CHECK(gpu->device()->GetDeviceRemovedReason() == S_OK);
     CHECK(slot<std::uint32_t (*)(Object*)>(made, 0x10)(made) == 0);
 }
+
+TEST(d3d12_xs_screen_passes_are_told_apart) {
+    using g6shim::d3d12_xs::pipeline_host::GraphicsState;
+    GraphicsState screen;
+    screen.targets.NumRenderTargets = 1;
+    screen.targets.RTFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    screen.topology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    CHECK(screen.screen_pass());
+
+    GraphicsState tested = screen;
+    tested.depth_format = DXGI_FORMAT_D32_FLOAT;
+    CHECK(!tested.screen_pass());
+    tested.depth.DepthEnable = FALSE;
+    tested.depth.StencilEnable = FALSE;
+    CHECK(tested.screen_pass());
+
+    GraphicsState meshes = screen;
+    meshes.inputs.emplace_back();
+    CHECK(!meshes.screen_pass());
+
+    GraphicsState lines = screen;
+    lines.topology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+    CHECK(!lines.screen_pass());
+
+    GraphicsState nowhere = screen;
+    nowhere.targets.NumRenderTargets = 0;
+    CHECK(!nowhere.screen_pass());
+}

@@ -48,6 +48,7 @@ struct GraphicsState {
 
     void read(std::uint32_t kind, const std::uint8_t* at, std::size_t available);
     std::string describe() const;
+    bool screen_pass() const;
     std::uint32_t slots() const;
     std::vector<D3D12_INPUT_ELEMENT_DESC> element_descs() const;
 };

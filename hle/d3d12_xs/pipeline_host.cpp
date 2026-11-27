@@ -283,6 +283,12 @@ void GraphicsState::read(std::uint32_t kind, const std::uint8_t* at, std::size_t
     }
 }
 
+bool GraphicsState::screen_pass() const {
+    const bool untested = depth_format == DXGI_FORMAT_UNKNOWN || (!depth.DepthEnable && !depth.StencilEnable);
+    return inputs.empty() && untested && targets.NumRenderTargets > 0 &&
+           topology == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+}
+
 std::string GraphicsState::describe() const {
     std::string out = blend_text(blend);
     out += "mask " + std::to_string(sample_mask) + " raster ";

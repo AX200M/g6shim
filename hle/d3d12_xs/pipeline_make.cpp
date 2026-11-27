@@ -26,17 +26,25 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 constexpr std::chrono::microseconds kBudget{500'000};
+constexpr std::chrono::microseconds kScreenBudget{10'000'000};
+constexpr std::chrono::microseconds kReportedScreenWait{500'000};
 
 std::mutex g_done_mutex;
 std::condition_variable g_done;
 std::atomic<std::uint64_t> g_waiting{0};
 std::atomic<std::uint64_t> g_peak{0};
-std::atomic<std::uint64_t> g_frame{UINT64_MAX};
-std::atomic<std::uint64_t> g_waited{0};
+
+struct FrameBudget {
+    std::atomic<std::uint64_t> frame{UINT64_MAX};
+    std::atomic<std::uint64_t> waited{0};
+};
+
+FrameBudget g_budgets[2];
 
 struct Queue {
     std::mutex mutex;
     std::condition_variable ready;
+    std::deque<std::shared_ptr<Pending>> screens;
     std::deque<std::shared_ptr<Pending>> items;
 };
 
@@ -68,13 +76,15 @@ std::string key_for(const std::vector<std::shared_ptr<Shader>>& shaders,
 }
 
 void wait_for(const std::shared_ptr<Pending>& pending, std::uint64_t frame) {
-    if (g_frame.exchange(frame, std::memory_order_relaxed) != frame)
-        g_waited.store(0, std::memory_order_relaxed);
-    const std::uint64_t waited = g_waited.load(std::memory_order_relaxed);
+    FrameBudget& budget = g_budgets[pending->screen ? 1 : 0];
+    const std::chrono::microseconds whole = pending->screen ? kScreenBudget : kBudget;
+    if (budget.frame.exchange(frame, std::memory_order_relaxed) != frame)
+        budget.waited.store(0, std::memory_order_relaxed);
+    const std::uint64_t waited = budget.waited.load(std::memory_order_relaxed);
     const std::chrono::microseconds left =
-        waited >= static_cast<std::uint64_t>(kBudget.count())
+        waited >= static_cast<std::uint64_t>(whole.count())
             ? std::chrono::microseconds{0}
-            : kBudget - std::chrono::microseconds{static_cast<long long>(waited)};
+            : whole - std::chrono::microseconds{static_cast<long long>(waited)};
     const Clock::time_point started = Clock::now();
     std::unique_lock<std::mutex> held(g_done_mutex);
     while (!pending->done()) {
@@ -83,8 +93,12 @@ void wait_for(const std::shared_ptr<Pending>& pending, std::uint64_t frame) {
         if (elapsed >= left) break;
         g_done.wait_for(held, left - elapsed);
     }
+    held.unlock();
     const auto used = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - started);
-    g_waited.fetch_add(static_cast<std::uint64_t>(used.count()), std::memory_order_relaxed);
+    budget.waited.fetch_add(static_cast<std::uint64_t>(used.count()), std::memory_order_relaxed);
+    if (pending->screen && used >= kReportedScreenWait)
+        G6SHIM_INFO("d3d12_xs: waited %lld ms for a screen pass pipeline (%s)",
+                    static_cast<long long>(used.count() / 1000), pending->done() ? "made" : "still making");
 }
 
 void worker_loop(const std::shared_ptr<Queue>& state) {
@@ -93,9 +107,10 @@ void worker_loop(const std::shared_ptr<Queue>& state) {
         std::shared_ptr<Pending> next;
         {
             std::unique_lock<std::mutex> lock(state->mutex);
-            state->ready.wait(lock, [&state] { return !state->items.empty(); });
-            next = std::move(state->items.front());
-            state->items.pop_front();
+            state->ready.wait(lock, [&state] { return !state->screens.empty() || !state->items.empty(); });
+            std::deque<std::shared_ptr<Pending>>& from = state->screens.empty() ? state->items : state->screens;
+            next = std::move(from.front());
+            from.pop_front();
         }
         next->make();
         if (g_waiting.fetch_sub(1, std::memory_order_relaxed) == 1)
@@ -133,7 +148,7 @@ void queue(const std::shared_ptr<Pending>& pending) {
     }
     {
         std::lock_guard<std::mutex> lock(state->mutex);
-        state->items.push_back(pending);
+        (pending->screen ? state->screens : state->items).push_back(pending);
     }
     state->ready.notify_one();
 }
@@ -163,7 +178,8 @@ Pending::Pending(std::vector<std::shared_ptr<Shader>> pipeline_shaders,
                  std::shared_ptr<pipeline_host::GraphicsState> state)
     : shaders(std::move(pipeline_shaders)),
       graphics(std::move(state)),
-      key(key_for(shaders, graphics.get())) {}
+      key(key_for(shaders, graphics.get())),
+      screen(graphics != nullptr && graphics->screen_pass()) {}
 
 void Pending::make() {
     std::call_once(once_, [this] {

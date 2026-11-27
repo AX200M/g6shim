@@ -31,6 +31,7 @@ struct Pending {
     std::vector<std::shared_ptr<Shader>> shaders;
     std::shared_ptr<pipeline_host::GraphicsState> graphics;
     std::string key;
+    bool screen = false;
     std::atomic<bool> used{false};
 
 private:
