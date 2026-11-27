@@ -1826,6 +1826,10 @@ void HostList::reset() {
     texture::drop_depth_uav_notes(this);
     {
         std::lock_guard<std::mutex> lock(deferred_mutex_);
+        for (auto& upload : deferred_.uploads)
+            if (upload) retire(Microsoft::WRL::ComPtr<IUnknown>(upload.Get()));
+        for (auto& kept : deferred_.kept)
+            if (kept) retire(Microsoft::WRL::ComPtr<IUnknown>(kept.Get()));
         deferred_ = Deferred{};
     }
     const std::string retired = list_name_;
@@ -1845,6 +1849,8 @@ void HostList::reset() {
     }
     {
         std::lock_guard<std::mutex> lock(scratch_mutex_);
+        for (ScratchChunk& chunk : chunks_)
+            if (chunk.buffer) retire(Microsoft::WRL::ComPtr<IUnknown>(chunk.buffer.Get()));
         chunks_.clear();
         current_chunk_ = 0;
         used_ = 0;
