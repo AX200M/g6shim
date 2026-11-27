@@ -236,6 +236,7 @@ void Lower::flat_global(const IrInst& inst, std::size_t b, std::size_t i) {
         return;
     }
     if (!fields->data) fail("global access data");
+    flat_writes_ = true;
     if (name.starts_with(kStore)) {
         const std::optional<std::uint32_t> count = dwords_named(name.substr(kStore.size()));
         if (!count || *count > kMaxLoadDwords) fail(name);

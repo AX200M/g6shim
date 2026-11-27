@@ -66,6 +66,7 @@ struct Stage {
     std::vector<std::pair<std::uint8_t, std::uint32_t>> root_cbvs;
     std::vector<std::pair<std::uint8_t, std::uint32_t>> root_srvs;
     std::vector<std::pair<std::uint8_t, std::uint32_t>> descriptor_words;
+    bool writes_through_table = false;
 
     const Translated* translated() const;
 };

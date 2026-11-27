@@ -423,6 +423,7 @@ std::optional<HostPipeline> HostPipeline::make(const std::vector<std::shared_ptr
         using g6shim::shader::emit::kFlatTable;
         using g6shim::shader::emit::kSamplerWords;
         using g6shim::shader::emit::kViewWords;
+        stage.writes_through_table = (host_shader.descriptor_words & g6shim::shader::emit::kFlatWrites) != 0;
         for (const std::uint8_t bit : {kViewWords, kSamplerWords, kFlatTable}) {
             if ((host_shader.descriptor_words & bit) == 0) continue;
             stage.descriptor_words.emplace_back(bit, static_cast<std::uint32_t>(parameters.size()));

@@ -557,8 +557,9 @@ std::optional<D3D12_GPU_DESCRIPTOR_HANDLE> State::words_table(host::HostList& li
     return D3D12_GPU_DESCRIPTOR_HANDLE{host_heap->gpu_start() + static_cast<std::uint64_t>(slot) * host_heap->step()};
 }
 
-std::optional<D3D12_GPU_DESCRIPTOR_HANDLE> State::flat_table(host::HostList& list, bool compute) {
-    const auto views = copied_root_views(roots(compute));
+std::optional<D3D12_GPU_DESCRIPTOR_HANDLE> State::flat_table(host::HostList& list, bool compute, bool writes) {
+    const auto views = writes ? copied_root_views(roots(compute))
+                              : std::vector<std::pair<std::shared_ptr<shadow::Shadow>, std::uint64_t>>{};
     const auto heaps = view_heap();
     if (!heaps) return std::nullopt;
     auto [heap_object, host_heap] = *heaps;
@@ -831,7 +832,7 @@ bool State::bind(host::HostList& list, const pipeline_host::HostPipeline& pipeli
         }
         for (const auto& [bit, parameter] : stage.descriptor_words) {
             const auto table = bit == g6shim::shader::emit::kFlatTable
-                                   ? flat_table(list, compute)
+                                   ? flat_table(list, compute, stage.writes_through_table)
                                    : words_table(list, bit == g6shim::shader::emit::kSamplerWords);
             if (!table) return false;
             if (compute)

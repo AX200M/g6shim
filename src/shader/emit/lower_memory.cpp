@@ -398,6 +398,7 @@ void Lower::buffer(const IrInst& inst, std::size_t b, std::size_t i) {
         if (!fields->data) fail("a buffer result");
         const auto* data = std::get_if<VectorOperand>(&*fields->data);
         if (data == nullptr) fail("a buffer result");
+        if (atomic || store) flat_writes_ = true;
         if (atomic) {
             const bool exchange = *atomic == UINT32_MAX;
             const std::vector<V> vals = vgprs(inst, *fields->data, exchange ? 2 : 1);

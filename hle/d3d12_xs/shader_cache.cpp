@@ -24,7 +24,7 @@ using g6shim::shader::RootType;
 using g6shim::shader::emit::HostShader;
 using g6shim::shader::emit::StaticSampler;
 
-constexpr std::array<std::uint8_t, 4> kMagic{'V', 'S', 'H', '3'};
+constexpr std::array<std::uint8_t, 4> kMagic{'V', 'S', 'H', '4'};
 constexpr std::array<std::uint8_t, 4> kRefusedMagic{'V', 'S', 'H', 'X'};
 constexpr std::array<HwStage, 8> kStages{HwStage::Ls, HwStage::Hs, HwStage::Es, HwStage::Gs,
                                          HwStage::Vs, HwStage::Ps, HwStage::Ms, HwStage::Cs};

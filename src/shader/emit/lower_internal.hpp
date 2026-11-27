@@ -331,6 +331,7 @@ private:
     std::map<std::uint32_t, V> user_data_words_;
     std::unordered_map<V, HeapRecords, VHash> heap_records_;
     std::map<std::uint32_t, UserData> user_reads_;
+    bool flat_writes_ = false;
     std::vector<std::array<std::uint32_t, 4>> samplers_;
     std::map<std::pair<Site, bool>, const Source*> descriptors_;
     std::unordered_map<Site, Address, SiteHash> scalar_;

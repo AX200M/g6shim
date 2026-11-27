@@ -92,7 +92,7 @@ private:
     const descriptor::Heap* heap_of(std::uint64_t handle) const;
     std::optional<std::pair<Object*, descriptor_host::HostHeap*>> view_heap() const;
     std::optional<D3D12_GPU_DESCRIPTOR_HANDLE> words_table(host::HostList& list, bool sampler);
-    std::optional<D3D12_GPU_DESCRIPTOR_HANDLE> flat_table(host::HostList& list, bool compute);
+    std::optional<D3D12_GPU_DESCRIPTOR_HANDLE> flat_table(host::HostList& list, bool compute, bool writes);
     std::optional<std::uint32_t> descriptor_value(host::HostList& list, bool compute,
                                                    const g6shim::shader::emit::UserData& data) const;
     bool rectangles(host::HostList& list, std::uint32_t count, std::uint32_t first);

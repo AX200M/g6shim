@@ -768,6 +768,7 @@ Lowered Lower::run() {
         out.descriptor_words |= entry.first == kSamplerWordsRegister ? kSamplerWords
                                 : entry.first == kFlatTableRegister  ? kFlatTable
                                                                      : kViewWords;
+    if (flat_writes_) out.descriptor_words |= kFlatWrites;
     out.user_data = user_reads();
     out.samplers = samplers_;
     out.nonuniform_handles = s_.nonuniform_handles;
